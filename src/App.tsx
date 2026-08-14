@@ -143,6 +143,10 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   const [history, setHistory] = useState<Visit[]>(initialHistory);
 
   const closed = useRef<{ url: string; title: string }[]>([]);
+  /// Tabs opened during this session, as opposed to restored from the store.
+  /// A new background tab loads at once, the way target=_blank behaves in every
+  /// browser; a restored one waits until it is looked at.
+  const opened = useRef(new Set<string>());
   /// Last URL the engine actually committed per tab, so a download can put the
   /// tab back where it was.
   const committed = useRef(new Map<string, string>());
@@ -177,10 +181,10 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
 
   /// Returns the new tab's id: chrome.tabs.create has to answer with a tab.
   function openTab(url: string, background = false): string {
-    let opened = "";
+    let created = "";
     session.update((s) => {
       const id = `t${s.nextTabId}`;
-      opened = id;
+      created = id;
       return {
         ...s,
         tabs: [...s.tabs, { id, url, title: "" }],
@@ -188,7 +192,8 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
         nextTabId: s.nextTabId + 1,
       };
     });
-    return opened;
+    opened.current.add(created);
+    return created;
   }
 
   function closeTab(id: string): void {
@@ -703,14 +708,17 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                 .map((t) => {
                   const state = rt(t.id);
                   const shown = t.id === active.id && state.error === null;
-                  // A tab that has not been armed yet stays "visible" for one
-                  // frame even when it is a background tab: React never attaches
-                  // refs inside a subtree that mounts straight into a hidden
-                  // Activity, and without the ref the tab's content scripts are
-                  // never registered and its URL is never set. It has no URL yet
-                  // at that point, so the frame is blank.
+                  // React never attaches refs inside a subtree that mounts
+                  // straight into a hidden Activity, and without the ref a tab's
+                  // content scripts are never registered and its URL is never
+                  // set. A tab opened in this session therefore stays "visible"
+                  // for the one frame it takes to arm — it has no URL yet, so
+                  // the frame is blank. A RESTORED tab is left alone until it is
+                  // selected, which is the lazy session restore every browser
+                  // does anyway.
+                  const arming = !armedTabs[t.id] && opened.current.has(t.id);
                   return (
-                    <Activity key={t.id} mode={shown || !armedTabs[t.id] ? "visible" : "hidden"}>
+                    <Activity key={t.id} mode={shown || arming ? "visible" : "hidden"}>
                       <webview
                         key={state.attempt}
                         ref={(node) => {

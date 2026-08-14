@@ -13,7 +13,7 @@ const PROFILE = "/tmp/nb-drive-profile";
 const DOWNLOADS = "/tmp/nb-drive-downloads";
 // One knob for every wait: the same drive runs on an idle laptop and inside a
 // full framework gate sweep, where everything is several times slower.
-const PATIENCE = Number(process.env.ND_DRIVE_TIMEOUT_MS ?? 45_000);
+const PATIENCE = Number(process.env.ND_DRIVE_TIMEOUT_MS ?? 60_000);
 
 rmSync(PROFILE, { recursive: true, force: true });
 rmSync(DOWNLOADS, { recursive: true, force: true });

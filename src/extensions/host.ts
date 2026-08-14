@@ -181,6 +181,10 @@ export class ExtensionHost {
   private sessionStorage = new Map<string, Record<string, unknown>>();
   /** Extensions added in this session, so onInstalled reports "install" once. */
   private freshInstalls = new Set<string>();
+  /** Messages waiting for a background page that has not finished loading. */
+  private queuedForBackground = new Map<string, Record<string, unknown>[]>();
+  /** Background pages whose document has finished loading, listeners and all. */
+  private backgroundLoaded = new Set<string>();
 
   private popup: PopupState | null = null;
   private prompt: InstallPrompt | null = null;
@@ -381,6 +385,8 @@ export class ExtensionHost {
     this.popupViews.delete(id);
     this.armed.delete(`background:${id}`);
     this.armed.delete(`popup:${id}`);
+    this.backgroundLoaded.delete(id);
+    this.queuedForBackground.delete(id);
     this.forgetFrames((surface) => surface.extensionId === id);
     for (const [name, alarm] of this.alarms) {
       if (name.startsWith(`${id} `)) {
@@ -603,6 +609,7 @@ export class ExtensionHost {
     // widget arriving twice must not reinstall anything or forget its frames.
     if (this.armed.get(key) === node.id) return;
     this.armed.set(key, node.id);
+    if (kind === "background") this.backgroundLoaded.delete(extensionId);
     this.forgetFrames((surface) => surface.kind === kind && surface.extensionId === extensionId);
 
     sendCommand(node, "registerScriptMessage", { name: BRIDGE_HANDLER });
@@ -791,6 +798,11 @@ export class ExtensionHost {
       args: [{ reason: this.freshInstalls.delete(frame.surface.extensionId) ? "install" : "update", previousVersion: "" }],
     });
     this.deliver(frame.surface, { k: "evt", name: "runtime.onStartup", args: [] });
+
+    this.backgroundLoaded.add(frame.surface.extensionId);
+    const waiting = this.queuedForBackground.get(frame.surface.extensionId) ?? [];
+    this.queuedForBackground.delete(frame.surface.extensionId);
+    for (const envelope of waiting) this.deliver(frame.surface, envelope);
   }
 
   private async onCall(token: string, env: Record<string, unknown>): Promise<void> {
@@ -1008,7 +1020,10 @@ export class ExtensionHost {
         // back to a frame. Falling through to frameId, then to a broadcast,
         // matches the three shapes extensions actually send.
         const byDocument = options.documentId ? this.tokenForDocument(String(options.documentId)) : null;
-        const frameId = options.frameId === undefined ? null : Number(options.frameId);
+        // The token pins the exact document; its frame NUMBER is what survives
+        // a reload, so both travel and the frame decides.
+        const documentFrame = byDocument ? (this.frames.get(byDocument)?.frameId ?? null) : null;
+        const frameId = options.frameId === undefined ? documentFrame : Number(options.frameId);
         return this.sendMessageTo(target, frameId, args.message, this.senderFor(frame), byDocument);
       }
 
@@ -1263,18 +1278,35 @@ export class ExtensionHost {
     sender: Record<string, unknown>,
     toToken: string | null = null,
   ): Promise<unknown> {
-    const node = this.nodeFor(surface);
-    if (!node) return null;
     const { id, promise } = this.awaitReply();
-    this.deliver(surface, {
+    const envelope = {
       k: "msg",
       id,
       message,
       sender,
       to: toToken,
-      frameId: toToken ? null : frameId,
+      frameId,
       spread: toToken !== null || frameId !== 0,
-    });
+    };
+
+    // A restored tab's content scripts can start before the background page
+    // has finished loading. Chrome wakes a service worker for exactly this and
+    // delivers the message; dropping it here would leave the content script
+    // waiting for an answer that never comes. Readiness is the page having said
+    // page having FINISHED LOADING, not merely existing: the shim says hello at
+    // document_start, long before the extension's own deferred script has
+    // registered its onMessage listener, and a message delivered in that window
+    // is answered with "no listener" and never retried.
+    if (surface.kind === "background" && !this.backgroundLoaded.has(surface.extensionId)) {
+      if (!this.extensions.get(surface.extensionId)?.enabled) return null;
+      const queue = this.queuedForBackground.get(surface.extensionId) ?? [];
+      queue.push(envelope);
+      this.queuedForBackground.set(surface.extensionId, queue);
+      return promise;
+    }
+    if (!this.nodeFor(surface)) return null;
+
+    this.deliver(surface, envelope);
     return promise;
   }
 

@@ -23,7 +23,7 @@ const MARKER = WHICH === "mv2" ? "NB_DARKREADER_OK" : "NB_DARKREADER_MV3_OK";
 // Every wait here scales off one number: the same drive runs on an idle laptop
 // and inside a full framework gate sweep, where everything is several times
 // slower. ND_DRIVE_TIMEOUT_MS is what the gate raises.
-const PATIENCE = Number(process.env.ND_DRIVE_TIMEOUT_MS ?? 45_000);
+const PATIENCE = Number(process.env.ND_DRIVE_TIMEOUT_MS ?? 60_000);
 // Which of the extension's own keyboard commands leg 3b drives, and what
 // reaching storage looks like for it. MV3 drives the per-site toggle
 // (Alt+Shift+A); the MV2 build's addSite handler does not complete under this

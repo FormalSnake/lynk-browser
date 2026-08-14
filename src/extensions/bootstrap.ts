@@ -275,7 +275,9 @@ var api = {
   deliver: function (env) {
     // Only a view's MAIN frame can be evaluated into, so anything addressed at
     // one specific frame arrives here first and is passed down the tree.
-    if (env.to && env.to !== token) return relayDown(env);
+    // Messages carry a frame number as well as a token and decide for
+    // themselves (see "msg" below).
+    if (env.k !== "msg" && env.to && env.to !== token) return relayDown(env);
     switch (env.k) {
       case "ready":
         identity = { tabId: env.tabId, frameId: env.frameId, documentId: env.documentId };
@@ -291,13 +293,16 @@ var api = {
         return;
       }
       case "msg": {
-        // Addressed either by token (a documentId lookup resolved to this
-        // frame) or by frame number; anything else is a broadcast.
-        var aimed = env.to === token || (env.frameId !== undefined && env.frameId !== null);
-        if (env.frameId !== undefined && env.frameId !== null && env.frameId !== identity.frameId && env.to !== token) {
-          return relay(env);
-        }
-        handleMessage(env, aimed);
+        // A message can name a frame two ways: the token the frame generated,
+        // and its frame number. The token is exact but goes stale the moment
+        // the document reloads, and an extension answering a request it
+        // received before that reload would otherwise have its reply relayed
+        // past the frame that is waiting for it. Either match counts.
+        var addressed = env.to != null || (env.frameId !== undefined && env.frameId !== null);
+        var mine =
+          env.to === token || (env.frameId !== undefined && env.frameId !== null && env.frameId === identity.frameId);
+        if (addressed && !mine) return relay(env);
+        handleMessage(env, addressed);
         return relay(env);
       }
       case "evt":
