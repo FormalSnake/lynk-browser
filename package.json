@@ -9,9 +9,10 @@
     "package": "nd package"
   },
   "dependencies": {
-    "@nativedesktop/react": "file:../nd-browser-wave/packages/react",
-    "@nativedesktop/native": "file:../nd-browser-wave/packages/native",
     "@nativedesktop/cli": "file:../nd-browser-wave/packages/nd",
+    "@nativedesktop/data": "file:../nd-browser-wave/packages/data",
+    "@nativedesktop/native": "file:../nd-browser-wave/packages/native",
+    "@nativedesktop/react": "file:../nd-browser-wave/packages/react",
     "react": "19.2.7"
   },
   "devDependencies": {
