@@ -13,7 +13,7 @@ const { windows } = await app.windows();
 if (windows.length !== 1) throw new Error(`expected 1 window, got ${windows.length}`);
 
 const tree = await app.tree();
-if (tree.root.type !== "window") throw new Error(`root node type=${tree.root.type}, want "window"`);
+if (tree.root.type !== "Window") throw new Error(`root node type=${tree.root.type}, want "Window"`);
 
 console.log("NB_STAGE0_OK");
 await app.close();
