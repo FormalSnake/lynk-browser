@@ -84,7 +84,7 @@ export function PrivateWindow({ onClose }: { onClose: () => void }): React.React
     id: t.id,
     title: t.title || (t.url ? displayUrl(t.url) : "New Tab"),
     caption: hostOf(t.url) || undefined,
-    iconName: "view-private-symbolic",
+    iconName: "view-conceal-symbolic",
     actionIds: ["close"],
     testID: `private-tab-${t.id}`,
   }));
@@ -193,7 +193,7 @@ export function PrivateWindow({ onClose }: { onClose: () => void }): React.React
             {active.url === "" && (
               <statuspage
                 testID="private-new-tab-page"
-                iconName="view-private-symbolic"
+                iconName="view-conceal-symbolic"
                 title="Private Browsing"
                 description="This window keeps no history, cookies or cache. Anything you download is still saved."
                 style={{ vexpand: true }}

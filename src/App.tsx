@@ -91,7 +91,7 @@ const COMMANDS: { id: string; title: string; hint: string; iconName: string }[] 
   { id: "reload", title: "Reload", hint: "Ctrl+R", iconName: "view-refresh-symbolic" },
   { id: "find", title: "Find in Page", hint: "Ctrl+F", iconName: "edit-find-symbolic" },
   { id: "downloads", title: "Downloads", hint: "Sidebar", iconName: "folder-download-symbolic" },
-  { id: "private", title: "New Private Window", hint: "Ctrl+Shift+P", iconName: "view-private-symbolic" },
+  { id: "private", title: "New Private Window", hint: "Ctrl+Shift+P", iconName: "view-conceal-symbolic" },
   { id: "settings", title: "Settings", hint: "Ctrl+Comma", iconName: "preferences-system-symbolic" },
   { id: "zoom-in", title: "Zoom In", hint: "Ctrl++", iconName: "zoom-in-symbolic" },
   { id: "zoom-out", title: "Zoom Out", hint: "Ctrl+-", iconName: "zoom-out-symbolic" },
