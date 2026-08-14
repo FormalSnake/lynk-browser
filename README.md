@@ -1,7 +1,13 @@
-# nativedesktop-app
+# NativeBrowser
 
-Scaffolded from the NativeDesktop template. Your UI lives in `src/`, renders to real native widgets,
-and runs on GTK4 with libadwaita on Linux or AppKit on macOS.
+A sidebar browser built on [NativeDesktop](https://github.com/FormalSnake/NativeDesktop). Vertical
+tabs, native chrome, one live `<webview>` per tab: WebKitGTK on Linux, WKWebView on macOS. There is
+no HTML in the interface. Every button, row and dialog is a real GTK4 or AppKit widget.
+
+It also runs Chrome extensions. WebKit has no support for them, so the work happens in the Bun
+process: a broker implements the `chrome.*` surface itself and injects content scripts as WebKit
+user scripts. Dark Reader MV3 installs from a folder, darkens pages, and its settings survive a
+restart.
 
 ## Run it
 
@@ -10,106 +16,93 @@ bun install
 bun run dev
 ```
 
-`bun run dev` is `nd dev`. It resolves the native host binary for your platform through
-`@nativedesktop/host` (the AppKit shell on macOS, the GTK host on Linux) and spawns it with
-`ND_DEV=1 ND_SCRIPT=src/main.tsx`. That gives you hot reload and the in-window crash-restart overlay.
+`bun run dev` is `nd dev`, which resolves the host binary for your platform and starts the app with
+hot reload. Force a backend with `nd dev --backend gtk` or `--backend appkit`.
 
-| Command | What it does |
+Extensions need fixtures, which are not in the repo:
+
+```bash
+bun scripts/fetch-fixtures.ts
+```
+
+## Test it
+
+Every acceptance test is a drive: a script that launches the real app, talks to it over the
+automation socket, and asserts on the real widget tree.
+
+| Command | Marker | What it covers |
+|---|---|---|
+| `scripts/headless-smoke.sh` | `NB_STAGE0_OK` | The app boots and answers automation |
+| `scripts/headless.sh bun scripts/browser-drive.ts` | `NB_MVP_OK` | Tabs, palette, downloads, session restore, padlock, find, context menu, private window, settings |
+| `scripts/headless-extensions.sh` | `NB_DARKREADER_MV3_OK` | Install flow, content scripts, messaging, popup, restart, disable |
+| `NB_EXT_FIXTURE=mv2 scripts/headless-extensions.sh` | `NB_DARKREADER_OK` | The same legs against an MV2 build |
+
+`scripts/headless.sh` wraps a command in a headless weston compositor and pins the GTK theme, icon
+theme and fonts. Without that, a screenshot taken from a drive shows the developer's own desktop
+theme instead of stock Adwaita, and three colour findings in this project's review history turned
+out to be exactly that mistake. On macOS the drives run headful against the AppKit host, with
+`ND_BACKEND=appkit`.
+
+`ND_DRIVE_TIMEOUT_MS` scales every wait at once. Raise it when the machine is loaded.
+
+## What works
+
+Sidebar tabs carry the site's own favicon and a close button, and each one owns a live webview that
+survives switching away and back. The address bar is a command palette: it ranks the address you
+typed first, then open tabs, then history, then app commands.
+
+Beyond that: downloads, session restore, per-host zoom, find in page with a match count, a native
+page context menu, a TLS padlock, a private window on an ephemeral profile, and a settings window
+whose search engine, homepage and restore-on-launch all take effect.
+
+## Extension support
+
+| Area | State |
 |---|---|
-| `nd dev [entry]` | Dev mode. `entry` defaults to `src/main.tsx`. |
-| `nd dev --backend gtk\|appkit` | Force a backend. Also reads `ND_BACKEND`. |
-| `nd build` | Compile to `dist/` through Babel, the same as `bun run compile`. |
-| `nd package [mac\|linux]` | Assemble and sign the platform bundle (`.app` / AppImage). Platform defaults to the host. Also `bun run package`. |
-| `nd doctor [--json]` | Check packaging and toolchain readiness for this directory. |
+| MV3 (service worker, `action`, `scripting`) | Works. Dark Reader MV3 is the acceptance gate |
+| MV2 (background page, `browserAction`, `tabs.executeScript`) | Works, except Dark Reader's per-site `addSite` command |
+| Install from an unpacked folder | Works, with a permission prompt before anything runs |
+| Install from a `.crx` or `.zip` | Works, CRX2 and CRX3 |
+| Install from a Chrome Web Store address | Works, through the store's own CRX endpoint |
+| `runtime`, `storage`, `tabs`, `scripting`, `i18n`, `alarms`, `commands`, `contextMenus`, `notifications`, `webNavigation`, `windows`, `permissions` | Implemented |
+| `declarativeNetRequest` | Absent on purpose, so feature detection fails correctly |
+| `content_security_policy` on extension pages | Not enforced. The `chrome.*` shim arrives as an injected user script and WebKitGTK applies the page's CSP to it, so serving the manifest policy switches the runtime off on the pages the policy governs |
+| `web_accessible_resources` | Parsed and used for CORS headers, not enforced as an access boundary |
 
-App identity (bundle id, name, icon, file associations, URL schemes) and packaging options live in
-`nativedesktop.config.ts`; `nd package` reads them.
+Extension pages, popups and background pages are all served over a `chrome-extension://` scheme
+registered with the engine, CORS-enabled and marked as a secure context on GTK. WebKit's Cocoa API
+exposes neither flag, so on macOS cross-origin reads work through response headers and a secure
+context is not available at all.
 
-`nd dev` does not set `NATIVE_AUTOMATION=1`. Export it in your shell first if you want the
-automation socket.
-
-If `nativedesktop.config.ts` declares app-owned native plugins, `nd` runs their cached build
-commands first and passes the resulting shared-library paths to the prebuilt host. It never rebuilds
-NativeDesktop itself. See `docs/native-components.md` in the framework checkout and `native/README.md`
-here.
-
-When you are iterating on the framework's own Zig or Swift host rather than this app, invoke the raw
-form against your freshly built binary, since `nd dev` prefers the prebuilt one:
+## Package it
 
 ```bash
-ND_DEV=1 ND_SCRIPT=src/main.tsx <path-to-nd-host-binary>
+bunx nd package mac     # dist/mac/NativeBrowser.app, ad-hoc signed
+bunx nd package linux   # dist/linux/AppDir plus an AppImage
 ```
 
-## Writing components
+The app icon is `assets/compass.svg`, declared as a layered icon in
+`nativedesktop.config.ts`. macOS gets an Icon Composer bundle compiled to `Assets.car` and `.icns`;
+Linux gets the same art flattened into the hicolor theme. On a box without appimagetool the packager
+falls back to a bare squashfs image, which cannot be executed directly. Run `dist/linux/AppDir/AppRun`
+to test the payload there.
 
-Import hooks from `@nativedesktop/react`, not from `react`:
+## Layout
 
-```tsx
-import { useState } from "@nativedesktop/react";
-```
+| Path | What lives there |
+|---|---|
+| `src/App.tsx` | The browser window: sidebar, header bar, tabs, palette, find bar, context menu |
+| `src/PrivateWindow.tsx` | The private window and its ephemeral profile |
+| `src/extensions/` | The broker. `host.ts` is the API dispatch, `bootstrap.ts` is the injected `chrome.*` shim |
+| `src/lib/` | Session, history, downloads, favicons, settings, URL parsing |
+| `scripts/` | The drives and their headless wrappers |
+| `screenshots/` | Drive output. `screenshots/final/` is the reviewed set |
 
-Hot reload re-evaluates the entire module graph, and a bare `react` import resolves to a fresh
-instance whose dispatcher is attached to nothing. Shared, non-component `.ts` modules are the
-exception: write those against `react` and the build rewrites the import for you.
+## Known gaps
 
-## How this app links to the framework
-
-`package.json` depends on the published npm packages: `@nativedesktop/react` (the renderer),
-`@nativedesktop/native` (native-plugin headers), and `@nativedesktop/cli` (the `nd` bin, which pulls
-in `@nativedesktop/host` and the prebuilt host binary for your platform). Optional additions from
-the same family: `@nativedesktop/data` (worker-backed SQLite), `@nativedesktop/rpc` (resilient
-JSON-RPC client for your own services), `@nativedesktop/panes` (split-pane tree over `<paned>`), and
-`@nativedesktop/test` (automation harness for scripted app tests).
-
-When scaffolded from a framework checkout, `scripts/new-app.sh` rewrites those registry versions to
-`file:` paths into the checkout so the app exercises your local build instead of npm.
-
-`@nativedesktop/react` declares `react` as a `peerDependency` rather than a regular dependency, so
-Bun hoists one shared `react` for this app and the linked package. That is what prevents the
-two-copies "Invalid hook call" failure.
-
-## Errors and settings
-
-Two framework defaults worth knowing from day one:
-
-- **Async errors do not kill the app by default.** An unhandled promise rejection is reported and
-  the app keeps running; an uncaught exception is fatal (the host paints the crash overlay). Tune it
-  with `setUnhandledErrorPolicy` and subscribe with `onUnhandledError`, both from
-  `@nativedesktop/react`.
-- **Settings persist through `createStore`.** A versioned JSON file under the app data dir; call
-  `await store.load()` before `render()` and `store.get()` is synchronous in every component, with
-  `useStoreValue(store)` for reactive reads. Writes are debounced and crash-safe.
-
-## React Compiler
-
-Off by default, and working when you turn it on. `babel-plugin-react-compiler@1.0.0` runs cleanly as
-a build pre-pass and its output runs correctly against `@nativedesktop/react`. It has to be a
-pre-pass because Bun's runtime transpiler does not run Babel plugins.
-
-```bash
-bun run compile   # babel src -> dist, then run dist/main.tsx
-```
-
-`babel.config.json` runs three plugins in one pass:
-
-- `babel-plugin-react-compiler` for the memoization transform.
-- `@babel/plugin-transform-react-jsx` to turn JSX into `@nativedesktop/react/jsx-runtime` calls. This
-  leaves no JSX syntax for Bun to pragma-select on, avoiding its undocumented dev-vs-prod runtime
-  selection entirely.
-- `babel-plugin-nativedesktop` to rewrite `react` hook imports to `@nativedesktop/react`, so shared
-  hooks written the normal way for web or React Native still resolve to the pinned instance.
-
-`dist/` is not part of the dev loop. `nd dev` still points at uncompiled `src/`, so hot reload and
-react-refresh are unaffected. For a compiled production run:
-
-```bash
-bun run compile && ND_SCRIPT=dist/main.tsx <path-to-nd-host-binary>
-```
-
-## Why not `bun create`
-
-`bun create ./template <dest>` does not work: Bun only treats `./.bun-create/<name>` or
-`$HOME/.bun-create/<name>` as local templates, so a relative path falls through to
-`bunx create-template` against npm. `bun create <name> <dest>` works once you have copied the
-template into `./.bun-create/<name>` yourself, but that skips the name rewrite, the `docs/agents/*`
-seeding, and the `file:` path fixups. Use `scripts/new-app.sh <dest>`.
+- The page context menu is a popover anchored to the content pane, not to the click point. Neither
+  backend exposes a point-anchored popup menu.
+- The find bar has no Escape binding, because the framework surfaces no key events to the app.
+- The action popup is a top-level window rather than a panel under its toolbar button, and it is
+  sized when it opens rather than following its content.
+- MV2's restore leg is red at the current framework revision. MV3, the headline gate, is green.

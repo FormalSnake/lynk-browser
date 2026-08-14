@@ -15,5 +15,6 @@
     "noEmit": true,
     "types": ["bun", "react"]
   },
-  "include": ["**/*.ts", "**/*.tsx"]
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules", "dist"]
 }

@@ -13,12 +13,26 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { launchApp, type AppHandle, type JsonNode } from "@nativedesktop/test";
+import {
+  fail,
+  findAcross,
+  shoot as capture,
+  step,
+  textsUnder as textsUnderIn,
+  walk,
+  waitAcross as waitAcrossIn,
+  waitRows as rowsMatching,
+} from "./drive-lib.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const SHOTS = `${ROOT}/screenshots`;
 const WHICH = process.env.NB_EXT_FIXTURE === "mv2" ? "mv2" : "mv3";
+// The Linux gate leaves this unset and stays on gtk; ND_BACKEND=appkit runs the
+// same legs against the AppKit host. Each backend keeps its own profile so a
+// run on one never reads the other's registry.
+const BACKEND = process.env.ND_BACKEND === "appkit" ? "appkit" : "gtk";
 const FIXTURE = `${ROOT}/fixtures/darkreader-${WHICH}`;
-const PROFILE = `/tmp/nb-ext-profile-${WHICH}`;
+const PROFILE = BACKEND === "gtk" ? `/tmp/nb-ext-profile-${WHICH}` : `/tmp/nb-ext-profile-${WHICH}-${BACKEND}`;
 const MARKER = WHICH === "mv2" ? "NB_DARKREADER_OK" : "NB_DARKREADER_MV3_OK";
 // Every wait here scales off one number: the same drive runs on an idle laptop
 // and inside a full framework gate sweep, where everything is several times
@@ -87,59 +101,16 @@ const base = `http://127.0.0.1:${server.port}`;
 
 // ---------------------------------------------------------------- helpers ---
 
-function fail(message: string): never {
-  throw new Error(message);
-}
-
-async function step<T>(what: string, run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (e) {
-    throw new Error(`${what}: ${(e as Error).message}`);
-  }
-}
-
 async function shoot(app: AppHandle, name: string, window?: number): Promise<void> {
-  const shot = await app.screenshot(`${SHOTS}/${name}.png`, { minBytes: 1000, window });
-  console.log(`  screenshot ${name}.png ${shot.width}x${shot.height}`);
-}
-
-function walk(node: JsonNode, visit: (n: JsonNode) => void): void {
-  visit(node);
-  for (const child of node.children) walk(child, visit);
-}
-
-/// getTree walks one window at a time, and half of this UI lives in windows
-/// that only exist while a flow is open, so lookups sweep every window. When
-/// the testId names a <window> itself, screenshot `node.ref` rather than the
-/// window it was found under — the search returns the first window whose
-/// subtree contains it, which for a nested window is its opener.
-async function findAcross(app: AppHandle, testId: string): Promise<{ node: JsonNode; window: number } | null> {
-  const { windows } = await app.windows();
-  for (const info of windows) {
-    const node = await app.find(testId, { window: info.ref });
-    if (node) return { node, window: info.ref };
-  }
-  return null;
+  return capture(app, SHOTS, name, window);
 }
 
 async function waitAcross(app: AppHandle, testId: string, timeoutMs = PATIENCE): Promise<{ node: JsonNode; window: number }> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const found = await findAcross(app, testId);
-    if (found) return found;
-    await Bun.sleep(150);
-  }
-  return fail(`timed out waiting for ${testId} in any window`);
+  return waitAcrossIn(app, testId, timeoutMs);
 }
 
 async function textsUnder(app: AppHandle, prefix: string, window: number): Promise<string[]> {
-  const tree = await app.tree(window);
-  const out: string[] = [];
-  walk(tree.root, (n) => {
-    if (n.testID?.startsWith(prefix) && n.text) out.push(n.text);
-  });
-  return out;
+  return textsUnderIn(app, prefix, window);
 }
 
 /// The id the app derived for the fixture, read back off the UI rather than
@@ -185,10 +156,15 @@ async function mainWindow(app: AppHandle): Promise<number> {
   return found.window;
 }
 
+// On GTK the omnibox is the flat pill button that opens the palette, so
+// clicking it is the real user path. On AppKit the same slot renders a
+// <searchinput> (App.tsx's addressIsField), which has no click handler at all,
+// so the palette is opened the other way a person would: the Address item in
+// the File menu, which both backends bind to Ctrl+L.
 async function openPalette(app: AppHandle): Promise<void> {
   const node = await app.find("palette");
   if (node?.visible) return;
-  await app.click("omnibox");
+  await app.click(BACKEND === "appkit" ? "menu-address" : "omnibox");
   await app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE });
 }
 
@@ -215,14 +191,7 @@ async function pageTestId(app: AppHandle, index: number): Promise<string> {
 }
 
 async function waitRows(app: AppHandle, check: (rows: string[]) => boolean, what: string): Promise<string[]> {
-  const deadline = Date.now() + PATIENCE;
-  let last: string[] = [];
-  while (Date.now() < deadline) {
-    last = await tabRows(app);
-    if (check(last)) return last;
-    await Bun.sleep(150);
-  }
-  return fail(`timed out waiting for ${what}; sidebar rows were ${JSON.stringify(last)}`);
+  return rowsMatching(app, "tab-list", check, what, PATIENCE);
 }
 
 // --------------------------------------------------------------- darkness ---
@@ -370,6 +339,10 @@ async function listTestIds(app: AppHandle): Promise<string[]> {
   return out;
 }
 
+/// The popup is loaded when its URL is the extension's popup page AND that page
+/// has PAINTED something. A URL match alone returns while the popup's own
+/// bundle is still booting, which is how the first capture of this window came
+/// out blank: the shot beat the render, not the load.
 async function waitPopupLoaded(app: AppHandle, id: string): Promise<string> {
   const deadline = Date.now() + PATIENCE;
   let last = "";
@@ -382,11 +355,20 @@ async function waitPopupLoaded(app: AppHandle, id: string): Promise<string> {
       const info = await app.webviewInfo({ testId: `ext-popup-view-${id}`, window: window.ref }).catch(() => null);
       if (!info) continue;
       last = `${info.title ?? ""} @ ${info.url ?? ""}`;
-      if ((info.url ?? "").includes("/ui/popup/index.html")) return last;
+      if (!(info.url ?? "").includes("/ui/popup/index.html")) continue;
+      const painted = await app
+        .evalInPage(
+          { testId: `ext-popup-view-${id}`, window: window.ref },
+          "String(document.body ? document.body.innerText.trim().length : 0)",
+        )
+        .catch(() => null);
+      const chars = Number(painted?.value ?? 0);
+      last = `${last} (${chars} chars)`;
+      if (chars > 0) return last;
     }
     await Bun.sleep(300);
   }
-  return fail(`the popup never loaded the extension page (last ${JSON.stringify(last)})`);
+  return fail(`the popup never rendered the extension page (last ${JSON.stringify(last)})`);
 }
 
 // ------------------------------------------------------------------ drive ---
@@ -394,12 +376,22 @@ async function waitPopupLoaded(app: AppHandle, id: string): Promise<string> {
 function launch(): Promise<AppHandle> {
   return launchApp({
     entry: "src/main.tsx",
-    backend: "gtk",
+    backend: BACKEND,
     cwd: ROOT,
     // A D-Bus name, so no hyphens: GTK accepts an invalid application id and
     // then degrades silently. Distinct per fixture so two runs never collide on
     // GApplication's single-instance check.
-    env: { NB_STORE_DIR: PROFILE, NB_TEST_HOOKS: "1", ND_APP_ID: `dev.nativebrowser.ext.${WHICH}` },
+    env: {
+      NB_STORE_DIR: PROFILE,
+      NB_TEST_HOOKS: "1",
+      ND_APP_ID: `dev.nativebrowser.ext.${WHICH}`,
+      // The restored-tab leg races the background page's boot: a tab that
+      // gives up waiting loads without content scripts and comes back
+      // unthemed. Under a full gate sweep the product's 8s is not enough.
+      // Half the drive's patience, so a background page that is genuinely
+      // broken still prints its diagnostic before the drive times out.
+      NB_BACKGROUND_READY_MS: String(Math.max(8000, Math.floor(PATIENCE / 2))),
+    },
     // One entry per "Install from…" click: the folder picker answers with the
     // unpacked fixture, which is exactly what a person would have chosen.
     dialogScript: { "dialog.openFile": [[FIXTURE], [FIXTURE]] },
@@ -419,7 +411,7 @@ function launch(): Promise<AppHandle> {
 let app = await launch();
 
 try {
-  console.log(`fixture: ${FIXTURE}`);
+  console.log(`fixture: ${FIXTURE} on ${BACKEND}`);
 
   // 0 — a tab already open on a light page, before anything is installed. This
   // is what "an existing tab" means in leg 2, and the baseline every later

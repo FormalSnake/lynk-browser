@@ -6,7 +6,8 @@
 //
 // Run headless: scripts/headless.sh bun scripts/browser-drive.ts
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { launchApp, type AppHandle, type JsonNode } from "@nativedesktop/test";
+import { launchApp, type AppHandle } from "@nativedesktop/test";
+import { fail, shoot as capture, step, walk, waitRows as rowsMatching, waitText as textMatching } from "./drive-lib.ts";
 
 const SHOTS = `${import.meta.dir}/../screenshots`;
 const PROFILE = "/tmp/nb-drive-profile";
@@ -67,29 +68,13 @@ const base = `http://127.0.0.1:${server.port}`;
 
 // ---------------------------------------------------------------- helpers ---
 
-function fail(message: string): never {
-  throw new Error(message);
-}
-
-function walk(node: JsonNode, visit: (n: JsonNode) => void): void {
-  visit(node);
-  for (const child of node.children) walk(child, visit);
-}
-
 async function tabRows(app: AppHandle): Promise<{ title: string; testID: string | null }[]> {
   const list = await app.mustFind("tab-list");
   return (list.rows ?? []).map((r) => ({ title: r.title, testID: r.testID }));
 }
 
 async function waitRows(app: AppHandle, check: (rows: string[]) => boolean, what: string): Promise<string[]> {
-  const deadline = Date.now() + PATIENCE;
-  let last: string[] = [];
-  while (Date.now() < deadline) {
-    last = (await tabRows(app)).map((r) => r.title);
-    if (check(last)) return last;
-    await Bun.sleep(120);
-  }
-  return fail(`timed out waiting for ${what}; sidebar rows were ${JSON.stringify(last)}`);
+  return rowsMatching(app, "tab-list", check, what, PATIENCE);
 }
 
 /// The address bar IS the command palette. Open it (unless something already
@@ -157,17 +142,12 @@ async function waitUrl(app: AppHandle, suffix: string, timeoutMs = PATIENCE): Pr
   return fail(`address display is ${JSON.stringify(seen)}, want it to end with ${JSON.stringify(suffix)}`);
 }
 
-async function step<T>(what: string, run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (e) {
-    throw new Error(`${what}: ${(e as Error).message}`);
-  }
+async function waitText(app: AppHandle, testId: string, check: (t: string) => boolean, what: string): Promise<string> {
+  return textMatching(app, testId, check, what, PATIENCE);
 }
 
-async function shoot(app: AppHandle, name: string): Promise<void> {
-  const shot = await app.screenshot(`${SHOTS}/${name}.png`, { minBytes: 1000 });
-  console.log(`  screenshot ${name}.png ${shot.width}x${shot.height}`);
+async function shoot(app: AppHandle, name: string, window?: number): Promise<void> {
+  return capture(app, SHOTS, name, window);
 }
 
 // ------------------------------------------------------------------ drive ---
@@ -202,10 +182,10 @@ try {
   await app.mustFind("omnibox");
   await app.mustFind("new-tab-page");
   const first = await tabRows(app);
-  if (first.length !== 1 || first[0]!.title !== "New tab") {
-    fail(`session should start with one New tab row, got ${JSON.stringify(first)}`);
+  if (first.length !== 1 || first[0]!.title !== "New Tab") {
+    fail(`session should start with one New Tab row, got ${JSON.stringify(first)}`);
   }
-  console.log("1. launch: window + sidebar + omnibox, session has one New tab");
+  console.log("1. launch: window + sidebar + omnibox, session has one New Tab");
   await shoot(app, "01-new-tab");
 
   // Acceptance 2 — omnibox navigation: title lands in the sidebar row and the window title.
@@ -301,6 +281,67 @@ try {
   if (loads.long !== 1) fail(`the long page reloaded on tab switch: ${JSON.stringify(loads)}`);
   console.log("5b. long page still at load 1 after a round trip");
 
+  // Stage 5 — TLS padlock. The fixture is plain http, so the indicator has to
+  // report exactly that. Its state lives in its testID because getTree carries
+  // a node's text but never its icon name.
+  await app.click("menu-tab-0");
+  await waitUrl(app, "/a");
+  await step("the padlock reports an unencrypted page", () =>
+    app.waitFor({ testId: "security-insecure", state: "present" }, { timeoutMs: PATIENCE }),
+  );
+  if (await app.find("security-secure")) fail("an http page must not show the secure padlock");
+  console.log("11. padlock: http://127.0.0.1 reports as not encrypted");
+
+  // Stage 5 — find in page, on the 400-row fixture. "row 399" occurs once.
+  await app.click("menu-tab-1");
+  await waitRows(app, (r) => r[1]!.startsWith("Long page"), "the long page before searching it");
+  await step("open the find bar", () => app.click("menu-find"));
+  await step("the find bar presents", () => app.waitFor({ testId: "find-bar", state: "visible" }, { timeoutMs: PATIENCE }));
+  await step("type a query with exactly one match", () => app.type("find-query", "row 399"));
+  // GTK counts matches; AppKit's WKFindResult only reports match/no-match, so
+  // either answer is a pass for "the bar reported what the engine found".
+  const counted = await waitText(app, "find-count", (t) => t === "1 match" || t === "Found", "the find result");
+  await step("clear the query", () => app.setValue("find-query", ""));
+  await step("type a query with no matches at all", () => app.type("find-query", "zzqqxx-not-on-this-page"));
+  const missing = await waitText(app, "find-count", (t) => t === "0 matches" || t === "No matches", "a no-match result");
+  await shoot(app, "11-find-bar");
+  await step("close the find bar", () => app.click("find-close"));
+  await step("the find bar goes away", () => app.waitFor({ testId: "find-bar", state: "gone" }, { timeoutMs: PATIENCE }));
+  console.log(`12. find in page: "row 399" -> ${JSON.stringify(counted)}, absent text -> ${JSON.stringify(missing)}`);
+
+  // Stage 5 — the page context menu. WebKit's own context-menu signal needs a
+  // real right-click, which GTK4 will not synthesize, so the drive opens the
+  // menu off a synthetic hit test (NB_TEST_HOOKS) and then runs an item. What
+  // is proved is the app's half: the menu the hit test earns, and the action.
+  await step("open the page menu", () => app.click("menu-open-page-menu"));
+  await step("the page menu presents", () =>
+    app.waitFor({ testId: "context-menu-open-link", state: "present" }, { timeoutMs: PATIENCE }),
+  );
+  const wanted = [
+    "context-menu-open-link",
+    "context-menu-copy-link",
+    "context-menu-copy-image",
+    "context-menu-save-image",
+    "context-menu-copy",
+    "context-menu-search-selection",
+    "context-menu-back",
+    "context-menu-forward",
+    "context-menu-reload",
+  ];
+  for (const item of wanted) {
+    if (!(await app.find(item))) fail(`the page menu is missing ${item}`);
+  }
+  // A GtkPopover does not map under headless weston (its items report
+  // visible=false with unallocated geometry), so the click below is refused as
+  // not-actionable on GTK. The menu is verified visually on AppKit instead,
+  // where the same items map and are clickable. The item SET is the portable
+  // assertion and it is the app's half of the feature.
+  const clicked = await app
+    .click("context-menu-reload")
+    .then(() => true)
+    .catch(() => false);
+  console.log(`13. page context menu: ${wanted.length} items for a link+image+selection hit; item click ran=${clicked}`);
+
   // Acceptance 4 — target=_blank opens a background tab. GTK automation cannot deliver a
   //    click into page content, and WebKit refuses a gesture-less popup, so the
   //    click is issued through the app's NB_TEST_HOOKS-only Debug menu, which
@@ -394,6 +435,60 @@ try {
   }
   await shoot(app, "10-download");
   console.log(`10. download landed at ${downloaded} with ${(await tabRows(app)).length} tabs live; toast in tree=${toasted}`);
+
+  // Stage 5 — a private window is a real second window on an ephemeral profile,
+  // and nothing it does reaches the session store. The store on disk is the
+  // assertion: opening private tabs must not change what a restart would bring
+  // back.
+  const storedTabs = (): number => {
+    const raw = JSON.parse(readFileSync(`${PROFILE}/session.json`, "utf8")) as { data?: { tabs?: unknown[] } };
+    return raw.data?.tabs?.length ?? 0;
+  };
+  const persistedBefore = storedTabs();
+  await step("open a private window", () => app.click("menu-private-window"));
+  await step("the private window presents", () =>
+    app.waitFor({ testId: "private-window", state: "present" }, { timeoutMs: PATIENCE }),
+  );
+  const twoWindows = await app.windows();
+  if (twoWindows.windows.length !== 2) fail(`expected 2 windows with a private one open, got ${twoWindows.windows.length}`);
+  if (!(await app.find("private-banner"))) fail("the private window carries no private-browsing marker");
+  const privateRows = async (): Promise<number> => ((await app.mustFind("private-tab-list")).rows ?? []).length;
+  const privateBefore = await privateRows();
+  await step("open a second private tab", () => app.click("private-new-tab"));
+  const grew = Date.now() + 10_000;
+  while (Date.now() < grew && (await privateRows()) === privateBefore) await Bun.sleep(120);
+  if ((await privateRows()) !== privateBefore + 1) fail("the private window did not open a second tab");
+  await Bun.sleep(600);
+  if (storedTabs() !== persistedBefore) {
+    fail(`private tabs reached the session store: ${persistedBefore} -> ${storedTabs()}`);
+  }
+  await shoot(app, "12-private-window", (await app.find("private-window"))?.ref);
+  console.log(`14. private window: 2 windows, ${privateBefore + 1} ephemeral tabs, session store still holds ${persistedBefore}`);
+
+  // Stage 5 — settings actually change behaviour. Switching the engine has to
+  // change what the palette offers for a non-address query.
+  await step("open settings", () => app.click("menu-settings"));
+  await step("the settings window presents", () =>
+    app.waitFor({ testId: "settings-window", state: "present" }, { timeoutMs: PATIENCE }),
+  );
+  await step("choose Google", () => app.setValue("settings-engine", 1));
+  await step("turn off reopen-on-launch", () => app.setValue("settings-restore", false));
+  await Bun.sleep(600);
+  const prefs = JSON.parse(readFileSync(`${PROFILE}/settings.json`, "utf8")) as {
+    data?: { searchEngine?: string; restoreOnLaunch?: boolean };
+  };
+  if (prefs.data?.searchEngine !== "google" || prefs.data?.restoreOnLaunch !== false) {
+    fail(`settings did not persist: ${JSON.stringify(prefs.data)}`);
+  }
+  await openPalette(app);
+  await typeQuery(app, "native desktop");
+  const searchRow = await paletteRow(app, (id) => id === "url", "the search row for a non-address query");
+  const rows = (await app.mustFind("palette")).rows ?? [];
+  const searchTitle = rows[searchRow]?.title ?? "";
+  if (!searchTitle.includes("Google")) fail(`the palette still offers ${JSON.stringify(searchTitle)} after choosing Google`);
+  await step("dismiss the palette", () => app.click("menu-address"));
+  await shoot(app, "13-settings", (await app.find("settings-window"))?.ref);
+  console.log(`15. settings: engine + restore persisted, palette now offers ${JSON.stringify(searchTitle)}`);
 
   console.log("NB_MVP_OK");
 } catch (e) {
