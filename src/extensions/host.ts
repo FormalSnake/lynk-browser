@@ -117,6 +117,9 @@ const FONT_LIST = [
   "Noto Sans",
 ].map((name) => ({ fontId: name, displayName: name }));
 
+/// How long a tab waits for extension background pages before loading anyway.
+const BACKGROUND_READY_TIMEOUT_MS = 8000;
+
 const POPUP_DEFAULT = { width: 380, height: 600 };
 const POPUP_MIN = 25;
 const POPUP_MAX = { width: 800, height: 600 };
@@ -185,6 +188,8 @@ export class ExtensionHost {
   private queuedForBackground = new Map<string, Record<string, unknown>[]>();
   /** Background pages whose document has finished loading, listeners and all. */
   private backgroundLoaded = new Set<string>();
+  /** Set once the wait for background pages has been given up on. */
+  private backgroundDeadlinePassed = false;
 
   private popup: PopupState | null = null;
   private prompt: InstallPrompt | null = null;
@@ -247,6 +252,33 @@ export class ExtensionHost {
     this.revision += 1;
     for (const listener of this.listeners) listener();
   }
+
+  /// Whether every enabled extension's background page is up.
+  ///
+  /// Tabs hold their navigation until this is true, because a content script
+  /// that connects before the background page can answer gets one reply — the
+  /// wrong one — and never asks again. Chrome guarantees this ordering by
+  /// construction; here it has to be arranged. The deadline keeps a broken
+  /// extension from holding the browser hostage.
+  backgroundsReady(): boolean {
+    if (this.backgroundDeadlinePassed) return true;
+    const waiting = this.enabledExtensions().filter(
+      (ext) =>
+        (ext.manifest.backgroundPage !== null || ext.manifest.serviceWorker !== null) &&
+        !this.backgroundLoaded.has(ext.id),
+    );
+    if (waiting.length === 0) return true;
+    if (!this.backgroundDeadline) {
+      this.backgroundDeadline = setTimeout(() => {
+        this.backgroundDeadlinePassed = true;
+        console.error("[nativebrowser] a background page did not load in time; tabs are proceeding without it");
+        this.notify();
+      }, BACKGROUND_READY_TIMEOUT_MS);
+    }
+    return false;
+  }
+
+  private backgroundDeadline: ReturnType<typeof setTimeout> | null = null;
 
   viewFor(kind: "background" | "popup", extensionId: string): WebViewRef | null {
     return (kind === "background" ? this.backgroundViews : this.popupViews).get(extensionId) ?? null;
@@ -803,6 +835,8 @@ export class ExtensionHost {
     const waiting = this.queuedForBackground.get(frame.surface.extensionId) ?? [];
     this.queuedForBackground.delete(frame.surface.extensionId);
     for (const envelope of waiting) this.deliver(frame.surface, envelope);
+    // Tabs are holding their navigation until this is true.
+    this.notify();
   }
 
   private async onCall(token: string, env: Record<string, unknown>): Promise<void> {

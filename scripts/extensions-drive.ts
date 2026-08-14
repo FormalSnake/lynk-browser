@@ -110,7 +110,10 @@ function walk(node: JsonNode, visit: (n: JsonNode) => void): void {
 }
 
 /// getTree walks one window at a time, and half of this UI lives in windows
-/// that only exist while a flow is open, so lookups sweep every window.
+/// that only exist while a flow is open, so lookups sweep every window. When
+/// the testId names a <window> itself, screenshot `node.ref` rather than the
+/// window it was found under — the search returns the first window whose
+/// subtree contains it, which for a nested window is its opener.
 async function findAcross(app: AppHandle, testId: string): Promise<{ node: JsonNode; window: number } | null> {
   const { windows } = await app.windows();
   for (const info of windows) {
@@ -434,7 +437,7 @@ try {
   await step("open the extensions manager", () => app.click("menu-extensions-manage"));
   const manager = await waitAcross(app, "ext-manager-window");
   await app.mustFind("ext-manager-empty", { window: manager.window });
-  await shoot(app, `${WHICH}-01-manager-empty`, manager.window);
+  await shoot(app, `${WHICH}-01-manager-empty`, manager.node.ref);
 
   await step("choose the unpacked extension folder", () => app.click("ext-manager-add-folder"));
   const prompt = await waitAcross(app, "ext-prompt-window");
@@ -446,7 +449,7 @@ try {
   for (const wanted of WANT_WARNINGS) {
     if (!warnings.includes(wanted)) fail(`the prompt is missing "${wanted}"; it showed ${JSON.stringify(warnings)}`);
   }
-  await shoot(app, `${WHICH}-02-permission-prompt`, prompt.window);
+  await shoot(app, `${WHICH}-02-permission-prompt`, prompt.node.ref);
   console.log(`1. install flow: folder picker -> permission prompt listing ${JSON.stringify(warnings)}`);
 
   // Nothing of the extension runs until Add.
@@ -490,7 +493,7 @@ try {
   await step("open the action popup", () => app.click(`ext-action-${id}`));
   const popup = await waitAcross(app, "ext-popup-window");
   const popupTitle = await waitPopupLoaded(app, id);
-  await shoot(app, `${WHICH}-05-popup`, popup.window);
+  await shoot(app, `${WHICH}-05-popup`, popup.node.ref);
   console.log(`3. popup window loaded the extension's own page (${popupTitle})`);
   await step("close the popup", () => app.click(`ext-action-${id}`));
 

@@ -123,6 +123,10 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   // until this resolves.
   const [schemeReady, setSchemeReady] = useState(false);
   const { views: extensionViews } = useExtensionState(extensions);
+  // A content script that connects before its extension's background page can
+  // answer gets one reply, the wrong one, and never asks again. Chrome starts
+  // the background first by construction; here the tabs wait for it.
+  const extensionsReady = extensions.backgroundsReady();
 
   useMountEffect(() => {
     webviewEngine
@@ -727,7 +731,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                           extensions.armTabView(t.id, node as NdNodeRef<"webview">);
                           setArmedTabs((a) => (a[t.id] ? a : { ...a, [t.id]: true }));
                         }}
-                        url={armedTabs[t.id] ? t.url : ""}
+                        url={armedTabs[t.id] && extensionsReady ? t.url : ""}
                         testID={`page-${t.id}`}
                         style={{ hexpand: true, vexpand: true }}
                         onScriptMessage={(e) => {
