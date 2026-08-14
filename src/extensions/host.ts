@@ -10,7 +10,13 @@ import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs
 import { extname, resolve } from "node:path";
 import { executeJavaScript, notifications, sendCommand, type NdNodeRef } from "@nativedesktop/react";
 
-import { BRIDGE_HANDLER, bootstrapSource, contentScriptWrapper, contentStyleWrapper } from "./bootstrap.ts";
+import {
+  BRIDGE_HANDLER,
+  bootstrapSource,
+  contentScriptWrapper,
+  contentStyleWrapper,
+  type ContextKind,
+} from "./bootstrap.ts";
 import { extractZip, idFromPath, isCrx, parseCrx } from "./crx.ts";
 import { loadMessages, parseManifest, pickIcon, type ExtensionManifest } from "./manifest.ts";
 import { compileMatcher, toWebKitPatterns, type CompiledMatcher } from "./match-patterns.ts";
@@ -28,6 +34,16 @@ import {
   writeArea,
   type StorageArea,
 } from "./registry.ts";
+import {
+  CHROME_VERSION,
+  WEBSTORE_HANDLER,
+  WEBSTORE_MATCH,
+  WEBSTORE_SURFACE,
+  chromeUserAgent,
+  isWebstoreUrl,
+  parseWebstoreInstall,
+  webstoreHookSource,
+} from "./webstore.ts";
 import type { Messages } from "./i18n.ts";
 
 type WebViewRef = NdNodeRef<"webview">;
@@ -58,6 +74,9 @@ export interface ExtensionView {
   description: string;
   enabled: boolean;
   iconPath: string | null;
+  /** The same icon as a `data:` URL, for `<button iconData>` / `<row iconData>`,
+   * which take bytes rather than a path. */
+  iconData: string | undefined;
   title: string;
   badge: string;
   hasPopup: boolean;
@@ -72,6 +91,10 @@ export interface InstallPrompt {
   iconPath: string | null;
   warnings: string[];
   permissions: string[];
+  /** `install` is the pre-enable consent gate; `permissions` is an already
+   * installed extension asking for more through `chrome.permissions.request`.
+   * Same dialog, different verb and a different set of consequences. */
+  kind: "install" | "permissions";
 }
 
 export interface PopupState {
@@ -118,7 +141,12 @@ const FONT_LIST = [
 ].map((name) => ({ fontId: name, displayName: name }));
 
 /// How long a tab waits for extension background pages before loading anyway.
-const BACKGROUND_READY_TIMEOUT_MS = 8000;
+/// 8s is the product answer: long enough for a real extension to boot, short
+/// enough that a broken one does not hold the browser hostage. A loaded CI box
+/// is slower than any user's machine, so the drives raise it rather than race
+/// it (`NB_BACKGROUND_READY_MS`).
+const BACKGROUND_READY_TIMEOUT_MS = Number(process.env.NB_BACKGROUND_READY_MS ?? 8000);
+
 
 const POPUP_DEFAULT = { width: 380, height: 600 };
 const POPUP_MIN = 25;
@@ -171,6 +199,10 @@ export class ExtensionHost {
   private popupViews = new Map<string, WebViewRef>();
   /** Surface key -> the node id its user scripts were installed on. */
   private armed = new Map<string, number>();
+  /** Tab id -> the node id currently carrying the store's Chrome user agent. */
+  private storeUserAgent = new Map<string, number>();
+  /** Tab id -> the node id the store install hook is installed on. */
+  private storeHooked = new Map<string, number>();
   /** Every frame that has said hello, keyed by the token it generated. */
   private frames = new Map<string, FrameRef>();
   private frameCounters = new Map<string, number>();
@@ -193,6 +225,9 @@ export class ExtensionHost {
 
   private popup: PopupState | null = null;
   private prompt: InstallPrompt | null = null;
+  /// Settled by `resolvePrompt` when the pending prompt is a permission
+  /// request, so `chrome.permissions.request` can await the user.
+  private permissionResolve: ((granted: boolean) => void) | null = null;
   private managerOpen = false;
   private listeners = new Set<() => void>();
   private seq = 0;
@@ -267,11 +302,26 @@ export class ExtensionHost {
         (ext.manifest.backgroundPage !== null || ext.manifest.serviceWorker !== null) &&
         !this.backgroundLoaded.has(ext.id),
     );
-    if (waiting.length === 0) return true;
+    // Every background page reported in, so the deadline has nothing left to
+    // rescue. Cancelling it matters for more than tidiness: an armed timer
+    // fires its "did not load in time" line on a completely healthy run, and
+    // that line is the first thing anyone debugging this reaches for.
+    if (waiting.length === 0) {
+      if (this.backgroundDeadline) {
+        clearTimeout(this.backgroundDeadline);
+        this.backgroundDeadline = null;
+      }
+      return true;
+    }
     if (!this.backgroundDeadline) {
+      const late = waiting.map((ext) => ext.id).join(", ");
       this.backgroundDeadline = setTimeout(() => {
+        this.backgroundDeadline = null;
         this.backgroundDeadlinePassed = true;
-        console.error("[nativebrowser] a background page did not load in time; tabs are proceeding without it");
+        console.error(
+          `[nativebrowser] no background page from ${late} after ${BACKGROUND_READY_TIMEOUT_MS}ms; ` +
+            "tabs are proceeding without it",
+        );
         this.notify();
       }, BACKGROUND_READY_TIMEOUT_MS);
     }
@@ -329,10 +379,42 @@ export class ExtensionHost {
       iconPath: this.iconPath(staged, 48),
       warnings: permissionWarnings(manifest.permissions, manifest.hostPermissions),
       permissions: [...manifest.permissions, ...manifest.hostPermissions],
+      kind: "install",
     };
     this.prompt = prompt;
     this.notify();
     return prompt;
+  }
+
+  /// `chrome.permissions.request`. Only permissions the manifest declared as
+  /// optional can be asked for, which is Chrome's rule and the thing that stops
+  /// an extension escalating to anything it likes after install. Resolves false
+  /// if a prompt is already up: two consent dialogs at once is how a user says
+  /// yes to the wrong one.
+  requestPermissions(extensionId: string, wanted: string[]): Promise<boolean> {
+    const ext = this.extensions.get(extensionId);
+    if (!ext || this.prompt) return Promise.resolve(false);
+    const allowed = new Set([...ext.manifest.optionalPermissions, ...ext.manifest.hostPermissions]);
+    const asking = wanted.filter((p) => !ext.granted.includes(p));
+    if (asking.length === 0) return Promise.resolve(true);
+    if (asking.some((p) => !allowed.has(p))) return Promise.resolve(false);
+
+    const hosts = asking.filter((p) => p === "<all_urls>" || p.includes("://"));
+    const plain = asking.filter((p) => !hosts.includes(p));
+    this.prompt = {
+      id: ext.id,
+      name: ext.manifest.name,
+      version: ext.manifest.version,
+      root: ext.root,
+      iconPath: this.iconPath(ext, 48),
+      warnings: permissionWarnings(plain, hosts),
+      permissions: asking,
+      kind: "permissions",
+    };
+    this.notify();
+    return new Promise<boolean>((resolve) => {
+      this.permissionResolve = resolve;
+    });
   }
 
   /// The Chrome Web Store's CRX endpoint. Downloading is the app's job; the
@@ -341,7 +423,7 @@ export class ExtensionHost {
     const id = webStoreId(input);
     if (!id) throw new Error("that is not a Chrome Web Store address");
     const endpoint =
-      "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=124.0&acceptformat=crx3" +
+      `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=${CHROME_VERSION}.0&acceptformat=crx3` +
       `&x=${encodeURIComponent(`id=${id}&uc`)}`;
     const response = await fetch(endpoint, { redirect: "follow" });
     if (!response.ok) throw new Error(`the store answered ${response.status}`);
@@ -361,6 +443,26 @@ export class ExtensionHost {
     this.prompt = null;
     if (!prompt) return;
     const ext = this.extensions.get(prompt.id);
+
+    if (prompt.kind === "permissions") {
+      const answer = this.permissionResolve;
+      this.permissionResolve = null;
+      if (granted && ext) {
+        ext.granted = [...new Set([...ext.granted, ...prompt.permissions])];
+        this.reinstallContentScripts();
+        await upsertInstalled({
+          id: ext.id,
+          root: ext.root,
+          enabled: ext.enabled,
+          granted: ext.granted,
+          installedAt: Date.now(),
+        });
+      }
+      this.notify();
+      if (answer) answer(granted && ext !== undefined);
+      return;
+    }
+
     if (!granted || !ext) {
       // Cancelling drops a first-time install; a re-install of something
       // already in the registry keeps whatever the user granted before.
@@ -405,8 +507,11 @@ export class ExtensionHost {
   /// retrofit an already-loaded page either — this only decides what the tab's
   /// NEXT load injects.
   private reinstallContentScripts(): void {
-    for (const node of this.tabViews.values()) {
+    for (const [tabId, node] of this.tabViews) {
+      // `clearUserScripts` takes the whole view, store hook included, so a tab
+      // that had one has to be re-hooked rather than skipped by the guard.
       sendCommand(node, "clearUserScripts");
+      if (this.storeHooked.delete(tabId)) this.installWebstoreHook(tabId, node);
       for (const ext of this.enabledExtensions()) this.installContentScripts(ext, node);
     }
   }
@@ -445,6 +550,9 @@ export class ExtensionHost {
         description: ext.manifest.description,
         enabled: ext.enabled,
         iconPath: action?.iconPath ?? this.iconPath(ext, 48),
+        // Toolbar buttons and manager rows take image BYTES; only `<image>`
+        // reads a path. Same picture either way.
+        iconData: iconDataUrl(action?.iconPath ?? this.iconPath(ext, 32)),
         title: action?.title ?? ext.manifest.name,
         badge: action?.badge ?? "",
         hasPopup: ext.manifest.action?.defaultPopup != null,
@@ -497,6 +605,8 @@ export class ExtensionHost {
       if (tabs.some((t) => t.id === id)) continue;
       this.broadcastEvent("tabs.onRemoved", [this.tabNumber(id), { windowId: 1, isWindowClosing: false }]);
       this.tabViews.delete(id);
+      this.storeUserAgent.delete(id);
+      this.storeHooked.delete(id);
       for (const [token, frame] of this.frames) {
         if (frame.surface.kind === "content" && frame.surface.tabId === id) this.frames.delete(token);
       }
@@ -506,6 +616,7 @@ export class ExtensionHost {
   /// Emitted from the app's own navigation events, which is the only place a
   /// commit is actually observed.
   notifyNavigated(tabId: string, url: string): void {
+    this.applyStoreUserAgent(tabId, url);
     const details = { tabId: this.tabNumber(tabId), frameId: 0, url, timeStamp: Date.now() };
     this.broadcastEvent("webNavigation.onCommitted", [details]);
     this.broadcastEvent("webNavigation.onCompleted", [details]);
@@ -546,6 +657,76 @@ export class ExtensionHost {
     };
   }
 
+  // ------------------------------------------------------------------- store
+
+  /// The store's own install button, hooked in a world of its own. It is not an
+  /// extension, so it borrows the same allow-list machinery a content script
+  /// uses and is pinned to the one origin: no other site is ever handed this.
+  ///
+  /// Installed the first time a tab REACHES the store, never while arming.
+  /// Arming already races the extension background pages' boot (a tab that
+  /// gives up waiting loads with no content scripts at all), and two more
+  /// widget commands per tab on that path was enough to lose it: the MV3
+  /// restore leg went red every run, and green again the moment this moved.
+  /// Nothing is lost by waiting, because entering the store reloads the tab to
+  /// correct the user agent anyway, and the hook is a document_start script on
+  /// that reload.
+  private installWebstoreHook(tabId: string, node: WebViewRef): void {
+    if (this.storeHooked.get(tabId) === node.id) return;
+    this.storeHooked.set(tabId, node.id);
+    const world = contentWorld(WEBSTORE_SURFACE);
+    sendCommand(node, "registerScriptMessage", { name: WEBSTORE_HANDLER, world });
+    sendCommand(node, "addUserScript", {
+      id: "nd-webstore",
+      source: webstoreHookSource(),
+      injectionTime: "start",
+      world,
+      allowList: [WEBSTORE_MATCH],
+    });
+  }
+
+  /// `setUserAgent` is per VIEW, not per navigation, so a Chrome user agent
+  /// left in place would follow the user out of the store and misrepresent this
+  /// browser to every other site in the tab. It is therefore flipped on when a
+  /// tab enters the store origin and off the moment it leaves, which keeps the
+  /// engine's own user agent as what every other origin sees.
+  ///
+  /// The cost of doing it here: a navigation is reported after the engine has
+  /// already asked for the document, so the listing that triggers the flip was
+  /// fetched under the old user agent and is reloaded once. That cannot loop:
+  /// it fires on the transition only, and the view is already flipped by the
+  /// time the reload commits. Leaving the store does NOT reload: that page is
+  /// one request that went out as Chrome, and a second full load to correct a
+  /// header nothing acted on is the worse trade.
+  private applyStoreUserAgent(tabId: string, url: string): void {
+    const node = this.tabViews.get(tabId);
+    if (!node) return;
+    const wanted = isWebstoreUrl(url);
+    if (wanted === (this.storeUserAgent.get(tabId) === node.id)) return;
+    if (!wanted) {
+      this.storeUserAgent.delete(tabId);
+      sendCommand(node, "setUserAgent", "");
+      return;
+    }
+    this.storeUserAgent.set(tabId, node.id);
+    this.installWebstoreHook(tabId, node);
+    sendCommand(node, "setUserAgent", chromeUserAgent());
+    sendCommand(node, "reload");
+  }
+
+  /// A click on the store's install button, arriving from the hook. Everything
+  /// after this is the ordinary install: the same download and the same consent
+  /// prompt the store dialog raises.
+  private onWebstoreMessage(body: unknown): void {
+    const message = parseWebstoreInstall(body);
+    if (!message) return;
+    void this.stageFromWebStore(message.id).catch((error: Error) => {
+      console.error(
+        `[nativebrowser] ${message.name || message.id} could not be fetched from the store: ${error.message}`,
+      );
+    });
+  }
+
   // -------------------------------------------------------------- attachments
 
   /// Installs the shim and every matching content script into a tab's webview.
@@ -558,6 +739,7 @@ export class ExtensionHost {
     if (this.armed.get(`tab:${tabId}`) === node.id) return false;
     this.armed.set(`tab:${tabId}`, node.id);
     sendCommand(node, "clearUserScripts");
+    this.storeHooked.delete(tabId);
     const enabled = this.enabledExtensions();
     for (const ext of enabled) this.installContentScripts(ext, node);
     if (process.env.NB_TEST_HOOKS === "1") {
@@ -566,16 +748,26 @@ export class ExtensionHost {
     return true;
   }
 
-  private installContentScripts(ext: LoadedExtension, node: WebViewRef): void {
-    const world = contentWorld(ext.id);
+  /// The `chrome.*` shim, installed the same way on all three surfaces. They
+  /// differ in exactly two things, so those are the parameters and everything
+  /// else is shared: a content script runs in the extension's isolated world
+  /// and has subframes to reach, while a background or popup page IS the
+  /// extension and is one frame.
+  private installBootstrap(ext: LoadedExtension, kind: ContextKind, node: WebViewRef): void {
+    const world = kind === "content" ? contentWorld(ext.id) : undefined;
     sendCommand(node, "registerScriptMessage", { name: BRIDGE_HANDLER, world });
     sendCommand(node, "addUserScript", {
       id: `nd-boot-${ext.id}`,
-      source: this.bootstrapFor(ext, "content"),
+      source: this.bootstrapFor(ext, kind),
       injectionTime: "start",
       world,
-      allFrames: true,
+      allFrames: kind === "content",
     });
+  }
+
+  private installContentScripts(ext: LoadedExtension, node: WebViewRef): void {
+    const world = contentWorld(ext.id);
+    this.installBootstrap(ext, "content", node);
 
     ext.manifest.contentScripts.forEach((group, index) => {
       const matcher = ext.matchers[index]!;
@@ -631,7 +823,7 @@ export class ExtensionHost {
 
   /// Background and popup views run extension code in their own page world, so
   /// the shim goes in unguarded and the bridge is registered for that world.
-  armExtensionView(kind: "background" | "popup", extensionId: string, node: WebViewRef): void {
+  armExtensionView(kind: Exclude<ContextKind, "content">, extensionId: string, node: WebViewRef): void {
     const ext = this.extensions.get(extensionId);
     if (!ext) return;
     if (kind === "background") this.backgroundViews.set(extensionId, node);
@@ -644,12 +836,7 @@ export class ExtensionHost {
     if (kind === "background") this.backgroundLoaded.delete(extensionId);
     this.forgetFrames((surface) => surface.kind === kind && surface.extensionId === extensionId);
 
-    sendCommand(node, "registerScriptMessage", { name: BRIDGE_HANDLER });
-    sendCommand(node, "addUserScript", {
-      id: `nd-boot-${extensionId}`,
-      source: this.bootstrapFor(ext, kind),
-      injectionTime: "start",
-    });
+    this.installBootstrap(ext, kind, node);
     if (process.env.NB_TEST_HOOKS === "1") {
       console.error(`ND_APP armExtensionView kind=${kind} ext=${extensionId} node=${node.id}`);
     }
@@ -672,7 +859,7 @@ export class ExtensionHost {
     }
   }
 
-  private bootstrapFor(ext: LoadedExtension, kind: "content" | "background" | "popup"): string {
+  private bootstrapFor(ext: LoadedExtension, kind: ContextKind): string {
     return bootstrapSource({
       extensionId: ext.id,
       kind,
@@ -722,6 +909,15 @@ export class ExtensionHost {
         id: request.id,
         status: 200,
         mime: "text/html",
+        // Deliberately NO Content-Security-Policy. This page is the framework's
+        // own scaffolding, not the extension's: it bootstraps the
+        // service-worker globals from an inline block before importing the
+        // extension's real script. Serving the manifest's policy here kills
+        // that block and the background page never reports loaded, which
+        // reaches the user as a restored tab that comes back unthemed
+        // (measured: the whole MV3 restore leg goes red). Chrome has no
+        // equivalent document, so there is nothing to be consistent with.
+        headers: { "Cache-Control": "no-cache" },
         base64: Buffer.from(serviceWorkerPage(worker), "utf8").toString("base64"),
       });
       return;
@@ -740,12 +936,36 @@ export class ExtensionHost {
     }
 
     const bytes = readFileSync(file);
+    const mime = MIME[extname(file).toLowerCase()] ?? "application/octet-stream";
     sendCommand(node, "respondScheme", {
       id: request.id,
       status: 200,
-      mime: MIME[extname(file).toLowerCase()] ?? "application/octet-stream",
+      mime,
+      headers: this.resourceHeaders(ext, path),
       base64: bytes.toString("base64"),
     });
+  }
+
+  /// A resource the manifest lists as web-accessible is the only one a page on
+  /// another origin may read, which is what the CORS header says. `no-cache`
+  /// is what makes editing an unpacked extension and reloading show the edit.
+  ///
+  /// The manifest's `content_security_policy` is NOT served, and this is the
+  /// reason: the `chrome.*` shim reaches an extension page as an injected user
+  /// script, and WebKitGTK applies the page's CSP to injected scripts where
+  /// Chrome exempts its own. Serving `script-src 'self'` therefore disables the
+  /// runtime on exactly the pages the policy governs. Measured on both
+  /// fixtures: MV2's background page stops loading, and MV3's restored tab
+  /// comes back unthemed because its service worker never boots. Enforcing it
+  /// needs the shim delivered over a channel CSP does not govern, which is a
+  /// framework change rather than an app one.
+  private resourceHeaders(ext: LoadedExtension, path: string): Record<string, string> {
+    const headers: Record<string, string> = { "Cache-Control": "no-cache" };
+    const relative = path.replace(/^\/+/, "");
+    if (ext.manifest.webAccessibleResources.some((pattern) => matchesResource(pattern, relative))) {
+      headers["Access-Control-Allow-Origin"] = "*";
+    }
+    return headers;
   }
 
   private resolveInside(root: string, relative: string): string | null {
@@ -766,6 +986,10 @@ export class ExtensionHost {
   handleScriptMessage(surface: Surface, body: unknown): void {
     const env = body as Record<string, unknown> | null;
     if (!env) return;
+    // The store hook runs in a world of its own rather than an extension's, so
+    // it carries no token and no extension can reach this by posting the same
+    // envelope from its own world.
+    if (surface.extensionId === WEBSTORE_SURFACE) return this.onWebstoreMessage(env);
     // The popup's size reporter is not part of the shim and carries no token.
     if (env.k === "popupSize") return this.recordPopupSize(surface.extensionId, Number(env.width), Number(env.height));
     if (typeof env.token !== "string") return;
@@ -1224,11 +1448,27 @@ export class ExtensionHost {
         return wanted.every((p) => ext.granted.includes(p));
       }
       case "permissions.request":
-        // Optional permissions need their own prompt; until that exists,
-        // answering false is the honest result and every extension handles it.
-        return false;
-      case "permissions.remove":
+        return this.requestPermissions(ext.id, [
+          ...((args.permissions as string[] | undefined) ?? []),
+          ...((args.origins as string[] | undefined) ?? []),
+        ]);
+      case "permissions.remove": {
+        const dropping = new Set([
+          ...((args.permissions as string[] | undefined) ?? []),
+          ...((args.origins as string[] | undefined) ?? []),
+        ]);
+        ext.granted = ext.granted.filter((p) => !dropping.has(p));
+        this.reinstallContentScripts();
+        await upsertInstalled({
+          id: ext.id,
+          root: ext.root,
+          enabled: ext.enabled,
+          granted: ext.granted,
+          installedAt: Date.now(),
+        });
+        this.notify();
         return true;
+      }
       case "extension.isAllowedFileSchemeAccess":
         return false;
       case "fontSettings.getFontList":
@@ -1586,6 +1826,32 @@ export function toNdAccelerator(chromeKey: string): string | null {
 /// page with the few ServiceWorkerGlobalScope members extensions actually
 /// touch. The lifecycle is deliberately absent: this worker never sleeps, so
 /// install/activate/fetch have nothing to fire.
+/// One small PNG per installed extension, read once and memoized: `views()`
+/// runs on every render and an icon file never changes under a given path.
+const iconDataCache = new Map<string, string | undefined>();
+
+function iconDataUrl(path: string | null): string | undefined {
+  if (!path) return undefined;
+  const cached = iconDataCache.get(path);
+  if (cached !== undefined || iconDataCache.has(path)) return cached;
+  let encoded: string | undefined;
+  try {
+    const mime = path.toLowerCase().endsWith(".svg") ? "image/svg+xml" : "image/png";
+    encoded = `data:${mime};base64,${readFileSync(path).toString("base64")}`;
+  } catch {
+    encoded = undefined;
+  }
+  iconDataCache.set(path, encoded);
+  return encoded;
+}
+
+/// `web_accessible_resources` entries are glob paths (`icons/*`, `*.png`), not
+/// match patterns.
+function matchesResource(pattern: string, relative: string): boolean {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+  return new RegExp(`^${escaped}$`).test(relative);
+}
+
 function serviceWorkerPage(workerPath: string): string {
   const src = workerPath.startsWith("/") ? workerPath : `/${workerPath}`;
   return `<!doctype html>

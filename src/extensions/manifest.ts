@@ -50,6 +50,9 @@ export interface ExtensionManifest {
   hostPermissions: string[];
   commands: CommandSpec[];
   webAccessibleResources: string[];
+  /** The policy served with every extension PAGE (not with its subresources),
+   * defaulted to Chrome's when the manifest declares none. */
+  contentSecurityPolicy: string;
   /** The untouched JSON, which `chrome.runtime.getManifest()` must hand back. */
   raw: Record<string, unknown>;
 }
@@ -144,6 +147,21 @@ function parseWebAccessibleResources(raw: unknown): string[] {
   return out;
 }
 
+/// MV2 states one policy as a string; MV3 splits it per context and only
+/// `extension_pages` applies to what this browser serves. Both versions default
+/// to the same thing in Chrome, which is what an extension that declares
+/// nothing is entitled to assume.
+export const DEFAULT_EXTENSION_CSP = "script-src 'self'; object-src 'self'";
+
+function parseContentSecurityPolicy(raw: unknown): string {
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  if (raw && typeof raw === "object") {
+    const pages = (raw as Record<string, unknown>).extension_pages;
+    if (typeof pages === "string" && pages.trim()) return pages.trim();
+  }
+  return DEFAULT_EXTENSION_CSP;
+}
+
 export function parseManifest(root: string, uiLocale = "en"): ExtensionManifest {
   const path = resolve(root, "manifest.json");
   if (!existsSync(path)) throw new Error("no manifest.json in this folder");
@@ -188,6 +206,7 @@ export function parseManifest(root: string, uiLocale = "en"): ExtensionManifest 
     hostPermissions: [...permissions.filter(isHostPattern), ...asStringArray(raw.host_permissions)],
     commands: parseCommands(raw.commands),
     webAccessibleResources: parseWebAccessibleResources(raw.web_accessible_resources),
+    contentSecurityPolicy: parseContentSecurityPolicy(raw.content_security_policy),
     raw,
   };
 }
