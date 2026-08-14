@@ -105,4 +105,10 @@ to test the payload there.
 - The find bar has no Escape binding, because the framework surfaces no key events to the app.
 - The action popup is a top-level window rather than a panel under its toolbar button, and it is
   sized when it opens rather than following its content.
-- MV2's restore leg is red at the current framework revision. MV3, the headline gate, is green.
+- The GTK address display does not stretch across the header bar. AdwHeaderBar packs start
+  children into a box that does not expand, so a hexpanding child cannot grow past its natural
+  width.
+- The extension restore leg is red on GTK and green on AppKit: after a restart a restored tab
+  sometimes commits before its content scripts are registered, and comes back with an empty
+  isolated world. It reproduces against this repo's previous release too. `LEDGER.md` records
+  what has been ruled out.
