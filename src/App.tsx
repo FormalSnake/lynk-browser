@@ -1,5 +1,7 @@
 import {
+  Platform,
   Spacing,
+  clipboard,
   dialog,
   executeJavaScript,
   onJavaScriptResult,
@@ -34,13 +36,29 @@ import {
 } from "./extensions/ui.tsx";
 import type { DownloadItem } from "./lib/downloads.ts";
 import { runDownload } from "./lib/downloads.ts";
+import { faviconFor, fetchFavicon, rememberFavicon } from "./lib/favicons.ts";
 import { recentVisits, recordTitle, recordVisit, searchHistory, type Visit } from "./lib/history.ts";
 import { session } from "./lib/session.ts";
-import { SEARCH_PREFIX, displayUrl, fileNameFromUrl, hostOf, toUrl } from "./lib/url.ts";
+import { SEARCH_ENGINES, settings } from "./lib/settings.ts";
+import { displayUrl, fileNameFromUrl, hostOf, isSearch, toUrl } from "./lib/url.ts";
+import { PrivateWindow } from "./PrivateWindow.tsx";
 
 const TAB_ACTIONS: SourceTreeAction[] = [
-  { id: "close", iconName: "window-close-symbolic", tooltip: "Close tab" },
+  { id: "close", iconName: "window-close-symbolic", tooltip: "Close Tab" },
 ];
+
+/// AppKit promotes a titled `<button>` in a header bar to a viewless
+/// NSToolbarItem, which hugs its label at 120pt whatever `hexpand` says. A
+/// `<searchinput>` is the widget NSToolbar stretches across the free run, so
+/// the address display is a field there and a button on GTK, where a flat
+/// button in an AdwHeaderBar expands correctly and reads as GNOME chrome.
+///
+/// Read per render, never captured at module scope: `Platform.backend` is
+/// "unknown" until render()'s handshake completes, which is after this module
+/// is evaluated.
+function addressIsField(): boolean {
+  return Platform.backend === "appkit";
+}
 
 const TEST_HOOKS = process.env.NB_TEST_HOOKS === "1";
 
@@ -67,18 +85,42 @@ interface PaletteItem {
 }
 
 const COMMANDS: { id: string; title: string; hint: string; iconName: string }[] = [
-  { id: "new-tab", title: "New tab", hint: "Ctrl+T", iconName: "tab-new-symbolic" },
-  { id: "close-tab", title: "Close tab", hint: "Ctrl+W", iconName: "window-close-symbolic" },
-  { id: "reopen-tab", title: "Reopen closed tab", hint: "Ctrl+Shift+T", iconName: "edit-undo-symbolic" },
+  { id: "new-tab", title: "New Tab", hint: "Ctrl+T", iconName: "tab-new-symbolic" },
+  { id: "close-tab", title: "Close Tab", hint: "Ctrl+W", iconName: "window-close-symbolic" },
+  { id: "reopen-tab", title: "Reopen Closed Tab", hint: "Ctrl+Shift+T", iconName: "edit-undo-symbolic" },
   { id: "reload", title: "Reload", hint: "Ctrl+R", iconName: "view-refresh-symbolic" },
+  { id: "find", title: "Find in Page", hint: "Ctrl+F", iconName: "edit-find-symbolic" },
   { id: "downloads", title: "Downloads", hint: "Sidebar", iconName: "folder-download-symbolic" },
-  { id: "zoom-in", title: "Zoom in", hint: "Ctrl++", iconName: "zoom-in-symbolic" },
-  { id: "zoom-out", title: "Zoom out", hint: "Ctrl+-", iconName: "zoom-out-symbolic" },
-  { id: "zoom-reset", title: "Reset zoom", hint: "Ctrl+0", iconName: "zoom-original-symbolic" },
+  { id: "private", title: "New Private Window", hint: "Ctrl+Shift+P", iconName: "view-private-symbolic" },
+  { id: "settings", title: "Settings", hint: "Ctrl+Comma", iconName: "preferences-system-symbolic" },
+  { id: "zoom-in", title: "Zoom In", hint: "Ctrl++", iconName: "zoom-in-symbolic" },
+  { id: "zoom-out", title: "Zoom Out", hint: "Ctrl+-", iconName: "zoom-out-symbolic" },
+  { id: "zoom-reset", title: "Reset Zoom", hint: "Ctrl+0", iconName: "zoom-original-symbolic" },
 ];
 
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
+
+/// What the padlock says. `none` is not a verdict: it is the new-tab page and
+/// anything else that never had a chance to be encrypted, and warning there
+/// would spend the indicator's credibility on a non-event.
+type Security = "none" | "secure" | "mixed" | "insecure" | "invalid";
+
+const SECURITY_ICON: Record<Security, string> = {
+  none: "web-browser-symbolic",
+  secure: "channel-secure-symbolic",
+  mixed: "dialog-warning-symbolic",
+  insecure: "channel-insecure-symbolic",
+  invalid: "dialog-warning-symbolic",
+};
+
+const SECURITY_TOOLTIP: Record<Security, string> = {
+  none: "No page loaded",
+  secure: "This page uses a valid certificate",
+  mixed: "Parts of this page are not encrypted",
+  insecure: "This page is not encrypted",
+  invalid: "This site's certificate could not be verified",
+};
 
 interface Runtime {
   loading: boolean;
@@ -86,6 +128,7 @@ interface Runtime {
   canGoBack: boolean;
   canGoForward: boolean;
   error: { url: string; error: string } | null;
+  security: Security;
   /// Bumped by "Try again": it is the webview's key, so a retry remounts the
   /// engine widget rather than asking a failed view to reload itself.
   attempt: number;
@@ -97,8 +140,49 @@ const IDLE: Runtime = {
   canGoBack: false,
   canGoForward: false,
   error: null,
+  security: "none",
   attempt: 0,
 };
+
+/// The page context menu's items, built from the hit test WebKit reports.
+interface PageMenu {
+  tabId: string;
+  link?: string;
+  image?: string;
+  selection?: string;
+  hasSelection: boolean;
+}
+
+interface FindState {
+  open: boolean;
+  query: string;
+  /// GTK reports a real match count; WKFindResult only reports match/no-match,
+  /// so `count` is null there and the bar shows found/not found instead. Both
+  /// stay null until the engine answers, so the bar never claims a result it
+  /// does not have yet.
+  count: number | null;
+  found: boolean | null;
+}
+
+const NO_FIND: FindState = { open: false, query: "", count: null, found: null };
+
+/// `securityChanged` reports TLS facts; the padlock has to say what they mean
+/// for THIS address. A page that never had a chance to be encrypted (file://,
+/// chrome-extension://, about:) is not "insecure", it is simply not a site.
+function securityOf(url: string, data: unknown): Security {
+  const state = (data ?? {}) as { secure?: boolean; insecureContent?: boolean; error?: string };
+  if (state.error) return "invalid";
+  if (state.insecureContent) return "mixed";
+  if (state.secure) return "secure";
+  return url.startsWith("http://") ? "insecure" : "none";
+}
+
+function findSummary(find: FindState): string {
+  if (!find.query) return "";
+  if (find.count !== null) return find.count === 1 ? "1 match" : `${find.count} matches`;
+  if (find.found === null) return "";
+  return find.found ? "Found" : "No matches";
+}
 
 export interface AppProps {
   initialHistory: Visit[];
@@ -130,7 +214,11 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
 
   useMountEffect(() => {
     webviewEngine
-      .registerScheme("chrome-extension")
+      // Chrome's extension origins are secure contexts and CORS-enabled: an
+      // extension page that uses crypto.subtle or IndexedDB, or fetches its own
+      // resources from a content script's world, depends on both. GTK honours
+      // the flags; AppKit has no public API for them (documented asymmetry).
+      .registerScheme("chrome-extension", { corsEnabled: true, secure: true })
       .catch((error: Error) => console.error(`[nativebrowser] chrome-extension:// unavailable: ${error.message}`))
       .finally(() => setSchemeReady(true));
   });
@@ -145,6 +233,14 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [history, setHistory] = useState<Visit[]>(initialHistory);
+  const [find, setFind] = useState<FindState>(NO_FIND);
+  const [pageMenu, setPageMenu] = useState<PageMenu | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [privateOpen, setPrivateOpen] = useState(false);
+  /// Bumped when a favicon lands. The cache lives outside React, so this is
+  /// what tells the sidebar to re-read it.
+  const [iconEpoch, setIconEpoch] = useState(0);
+  const prefs = useStoreValue(settings);
 
   const closed = useRef<{ url: string; title: string }[]>([]);
   /// Tabs opened during this session, as opposed to restored from the store.
@@ -289,6 +385,119 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
     if (node) sendCommand(node, name);
   }
 
+  // ---------------------------------------------------------------- find ---
+
+  /// Every find command targets the ACTIVE tab's view: the bar belongs to the
+  /// window, and a search running on a hidden tab has nothing to highlight.
+  function findCommand(name: "findStart" | "findNext" | "findPrevious" | "findStop", arg?: unknown): void {
+    const node = view(active.id);
+    if (node) sendCommand(node, name, arg);
+  }
+
+  function openFind(): void {
+    setFind((f) => ({ ...f, open: true }));
+  }
+
+  function closeFind(): void {
+    findCommand("findStop");
+    setFind(NO_FIND);
+  }
+
+  function runFind(text: string): void {
+    setFind((f) => ({ ...f, open: true, query: text, count: null }));
+    if (text) findCommand("findStart", { text });
+    else findCommand("findStop");
+  }
+
+  // ------------------------------------------------------- context menu ---
+
+  function closePageMenu(): void {
+    setPageMenu(null);
+  }
+
+  /// A page-menu action runs against the tab the menu was opened on, not
+  /// whatever is active by the time it is clicked.
+  function runPageMenu(run: () => void): void {
+    closePageMenu();
+    run();
+  }
+
+  function copyText(text: string): void {
+    void clipboard.writeText(text).catch(() => {});
+  }
+
+  function saveImage(url: string): void {
+    startDownload(url);
+  }
+
+  /// The menu the hit test earns, plus whatever the enabled extensions have
+  /// registered through `chrome.contextMenus`. Order follows Chrome: what you
+  /// clicked first, page navigation last.
+  function pageMenuItems(menu: PageMenu | null): { id: string; label: string; run: () => void }[] {
+    if (!menu) return [];
+    const items: { id: string; label: string; run: () => void }[] = [];
+    if (menu.link) {
+      const link = menu.link;
+      items.push({ id: "open-link", label: "Open Link in New Tab", run: () => openTab(link, true) });
+      items.push({ id: "copy-link", label: "Copy Link", run: () => copyText(link) });
+    }
+    if (menu.image) {
+      const image = menu.image;
+      items.push({ id: "copy-image", label: "Copy Image Address", run: () => copyText(image) });
+      items.push({ id: "save-image", label: "Save Image", run: () => saveImage(image) });
+    }
+    if (menu.hasSelection) {
+      const selection = menu.selection ?? "";
+      // WebKitGTK's hit test reports THAT there is a selection but never its
+      // text, so Copy runs through the page's own clipboard command there.
+      items.push({
+        id: "copy",
+        label: "Copy",
+        run: () => {
+          if (selection) copyText(selection);
+          else {
+            const node = view(menu.tabId);
+            if (node) void executeJavaScript(node, "document.execCommand('copy')").catch(() => {});
+          }
+        },
+      });
+      if (selection) {
+        items.push({
+          id: "search-selection",
+          label: `Search for "${selection.slice(0, 24)}"`,
+          run: () => openTab(toUrl(selection) ?? "", true),
+        });
+      }
+    }
+    items.push({ id: "back", label: "Back", run: () => command("goBack") });
+    items.push({ id: "forward", label: "Forward", run: () => command("goForward") });
+    items.push({ id: "reload", label: "Reload", run: () => command("reload") });
+    for (const item of extensions.extensionMenuItems()) {
+      items.push({
+        id: `ext-${item.extensionId}-${item.id}`,
+        label: item.title,
+        run: () => extensions.clickContextMenuItem(item.extensionId, item.id),
+      });
+    }
+    return items;
+  }
+
+  // ------------------------------------------------------------ favicon ---
+
+  function onFavicon(tabUrl: string, data: { dataUrl?: string; iconUrl?: string }): void {
+    if (data.dataUrl) {
+      if (rememberFavicon(tabUrl, data.dataUrl)) setIconEpoch((n) => n + 1);
+      return;
+    }
+    // macOS reports the icon's ADDRESS rather than its bytes, so it has to be
+    // fetched before it can go in a row.
+    if (data.iconUrl) {
+      void fetchFavicon(tabUrl, data.iconUrl).then((changed) => {
+        if (changed) setIconEpoch((n) => n + 1);
+      });
+    }
+  }
+
   function startDownload(url: string, suggested?: string): void {
     const now = Date.now();
     // A download is not a navigation: whichever tab aimed at this URL goes back
@@ -378,8 +587,14 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
         return reopenTab();
       case "reload":
         return command("reload");
+      case "find":
+        return openFind();
       case "downloads":
         return setDownloadsOpen(true);
+      case "private":
+        return setPrivateOpen(true);
+      case "settings":
+        return setSettingsOpen(true);
       case "zoom-in":
         return setZoom(zoomFor(active.url) + 0.1);
       case "zoom-out":
@@ -391,18 +606,32 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
 
   const activeRt = rt(active.id);
   const shownUrl = displayUrl(active.url);
-  const pageTitle = active.title || (active.url ? displayUrl(active.url) : "New tab");
+  const pageTitle = active.title || (active.url ? displayUrl(active.url) : "New Tab");
 
-  const nodes: SourceTreeNode[] = tabs.map((t) => ({
-    id: t.id,
-    title: t.title || (t.url ? displayUrl(t.url) : "New tab"),
-    caption: hostOf(t.url) || undefined,
-    // Favicons are not exposed by the framework yet; the row keeps the icon
-    // slot so swapping one in later is a one-line change.
-    iconName: "web-browser-symbolic",
-    actionIds: ["close"],
-    testID: `tab-${t.id}`,
-  }));
+  // Two tabs on the same host produce identical captions, which is exactly the
+  // case where the path is the only thing telling them apart.
+  const hostCounts = new Map<string, number>();
+  for (const t of tabs) {
+    const host = hostOf(t.url);
+    if (host) hostCounts.set(host, (hostCounts.get(host) ?? 0) + 1);
+  }
+
+  void iconEpoch;
+  const nodes: SourceTreeNode[] = tabs.map((t) => {
+    const host = hostOf(t.url);
+    const repeated = host !== "" && (hostCounts.get(host) ?? 0) > 1;
+    return {
+      id: t.id,
+      title: t.title || (t.url ? displayUrl(t.url) : "New Tab"),
+      caption: (repeated ? displayUrl(t.url) : host) || undefined,
+      // The site's own icon when it has been seen, the generic page glyph
+      // until then. iconData wins over iconName when both are set.
+      iconData: faviconFor(t.url),
+      iconName: "web-browser-symbolic",
+      actionIds: ["close"],
+      testID: `tab-${t.id}`,
+    };
+  });
 
   // Ranking is entirely the app's job: <commandpalette> renders what it is
   // given, in order. Address first (that is what a browser bar is for), then
@@ -413,18 +642,19 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   if (query) {
     const target = toUrl(query);
     if (target) {
-      const searching = target.startsWith(SEARCH_PREFIX);
+      const searching = isSearch(target);
+      const engine = SEARCH_ENGINES.find((e) => e.id === prefs.searchEngine)?.name ?? "the web";
       paletteItems.push({
         id: "url",
-        title: searching ? `Search DuckDuckGo for ${query}` : `Go to ${query}`,
-        subtitle: searching ? undefined : target,
+        title: searching ? `Search ${engine} for ${query}` : `Go to ${query}`,
+        subtitle: searching ? undefined : hostOf(target) || target,
         iconName: searching ? "system-search-symbolic" : "web-browser-symbolic",
       });
     }
   }
   for (const t of tabs) {
     if (t.id === active.id) continue;
-    const label = t.title || displayUrl(t.url) || "New tab";
+    const label = t.title || displayUrl(t.url) || "New Tab";
     if (lowered && !`${label} ${t.url}`.toLowerCase().includes(lowered)) continue;
     paletteItems.push({
       id: `tab:${t.id}`,
@@ -461,19 +691,42 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
     >
       <menubar defaults>
         <menu label="File" testID="menu-file">
-          <menuitem testID="menu-new-tab" label="New tab" accelerator="primary+t" onSelect={newTab} />
+          <menuitem testID="menu-new-tab" label="New Tab" accelerator="primary+t" onSelect={newTab} />
+          <menuitem
+            testID="menu-private-window"
+            label="New Private Window"
+            accelerator="primary+shift+p"
+            onSelect={() => setPrivateOpen(true)}
+          />
           <menuitem
             testID="menu-address"
-            label="Open address bar"
+            label="Open Address Bar"
             accelerator="primary+l"
             onSelect={() => openPalette(active.url)}
           />
-          <menuitem testID="menu-close-tab" label="Close tab" accelerator="primary+w" onSelect={() => closeTab(active.id)} />
+          <menuitem testID="menu-close-tab" label="Close Tab" accelerator="primary+w" onSelect={() => closeTab(active.id)} />
           <menuitem
             testID="menu-reopen-tab"
-            label="Reopen closed tab"
+            label="Reopen Closed Tab"
             accelerator="primary+shift+t"
             onSelect={reopenTab}
+          />
+          <menuitem role="separator" testID="menu-file-sep" />
+          <menuitem
+            testID="menu-settings"
+            label="Settings"
+            accelerator="primary+comma"
+            onSelect={() => setSettingsOpen(true)}
+          />
+        </menu>
+        <menu label="Edit" testID="menu-edit">
+          <menuitem testID="menu-find" label="Find in Page" accelerator="primary+f" onSelect={openFind} />
+          <menuitem testID="menu-find-next" label="Find Next" accelerator="primary+g" onSelect={() => findCommand("findNext")} />
+          <menuitem
+            testID="menu-find-previous"
+            label="Find Previous"
+            accelerator="primary+shift+g"
+            onSelect={() => findCommand("findPrevious")}
           />
         </menu>
         <menu label="View" testID="menu-view">
@@ -481,23 +734,23 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
           <menuitem role="separator" testID="menu-view-sep" />
           <menuitem
             testID="menu-zoom-in"
-            label="Zoom in"
+            label="Zoom In"
             accelerator="primary+plus"
             onSelect={() => setZoom(zoomFor(active.url) + 0.1)}
           />
           <menuitem
             testID="menu-zoom-out"
-            label="Zoom out"
+            label="Zoom Out"
             accelerator="primary+minus"
             onSelect={() => setZoom(zoomFor(active.url) - 0.1)}
           />
-          <menuitem testID="menu-zoom-reset" label="Reset zoom" accelerator="primary+0" onSelect={() => setZoom(1)} />
+          <menuitem testID="menu-zoom-reset" label="Reset Zoom" accelerator="primary+0" onSelect={() => setZoom(1)} />
         </menu>
         <menu label="Tabs" testID="menu-tabs">
-          <menuitem testID="menu-next-tab" label="Next tab" accelerator="primary+tab" onSelect={() => cycleTab(1)} />
+          <menuitem testID="menu-next-tab" label="Next Tab" accelerator="primary+tab" onSelect={() => cycleTab(1)} />
           <menuitem
             testID="menu-prev-tab"
-            label="Previous tab"
+            label="Previous Tab"
             accelerator="primary+shift+tab"
             onSelect={() => cycleTab(-1)}
           />
@@ -506,7 +759,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
             <menuitem
               key={t.id}
               testID={`menu-tab-${i}`}
-              label={t.title || (t.url ? displayUrl(t.url) : "New tab")}
+              label={t.title || (t.url ? displayUrl(t.url) : "New Tab")}
               onSelect={() => selectTab(t.id)}
             />
           ))}
@@ -540,12 +793,30 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                 if (node && code) void executeJavaScript(node, code).catch(() => {});
               }}
             />
+            {/* GTK4 synthesises no pointer input, so a right-click inside page
+                content is unreachable from a drive and WebKit's own
+                `context-menu` signal never fires headlessly. This opens the
+                same menu off a synthetic hit test, which exercises everything
+                the app owns: what the menu contains and what its items do. */}
+            <menuitem
+              testID="menu-open-page-menu"
+              label="Open page menu"
+              onSelect={() =>
+                setPageMenu({
+                  tabId: active.id,
+                  link: `${active.url || "https://example.com/"}#link`,
+                  image: `${active.url || "https://example.com/"}#image`,
+                  hasSelection: true,
+                  selection: "selected words",
+                })
+              }
+            />
           </menu>
         )}
         <menu label="Extensions" testID="menu-extensions">
           <menuitem
             testID="menu-extensions-manage"
-            label="Manage extensions"
+            label="Manage Extensions"
             accelerator="primary+shift+e"
             onSelect={() => extensions.setManagerOpen(true)}
           />
@@ -587,7 +858,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
         </menu>
         <menu label="History" testID="menu-history">
           {history.length === 0 ? (
-            <menuitem testID="menu-history-empty" label="No history yet" enabled={false} />
+            <menuitem testID="menu-history-empty" label="No History Yet" enabled={false} />
           ) : (
             history.map((v, i) => (
               <menuitem
@@ -613,7 +884,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
             >
               <button
                 testID="new-tab"
-                label="New tab"
+                label="New Tab"
                 iconName="tab-new-symbolic"
                 labelAlign="start"
                 cssClasses={["flat"]}
@@ -650,7 +921,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                       badge: d.state === "running" ? "…" : undefined,
                     }))}
                     emptyIconName="folder-download-symbolic"
-                    emptyTitle="No downloads yet"
+                    emptyTitle="No Downloads Yet"
                     emptyDescription="Files you download appear here."
                   />
                 </box>
@@ -675,21 +946,109 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                 cssClasses={["flat"]}
                 onClick={() => command(activeRt.loading ? "stop" : "reload")}
               />
+              {/* The indicator's testID carries its state: getTree exposes a
+                  node's text but never its icon name, so this is the only way
+                  a drive can assert which padlock is drawn. */}
               <button
                 slot="start"
-                testID="omnibox"
-                label={shownUrl || "Search or enter address"}
-                tooltip="Search or enter address (Ctrl+L)"
-                ellipsize
-                cssClasses={["flat", "pill"]}
-                style={{ hexpand: true }}
+                key={activeRt.security}
+                testID={`security-${activeRt.security}`}
+                iconName={SECURITY_ICON[activeRt.security]}
+                tooltip={SECURITY_TOOLTIP[activeRt.security]}
+                cssClasses={["flat"]}
                 onClick={() => openPalette(active.url)}
               />
+              {addressIsField() ? (
+                <searchinput
+                  slot="start"
+                  testID="omnibox"
+                  text={shownUrl}
+                  placeholder="Search or Enter Address"
+                  style={{ hexpand: true }}
+                  onActivate={(e) => commitQuery(e.text)}
+                />
+              ) : (
+                <button
+                  slot="start"
+                  testID="omnibox"
+                  label={shownUrl || "Search or Enter Address"}
+                  tooltip="Search or enter an address (Ctrl+L)"
+                  ellipsize
+                  cssClasses={["flat"]}
+                  style={{ hexpand: true }}
+                  onClick={() => openPalette(active.url)}
+                />
+              )}
               <ExtensionActionButtons host={extensions} />
             </headerbar>
 
             <box testID="content" orientation="vertical" style={{ hexpand: true, vexpand: true }}>
               {activeRt.loading && <progressbar testID="progress" fraction={activeRt.progress} />}
+
+              {find.open && (
+                <box
+                  testID="find-bar"
+                  orientation="horizontal"
+                  spacing={Spacing.sm}
+                  style={{ padding: Spacing.sm, hexpand: true }}
+                >
+                  <searchinput
+                    testID="find-query"
+                    placeholder="Find in Page"
+                    style={{ hexpand: true }}
+                    onChanged={(e) => runFind(e.text)}
+                    onActivate={() => findCommand("findNext")}
+                  />
+                  <label
+                    key={`${find.query}:${find.count}:${find.found}`}
+                    testID="find-count"
+                    text={findSummary(find)}
+                  />
+                  <button
+                    testID="find-previous"
+                    iconName="go-up-symbolic"
+                    tooltip="Previous match"
+                    cssClasses={["flat"]}
+                    onClick={() => findCommand("findPrevious")}
+                  />
+                  <button
+                    testID="find-next"
+                    iconName="go-down-symbolic"
+                    tooltip="Next match"
+                    cssClasses={["flat"]}
+                    onClick={() => findCommand("findNext")}
+                  />
+                  {/* No Escape binding: the framework surfaces no key events to
+                      the app, and a bare `Escape` menu accelerator would be
+                      global. Filed as a framework ask. */}
+                  <button
+                    testID="find-close"
+                    iconName="window-close-symbolic"
+                    tooltip="Close"
+                    cssClasses={["flat"]}
+                    onClick={closeFind}
+                  />
+                </box>
+              )}
+
+              {/* The page context menu. WebKit reports the click position, but
+                  neither backend exposes a point-anchored popup menu, so this
+                  popover anchors to the content pane instead (framework ask).
+                  Its rows are native buttons, so automation can click them. */}
+              <popover testID="context-menu" open={pageMenu !== null} position="bottom" onClosed={closePageMenu}>
+                <box orientation="vertical" spacing={0} style={{ padding: Spacing.xs }}>
+                  {pageMenuItems(pageMenu).map((item) => (
+                    <button
+                      key={item.id}
+                      testID={`context-menu-${item.id}`}
+                      label={item.label}
+                      labelAlign="start"
+                      cssClasses={["flat"]}
+                      onClick={() => runPageMenu(item.run)}
+                    />
+                  ))}
+                </box>
+              </popover>
 
               {/* Presents over the active window wherever it is mounted. */}
               <commandpalette
@@ -733,6 +1092,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                         }}
                         url={armedTabs[t.id] && extensionsReady ? t.url : ""}
                         testID={`page-${t.id}`}
+                        suppressContextMenu
                         style={{ hexpand: true, vexpand: true }}
                         onScriptMessage={(e) => {
                           const message = e.data as { name: string; world: string; body: unknown };
@@ -753,6 +1113,26 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                         onLoadFailed={(e) => patch(t.id, { error: e.data as { url: string; error: string } })}
                         onNewWindow={(e) => openTab(e.text, true)}
                         onJavaScriptResult={onJavaScriptResult}
+                        onFaviconChanged={(e) => onFavicon(t.url, e.data as { dataUrl?: string; iconUrl?: string })}
+                        onSecurityChanged={(e) => patch(t.id, { security: securityOf(t.url, e.data) })}
+                        onFindResult={(e) => {
+                          // Two events per search on GTK: `done` carries the
+                          // outcome, `done: false` carries the total from the
+                          // separate counting pass, which AppKit never sends.
+                          const r = e.data as { matchFound: boolean; matchCount?: number; done: boolean };
+                          setFind((f) =>
+                            r.done ? { ...f, found: r.matchFound } : { ...f, count: r.matchCount ?? null },
+                          );
+                        }}
+                        onContextMenu={(e) => {
+                          const hit = e.data as {
+                            link?: string;
+                            image?: string;
+                            selection?: string;
+                            hasSelection: boolean;
+                          };
+                          setPageMenu({ tabId: t.id, ...hit });
+                        }}
                         onDownloadRequested={(e) => {
                           const d = e.data as { url: string; suggestedFilename?: string };
                           startDownload(d.url, d.suggestedFilename);
@@ -772,7 +1152,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                 >
                   <button
                     testID="retry"
-                    label="Try again"
+                    label="Try Again"
                     cssClasses={["suggested-action", "pill"]}
                     onClick={() => patch(active.id, { error: null, attempt: activeRt.attempt + 1 })}
                   />
@@ -783,13 +1163,13 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                 <statuspage
                   testID="new-tab-page"
                   iconName="web-browser-symbolic"
-                  title="New tab"
+                  title="New Tab"
                   description="Search the web, or open a page you have visited before."
                   style={{ vexpand: true }}
                 >
                   <button
                     testID="new-tab-search"
-                    label="Search or enter address"
+                    label="Search or Enter Address"
                     cssClasses={["suggested-action", "pill"]}
                     onClick={() => openPalette("")}
                   />
@@ -805,6 +1185,9 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
       </toastoverlay>
     </window>
 
+    {settingsOpen && <SettingsWindow onClose={() => setSettingsOpen(false)} />}
+    {privateOpen && schemeReady && <PrivateWindow onClose={() => setPrivateOpen(false)} />}
+
     <ExtensionPermissionPrompt host={extensions} />
     {schemeReady && <ExtensionPopupWindow host={extensions} />}
     <ExtensionsManagerWindow host={extensions} actions={managerActions} />
@@ -815,5 +1198,59 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
       onFailure={reportInstallFailure}
     />
     </>
+  );
+}
+
+/// Settings. Three preferences, native rows, written straight through the
+/// store: there is no Apply button because there is nothing to apply.
+function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
+  const prefs = useStoreValue(settings);
+  const engineIndex = Math.max(0, SEARCH_ENGINES.findIndex((e) => e.id === prefs.searchEngine));
+
+  return (
+    <window title="Settings" testID="settings-window" defaultWidth={560} defaultHeight={420} onClosed={onClose}>
+      <toolbarview testID="settings-toolbar">
+        <headerbar testID="settings-header" title="Settings" />
+        <scrollview testID="settings-scroll" style={{ hexpand: true, vexpand: true }}>
+          <clamp maximumSize={640}>
+            <box orientation="vertical" spacing={Spacing.lg} style={{ padding: Spacing.lg, hexpand: true }}>
+              <settingsgroup testID="settings-search" title="Search">
+                <row testID="settings-engine-row" title="Search Engine" subtitle="Used when what you type is not an address">
+                  <select
+                    slot="suffix"
+                    testID="settings-engine"
+                    options={SEARCH_ENGINES.map((e) => e.name)}
+                    selectedIndex={engineIndex}
+                    onSelectionChanged={(e) => {
+                      const engine = SEARCH_ENGINES[e.index]?.id ?? "duckduckgo";
+                      settings.update((s) => ({ ...s, searchEngine: engine }));
+                    }}
+                  />
+                </row>
+              </settingsgroup>
+
+              <settingsgroup testID="settings-startup" title="Startup">
+                <row testID="settings-homepage-row" title="Homepage" subtitle="Opened by new windows. Leave empty for the new tab page.">
+                  <textinput
+                    slot="suffix"
+                    testID="settings-homepage"
+                    placeholder="example.com"
+                    text={prefs.homepage}
+                    onChanged={(e) => settings.update((s) => ({ ...s, homepage: e.text }))}
+                  />
+                </row>
+                <switchrow
+                  testID="settings-restore"
+                  title="Reopen Tabs on Launch"
+                  subtitle="Start with the tabs you had open last time"
+                  checked={prefs.restoreOnLaunch}
+                  onToggled={(e) => settings.update((s) => ({ ...s, restoreOnLaunch: e.checked }))}
+                />
+              </settingsgroup>
+            </box>
+          </clamp>
+        </scrollview>
+      </toolbarview>
+    </window>
   );
 }
