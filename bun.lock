@@ -15,6 +15,7 @@
         "@babel/core": "8.0.1",
         "@babel/plugin-transform-react-jsx": "8.0.1",
         "@babel/preset-typescript": "8.0.1",
+        "@nativedesktop/test": "file:../nd-browser-wave/packages/test",
         "@types/bun": "1.3.13",
         "@types/react": "19.2.17",
         "babel-plugin-nativedesktop": "file:../nd-browser-wave/packages/babel-plugin-nativedesktop",
@@ -24,6 +25,7 @@
   },
   "overrides": {
     "@nativedesktop/host": "file:../nd-browser-wave/packages/host",
+    "@nativedesktop/react": "file:../nd-browser-wave/packages/react",
   },
   "packages": {
     "@babel/cli": ["@babel/cli@8.0.4", "", { "dependencies": { "@jridgewell/trace-mapping": "^0.3.28", "chokidar": "^5.0.0", "commander": "^14.0.2", "convert-source-map": "^2.0.0", "glob": "^13.0.0", "slash": "^5.1.0" }, "peerDependencies": { "@babel/core": "^8.0.0" }, "bin": { "babel": "./bin/babel.js" } }, "sha512-mgg9G7dJw7xzx/0Sn8eWQkDpEcQrlDdEV4Y4Ii+8Oay88+lK45vNuSavRUj4g+e5Yfw4tkH4U3ObBFOMJhy4oQ=="],
@@ -99,6 +101,8 @@
     "@nativedesktop/native": ["@nativedesktop/native@file:../nd-browser-wave/packages/native", {}],
 
     "@nativedesktop/react": ["@nativedesktop/react@file:../nd-browser-wave/packages/react", { "dependencies": { "react-reconciler": "0.33.0", "react-refresh": "0.17.0" }, "devDependencies": { "@types/react": "19.2.17", "@types/react-reconciler": "0.33.0", "@types/react-refresh": "0.14.7", "react": "19.2.7", "typescript": "7.0.2" }, "peerDependencies": { "react": "^19.2.7" } }],
+
+    "@nativedesktop/test": ["@nativedesktop/test@file:../nd-browser-wave/packages/test", { "dependencies": { "@nativedesktop/host": "workspace:*", "@nativedesktop/react": "workspace:*" } }],
 
     "@types/babel__core": ["@types/babel__core@7.20.5", "", { "dependencies": { "@babel/parser": "^7.20.7", "@babel/types": "^7.20.7", "@types/babel__generator": "*", "@types/babel__template": "*", "@types/babel__traverse": "*" } }, "sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA=="],
 
@@ -239,6 +243,10 @@
     "update-browserslist-db": ["update-browserslist-db@1.3.1", "", { "dependencies": { "escalade": "^3.2.0", "picocolors": "^1.1.1" }, "peerDependencies": { "browserslist": ">= 4.21.0" }, "bin": { "update-browserslist-db": "cli.js" } }, "sha512-ZZ61DsRsOnakl74HAmp3oSN4aXUmEWXf+i/yv0h7tIBfICc3VdrFErQKUUKPgu3AMsTUMbcongALEN4l6GSUrQ=="],
 
     "@nativedesktop/cli/@nativedesktop/host": ["@nativedesktop/host@file:../nd-browser-wave/packages/host", {}],
+
+    "@nativedesktop/test/@nativedesktop/host": ["@nativedesktop/host@file:../nd-browser-wave/packages/host", {}],
+
+    "@nativedesktop/test/@nativedesktop/react": ["@nativedesktop/react@file:../nd-browser-wave/packages/react", {}],
 
     "@types/babel__core/@babel/parser": ["@babel/parser@7.29.8", "", { "dependencies": { "@babel/types": "^7.29.8" }, "bin": "./bin/babel-parser.js" }, "sha512-E8lTAYNB1KW+FH+VGJuZM1ioAx2E6oVlvQFRrf5P8ZZmsiJXYAD9vTFV7yyEURNzgh1dFqMZuO6tUwcARbqFCA=="],
 
