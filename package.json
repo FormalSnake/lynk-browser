@@ -13,6 +13,7 @@
     "@nativedesktop/data": "file:../nd-browser-wave/packages/data",
     "@nativedesktop/native": "file:../nd-browser-wave/packages/native",
     "@nativedesktop/react": "file:../nd-browser-wave/packages/react",
+    "fflate": "^0.8.3",
     "react": "19.2.7"
   },
   "devDependencies": {

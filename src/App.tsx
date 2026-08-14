@@ -1,14 +1,17 @@
 import {
   Spacing,
+  dialog,
   executeJavaScript,
   onJavaScriptResult,
   onToastButtonClicked,
   onToastDismissed,
   sendCommand,
   showToast,
+  useMountEffect,
   useRef,
   useState,
   useStoreValue,
+  webviewEngine,
 } from "@nativedesktop/react";
 import type { NdNodeRef, SourceTreeAction, SourceTreeNode } from "@nativedesktop/react";
 // <Activity mode="hidden"> is React's own keep-mounted-but-hidden primitive; it
@@ -19,6 +22,16 @@ import type { NdNodeRef, SourceTreeAction, SourceTreeNode } from "@nativedesktop
 // not re-export it, hence the direct react import.
 import { Activity } from "react";
 
+import { contentWorld, toNdAccelerator, type ExtensionHost } from "./extensions/host.ts";
+import {
+  ExtensionActionButtons,
+  ExtensionBackgrounds,
+  ExtensionPermissionPrompt,
+  ExtensionPopupWindow,
+  ExtensionStoreDialog,
+  ExtensionsManagerWindow,
+  useExtensionState,
+} from "./extensions/ui.tsx";
 import type { DownloadItem } from "./lib/downloads.ts";
 import { runDownload } from "./lib/downloads.ts";
 import { recentVisits, recordTitle, recordVisit, searchHistory, type Visit } from "./lib/history.ts";
@@ -30,6 +43,19 @@ const TAB_ACTIONS: SourceTreeAction[] = [
 ];
 
 const TEST_HOOKS = process.env.NB_TEST_HOOKS === "1";
+
+/// A script message from a tab arrives tagged with the world it came from,
+/// which is the only thing identifying which extension sent it.
+function extensionOfWorld(world: string): string | null {
+  const prefix = contentWorld("");
+  return world.startsWith(prefix) ? world.slice(prefix.length) : null;
+}
+
+/// Menu labels for extension commands. The manifest description is the
+/// extension's own wording; the command name is the fallback when it has none.
+function commandLabel(extensionName: string, command: string, description: string): string {
+  return `${extensionName}: ${description || command}`;
+}
 
 /// The palette's own shape. @nativedesktop/react exports the widget but not
 /// this type, so it is declared structurally here.
@@ -78,14 +104,32 @@ export interface AppProps {
   initialHistory: Visit[];
   initialWidth: number;
   initialHeight: number;
+  extensions: ExtensionHost;
 }
 
-export function App({ initialHistory, initialWidth, initialHeight }: AppProps): React.ReactNode {
+export function App({ initialHistory, initialWidth, initialHeight, extensions }: AppProps): React.ReactNode {
   const state = useStoreValue(session);
   const { tabs, activeId } = state;
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0]!;
 
   const [runtime, setRuntime] = useState<Record<string, Runtime>>({});
+  // A tab's webview is created with no URL and navigates one render later, once
+  // its content scripts are registered: a user script added after a load has
+  // begun never sees document_start.
+  const [armedTabs, setArmedTabs] = useState<Record<string, boolean>>({});
+  const [storeDialogOpen, setStoreDialogOpen] = useState(false);
+  // WebKit freezes its scheme handlers the moment the first <webview> exists,
+  // and registering one needs a live host connection, so no webview may mount
+  // until this resolves.
+  const [schemeReady, setSchemeReady] = useState(false);
+  const { views: extensionViews } = useExtensionState(extensions);
+
+  useMountEffect(() => {
+    webviewEngine
+      .registerScheme("chrome-extension")
+      .catch((error: Error) => console.error(`[nativebrowser] chrome-extension:// unavailable: ${error.message}`))
+      .finally(() => setSchemeReady(true));
+  });
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Two halves of one field. `paletteSeed` is the controlled `query` prop and
   // only ever changes when the app deliberately seeds or clears it; echoing
@@ -99,7 +143,6 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   const [history, setHistory] = useState<Visit[]>(initialHistory);
 
   const closed = useRef<{ url: string; title: string }[]>([]);
-  const recentDownloads = useRef(new Map<string, number>());
   /// Last URL the engine actually committed per tab, so a download can put the
   /// tab back where it was.
   const committed = useRef(new Map<string, string>());
@@ -111,13 +154,33 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
     setRuntime((r) => ({ ...r, [id]: { ...(r[id] ?? IDLE), ...part } }));
   const view = (id: string): NdNodeRef<"webview"> | null => views.current.get(id) ?? null;
 
+  // The broker has no view of the React tree, so it gets the tab list and the
+  // four tab operations it can trigger. setTabs only emits when something
+  // actually differs, which is what makes calling it per render safe.
+  extensions.setTabs(tabs.map((t) => ({ id: t.id, url: t.url, title: t.title, active: t.id === active.id })));
+  extensions.appHooks = {
+    openTab: (url, background) => openTab(url, background),
+    closeTab: (id) => closeTab(id),
+    reloadTab: (id) => {
+      const node = view(id);
+      if (node) sendCommand(node, "reload");
+    },
+    updateTab: (id, props) => {
+      if (props.url) navigate(id, props.url);
+      if (props.active) selectTab(id);
+    },
+  };
+
   function refreshHistory(): void {
     void recentVisits().then(setHistory);
   }
 
-  function openTab(url: string, background = false): void {
+  /// Returns the new tab's id: chrome.tabs.create has to answer with a tab.
+  function openTab(url: string, background = false): string {
+    let opened = "";
     session.update((s) => {
       const id = `t${s.nextTabId}`;
+      opened = id;
       return {
         ...s,
         tabs: [...s.tabs, { id, url, title: "" }],
@@ -125,6 +188,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
         nextTabId: s.nextTabId + 1,
       };
     });
+    return opened;
   }
 
   function closeTab(id: string): void {
@@ -183,6 +247,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
     committed.current.set(id, url);
     setTabUrl(id, url);
     applyZoom(id, url);
+    extensions.notifyNavigated(id, url);
     void recordVisit(url, "").then(refreshHistory);
   }
 
@@ -216,14 +281,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   }
 
   function startDownload(url: string, suggested?: string): void {
-    // WebKitGTK's download-started signal lives on the network session, which
-    // every view shares, so one download fires downloadRequested once per live
-    // webview. Take the first and ignore the echoes.
     const now = Date.now();
-    const seen = recentDownloads.current.get(url);
-    if (seen !== undefined && now - seen < 5000) return;
-    recentDownloads.current.set(url, now);
-
     // A download is not a navigation: whichever tab aimed at this URL goes back
     // to the page it was showing, so the restored session never points at it.
     session.update((s) => ({
@@ -246,6 +304,29 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
       },
     );
   }
+
+  function reportInstallFailure(reason: string): void {
+    if (toast.current) void showToast(toast.current, { title: `Unable to add the extension: ${reason}` });
+  }
+
+  /// The two "Install from…" entries are the same flow with a different picker;
+  /// only on Add does anything of the extension run.
+  function stageFrom(options: { directories: boolean }): void {
+    void dialog
+      .openFile({
+        title: options.directories ? "Choose an extension folder" : "Choose an extension file",
+        directories: options.directories,
+        filters: options.directories ? undefined : [{ name: "Extensions", extensions: ["crx", "zip"] }],
+      })
+      .then((paths) => (paths[0] ? extensions.stage(paths[0]) : null))
+      .catch((error: Error) => reportInstallFailure(error.message));
+  }
+
+  const managerActions = {
+    installFromFile: () => stageFrom({ directories: false }),
+    installFromFolder: () => stageFrom({ directories: true }),
+    installFromStore: () => setStoreDialogOpen(true),
+  };
 
   function openPalette(seed: string): void {
     setPaletteSeed(seed);
@@ -358,6 +439,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   }
 
   return (
+    <>
     <window
       title={pageTitle}
       testID="main-window"
@@ -451,6 +533,49 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
             />
           </menu>
         )}
+        <menu label="Extensions" testID="menu-extensions">
+          <menuitem
+            testID="menu-extensions-manage"
+            label="Manage extensions"
+            accelerator="primary+shift+e"
+            onSelect={() => extensions.setManagerOpen(true)}
+          />
+          <menuitem role="separator" testID="menu-extensions-sep" />
+          {extensionViews
+            .filter((v) => v.enabled)
+            .map((v) => (
+              <menuitem
+                key={v.id}
+                testID={`menu-ext-open-${v.id}`}
+                label={v.title}
+                onSelect={() => extensions.openAction(v.id)}
+              />
+            ))}
+          {/* Manifest commands, bound to the shortcut the extension asked for. */}
+          {extensionViews
+            .filter((v) => v.enabled)
+            .flatMap((v) =>
+              (extensions.extensions.get(v.id)?.manifest.commands ?? [])
+                .filter((c) => c.suggestedKey !== null)
+                .map((c) => (
+                  <menuitem
+                    key={`${v.id}-${c.name}`}
+                    testID={`menu-ext-cmd-${v.id}-${c.name}`}
+                    label={commandLabel(v.name, c.name, c.description)}
+                    accelerator={toNdAccelerator(c.suggestedKey!) ?? undefined}
+                    onSelect={() => extensions.runCommand(v.id, c.name)}
+                  />
+                )),
+            )}
+          {extensions.extensionMenuItems().map((item) => (
+            <menuitem
+              key={`${item.extensionId}-${item.id}`}
+              testID={`menu-ext-menu-${item.extensionId}-${item.id}`}
+              label={item.title}
+              onSelect={() => extensions.clickContextMenuItem(item.extensionId, item.id)}
+            />
+          ))}
+        </menu>
         <menu label="History" testID="menu-history">
           {history.length === 0 ? (
             <menuitem testID="menu-history-empty" label="No history yet" enabled={false} />
@@ -508,16 +633,6 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                 onToggled={(e) => setDownloadsOpen(e.checked)}
               >
                 <box orientation="vertical" spacing={Spacing.xs}>
-                  {/* Test-only readout of the palette's ranked ids: palette rows
-                      are not part of getTree, so a drive has no other way to
-                      address a row by what it is rather than where it sits. */}
-                  {TEST_HOOKS && (
-                    <label
-                      testID="palette-debug"
-                      ellipsize
-                      text={`q=${paletteQuery}|${paletteItems.map((i) => i.id).join(",")}`}
-                    />
-                  )}
                   <sourcelist
                     testID="downloads-list"
                     items={downloads.map((d) => ({
@@ -561,6 +676,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                 style={{ hexpand: true }}
                 onClick={() => openPalette(active.url)}
               />
+              <ExtensionActionButtons host={extensions} />
             </headerbar>
 
             <box testID="content" orientation="vertical" style={{ hexpand: true, vexpand: true }}>
@@ -583,20 +699,39 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
               />
 
               {tabs
-                .filter((t) => t.url !== "")
+                .filter((t) => t.url !== "" && schemeReady)
                 .map((t) => {
                   const state = rt(t.id);
                   const shown = t.id === active.id && state.error === null;
+                  // A tab that has not been armed yet stays "visible" for one
+                  // frame even when it is a background tab: React never attaches
+                  // refs inside a subtree that mounts straight into a hidden
+                  // Activity, and without the ref the tab's content scripts are
+                  // never registered and its URL is never set. It has no URL yet
+                  // at that point, so the frame is blank.
                   return (
-                    <Activity key={t.id} mode={shown ? "visible" : "hidden"}>
+                    <Activity key={t.id} mode={shown || !armedTabs[t.id] ? "visible" : "hidden"}>
                       <webview
                         key={state.attempt}
                         ref={(node) => {
                           views.current.set(t.id, node as NdNodeRef<"webview"> | null);
+                          if (!node) return;
+                          extensions.armTabView(t.id, node as NdNodeRef<"webview">);
+                          setArmedTabs((a) => (a[t.id] ? a : { ...a, [t.id]: true }));
                         }}
-                        url={t.url}
+                        url={armedTabs[t.id] ? t.url : ""}
                         testID={`page-${t.id}`}
                         style={{ hexpand: true, vexpand: true }}
+                        onScriptMessage={(e) => {
+                          const message = e.data as { name: string; world: string; body: unknown };
+                          const extensionId = extensionOfWorld(message.world);
+                          if (!extensionId) return;
+                          extensions.handleScriptMessage({ kind: "content", tabId: t.id, extensionId }, message.body);
+                        }}
+                        onSchemeRequest={(e) => {
+                          const node = view(t.id);
+                          if (node) extensions.serveScheme(node, e.data as { id: string; url: string });
+                        }}
                         onNavigate={(e) => onNavigated(t.id, e.text)}
                         onTitleChanged={(e) => onTitled(t.id, e.text)}
                         onLoadingChanged={(e) => patch(t.id, { loading: e.checked })}
@@ -648,10 +783,25 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                   />
                 </statuspage>
               )}
+
+              {/* Background pages live in the main window so Activity can keep
+                  them running while they stay invisible. */}
+              {schemeReady && <ExtensionBackgrounds host={extensions} />}
             </box>
           </toolbarview>
         </splitview>
       </toastoverlay>
     </window>
+
+    <ExtensionPermissionPrompt host={extensions} />
+    {schemeReady && <ExtensionPopupWindow host={extensions} />}
+    <ExtensionsManagerWindow host={extensions} actions={managerActions} />
+    <ExtensionStoreDialog
+      host={extensions}
+      open={storeDialogOpen}
+      onClose={() => setStoreDialogOpen(false)}
+      onFailure={reportInstallFailure}
+    />
+    </>
   );
 }

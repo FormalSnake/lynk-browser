@@ -126,10 +126,13 @@ engine extension support (WebKitGTK has none for Chrome extensions).
   dialog listing manifest permissions before enable (per the reference
   screenshot), enable/disable/uninstall, load-unpacked for dev.
 
-Acceptance: Dark Reader (real build) installed through the flow, darkens
-Wikipedia + a second site headless on g815, popup opens and toggles work,
-settings persist across restart — `NB_DARKREADER_OK` with screenshot + DOM
-assertion. Stretch: uBlock Origin Lite via content scripts (no DNR claim).
+Acceptance (owner-corrected priority: the Web Store is MV3-only now, MV2
+survives mainly for uBlock Origin): Dark Reader MV3 (real build) installed
+through the flow, darkens fixture pages headless on g815, popup opens and
+toggles work, settings persist across restart — `NB_DARKREADER_MV3_OK` with
+screenshot + DOM assertion is the headline gate. MV2 (`NB_DARKREADER_OK`)
+stays as a secondary gate for legacy/unpacked support. Stretch: uBlock Origin
+Lite via content scripts (no DNR claim).
 
 ## Stage 4 — Automation suite expansion (ND repo; after Stage 2 codegen frees)
 
@@ -148,6 +151,12 @@ assertion. Stretch: uBlock Origin Lite via content scripts (no DNR claim).
 
 ## Stage 5 — Polish, hardening, ship
 
+Owner requirement: everything must match the LATEST platform guidelines —
+macOS 26/27 HIG (Liquid Glass era) and current GNOME HIG (49/50). Both moved
+after model knowledge cutoffs: agents web-search current guidance before
+judging or fixing, and reuse the repo's prior HIG research
+(docs/superpowers/plans + the hig-gtk/hig-macos design docs) as the baseline.
+
 GNOME HIG pass on the app (spacing scale, dark mode, empty states), context
 menus (page/link/image), find-in-page bar, downloads UI polish, settings page
 (search engine, homepage, restore behavior), private window (ephemeral profile),
@@ -158,6 +167,12 @@ README, extension-support doc. Final commits; merge `browser-wave` → ND main;
 push ND (nd.git + GitHub) and app repo; final report with screenshots.
 
 ## Coordination
+
+Every new screenshot batch spawns a feedback agent (owner requirement): it
+visually reviews each shot against GNOME HIG (GTK) / macOS HIG (AppKit) and the
+Arc-style reference, separates capture artifacts (known: weston bitmap fonts
+until fixed, AppKit RPC missing the toolbar layer) from real UI defects, files
+findings in LEDGER.md, and the orchestrator routes them to the owning stage.
 
 - One codegen/schema owner at any moment (Stages 2 then 4 serialize on it).
 - Stage agents append progress markers to this repo's `LEDGER.md` (gitignored)

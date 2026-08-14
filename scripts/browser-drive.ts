@@ -11,10 +11,11 @@ import { launchApp, type AppHandle, type JsonNode } from "@nativedesktop/test";
 const SHOTS = `${import.meta.dir}/../screenshots`;
 const PROFILE = "/tmp/nb-drive-profile";
 const DOWNLOADS = "/tmp/nb-drive-downloads";
-const DOWNLOAD_PROFILE = "/tmp/nb-drive-profile-download";
+// One knob for every wait: the same drive runs on an idle laptop and inside a
+// full framework gate sweep, where everything is several times slower.
+const PATIENCE = Number(process.env.ND_DRIVE_TIMEOUT_MS ?? 45_000);
 
 rmSync(PROFILE, { recursive: true, force: true });
-rmSync(DOWNLOAD_PROFILE, { recursive: true, force: true });
 rmSync(DOWNLOADS, { recursive: true, force: true });
 mkdirSync(SHOTS, { recursive: true });
 
@@ -81,7 +82,7 @@ async function tabRows(app: AppHandle): Promise<{ title: string; testID: string 
 }
 
 async function waitRows(app: AppHandle, check: (rows: string[]) => boolean, what: string): Promise<string[]> {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + PATIENCE;
   let last: string[] = [];
   while (Date.now() < deadline) {
     last = (await tabRows(app)).map((r) => r.title);
@@ -100,7 +101,7 @@ async function openPalette(app: AppHandle): Promise<void> {
   if (node?.visible) return;
   await step("click the address display", () => app.click("omnibox"));
   await step("wait for the palette to present", () =>
-    app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: 8000 }),
+    app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE }),
   );
 }
 
@@ -119,12 +120,33 @@ async function typeQuery(app: AppHandle, text: string): Promise<void> {
   await step(`type ${JSON.stringify(text)} into the palette`, () => app.type("palette", text));
 }
 
+/// The index of the first palette row whose id matches. Palette rows carry
+/// their app-side id on the wire, so a drive names the row it wants instead of
+/// counting to it.
+async function paletteRow(app: AppHandle, match: (id: string) => boolean, what: string): Promise<number> {
+  const deadline = Date.now() + PATIENCE;
+  let ids: string[] = [];
+  let previous = "";
+  while (Date.now() < deadline) {
+    ids = ((await app.mustFind("palette")).rows ?? []).map((r) => r.id ?? "");
+    const signature = ids.join(",");
+    const at = ids.findIndex((id) => match(id));
+    // The list has to have stopped moving before an index means anything:
+    // history results arrive asynchronously, and acting on a half-ranked list
+    // activates whatever has since slid into that row.
+    if (at >= 0 && signature === previous) return at;
+    previous = signature;
+    await Bun.sleep(200);
+  }
+  return fail(`the palette never settled on ${what}; its rows were ${JSON.stringify(ids)}`);
+}
+
 /// The current page URL, as shown by the header's address display.
 async function shownUrl(app: AppHandle): Promise<string> {
   return String((await app.mustFind("omnibox")).text ?? "");
 }
 
-async function waitUrl(app: AppHandle, suffix: string, timeoutMs = 8000): Promise<string> {
+async function waitUrl(app: AppHandle, suffix: string, timeoutMs = PATIENCE): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   let seen = "";
   while (Date.now() < deadline) {
@@ -159,11 +181,14 @@ function launch(storeDir: string): Promise<AppHandle> {
       NB_DOWNLOAD_DIR: DOWNLOADS,
       NB_TEST_HOOKS: "1",
       NB_TEST_JS: "document.getElementById('open').click()",
+      // A D-Bus name, so no hyphens: GTK accepts an invalid application id and
+      // then degrades silently.
+      ND_APP_ID: "dev.nativebrowser.browser",
     },
-    readyTimeoutMs: 30_000,
+    readyTimeoutMs: PATIENCE,
     // waitFor blocks host-side for its full condition timeout, so the client's
     // per-RPC timeout has to be the larger of the two.
-    rpcTimeoutMs: 30_000,
+    rpcTimeoutMs: PATIENCE,
   });
 }
 
@@ -230,7 +255,7 @@ try {
   // primary+l seeds it with the current URL; rows are ranked address, open
   // tabs, history, then app commands.
   await step("open the seeded palette (Ctrl+L path)", () => app.click("menu-address"));
-  await step("palette presents", () => app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: 8000 }));
+  await step("palette presents", () => app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE }));
   await shoot(app, "04-palette");
   await step("activate the seeded address row", () => app.setValue("palette", 0));
   const reloadedA = Date.now() + 10_000;
@@ -240,24 +265,18 @@ try {
 
   await openPalette(app);
   await typeQuery(app, "Page B");
-  await Bun.sleep(400);
-  const paletteState = String((await app.mustFind("palette-debug")).text ?? "");
-  const tabRow = paletteState.split("|")[1]?.split(",").findIndex((id) => id.startsWith("tab:")) ?? -1;
-  if (tabRow < 0) fail(`palette had no open-tab row for "Page B": ${paletteState}`);
+  const tabRow = await paletteRow(app, (id) => id.startsWith("tab:"), 'an open-tab row for "Page B"');
   await step("switch to the matching tab", () => app.setValue("palette", tabRow));
   await waitUrl(app, "/b");
 
   await openPalette(app);
   await typeQuery(app, "Reload");
-  await Bun.sleep(400);
-  const commandState = String((await app.mustFind("palette-debug")).text ?? "");
-  const reloadRow = commandState.split("|")[1]?.split(",").indexOf("cmd:reload") ?? -1;
-  if (reloadRow < 0) fail(`palette had no Reload command row: ${commandState}`);
+  const reloadRow = await paletteRow(app, (id) => id === "cmd:reload", "the Reload command row");
   await step("run the Reload command", () => app.setValue("palette", reloadRow));
-  const reloadedB = Date.now() + 10_000;
+  const reloadedB = Date.now() + 15_000;
   while (Date.now() < reloadedB && loads.b === baseline.b) await Bun.sleep(120);
   if (loads.b !== baseline.b + 1) fail(`the palette Reload command did not reload page B, loads ${JSON.stringify(loads)}`);
-  console.log(`4. palette: seeded address row, tab switch and app command all ran (rows for "Page B": ${paletteState})`);
+  console.log("4. palette: seeded address row, tab switch and app command all ran");
 
   // Acceptance 2 (continued) — back/forward enable states track real history.
   await app.click("menu-tab-1");
@@ -328,60 +347,53 @@ try {
   const before = (await tabRows(app)).map((r) => r.title);
   const activeBefore = await shownUrl(app);
   await app.restart();
-  await app.waitForPresent("tab-list", { timeoutMs: 20_000 });
+  await app.waitForPresent("tab-list", { timeoutMs: PATIENCE });
   const after = await waitRows(app, (r) => r.length === before.length, "the restored tab rows");
   if (after.length !== before.length) fail(`restored ${after.length} tabs, had ${before.length}`);
-  await waitUrl(app, activeBefore, 15_000);
+  await waitUrl(app, activeBefore);
   console.log(`9. restart restored ${after.length} tabs and the active tab (${activeBefore})`);
   await shoot(app, "09-restored");
 
-  // Acceptance 6 — download, in its own process with its own profile so exactly
-  // ONE webview is live. WebKitGTK's download-started fires per view on the
-  // shared network session and the host cancels the same WebKitDownload once per
-  // handler without holding a reference; the completion then lands on freed
-  // memory and segfaults (backtrace in LEDGER). One view keeps it to a single
-  // cancel, and running it last means a late completion cannot poison the rest.
-  await app.close();
-  const dl = await launch(DOWNLOAD_PROFILE);
-  try {
-    await goTo(dl, `${base}/a`);
-    await waitRows(dl, (r) => r[0]!.startsWith("Page A"), "page A before downloading");
-    await goTo(dl, `${base}/file.txt`);
+  // Acceptance 6 — download. It runs with every tab from the rest of the drive
+  // still live: WebKitGTK's download-started lives on the shared network
+  // session, and the host used to fire it once per view and cancel the same
+  // WebKitDownload once per handler, which segfaulted. Fixed framework-side, so
+  // this is now the regression test for it.
+  await goTo(app, `${base}/file.txt`);
 
-    const downloaded = `${DOWNLOADS}/fixture.txt`;
-    const landed = Date.now() + 20_000;
-    while (Date.now() < landed && !existsSync(downloaded)) await Bun.sleep(150);
-    if (!existsSync(downloaded)) fail(`download did not land at ${downloaded}`);
-    const body = readFileSync(downloaded, "utf8");
-    if (!body.startsWith("nativebrowser download fixture")) fail(`downloaded file has wrong content: ${JSON.stringify(body)}`);
+  const downloaded = `${DOWNLOADS}/fixture.txt`;
+  const landed = Date.now() + 25_000;
+  while (Date.now() < landed && !existsSync(downloaded)) await Bun.sleep(150);
+  if (!existsSync(downloaded)) fail(`download did not land at ${downloaded}`);
+  const body = readFileSync(downloaded, "utf8");
+  if (!body.startsWith("nativebrowser download fixture")) fail(`downloaded file has wrong content: ${JSON.stringify(body)}`);
 
-    let downloadRows: string[] = [];
-    const listed = Date.now() + 10_000;
-    while (Date.now() < listed) {
-      downloadRows = ((await dl.mustFind("downloads-list")).rows ?? []).map((r) => r.title);
-      if (downloadRows.includes("fixture.txt")) break;
-      await Bun.sleep(150);
-    }
-    if (!downloadRows.includes("fixture.txt")) fail(`downloads list is ${JSON.stringify(downloadRows)}, want a fixture.txt row`);
-    if (downloadRows.length !== 1) fail(`one download expected, got ${JSON.stringify(downloadRows)}`);
-
-    // A download is not a navigation: the tab stays on the page it was showing.
-    await waitUrl(dl, "/a");
-
-    // The toast is a transient overlay child; a miss is a timing artefact, the
-    // download itself is already proven.
-    let toasted = false;
-    try {
-      await dl.waitForText("Saved fixture.txt", { timeoutMs: 6000 });
-      toasted = true;
-    } catch {
-      toasted = false;
-    }
-    await shoot(dl, "10-download");
-    console.log(`10. download landed at ${downloaded}; toast in tree=${toasted}; tab stayed on page A`);
-  } finally {
-    await dl.close();
+  let downloadRows: string[] = [];
+  const listed = Date.now() + 15_000;
+  while (Date.now() < listed) {
+    downloadRows = ((await app.mustFind("downloads-list")).rows ?? []).map((r) => r.title);
+    if (downloadRows.includes("fixture.txt")) break;
+    await Bun.sleep(150);
   }
+  if (!downloadRows.includes("fixture.txt")) fail(`downloads list is ${JSON.stringify(downloadRows)}, want a fixture.txt row`);
+  // The name comes from the engine's suggestedFilename now, and exactly one
+  // event arrives however many views are live.
+  if (downloadRows.length !== 1) fail(`one download expected, got ${JSON.stringify(downloadRows)}`);
+
+  // A download is not a navigation: the tab stays on the page it was showing.
+  await waitUrl(app, "/a");
+
+  // The toast is a transient overlay child; a miss is a timing artefact, the
+  // download itself is already proven.
+  let toasted = false;
+  try {
+    await app.waitForText("Saved fixture.txt", { timeoutMs: 8000 });
+    toasted = true;
+  } catch {
+    toasted = false;
+  }
+  await shoot(app, "10-download");
+  console.log(`10. download landed at ${downloaded} with ${(await tabRows(app)).length} tabs live; toast in tree=${toasted}`);
 
   console.log("NB_MVP_OK");
 } catch (e) {
