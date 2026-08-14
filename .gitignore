@@ -4,5 +4,8 @@ LEDGER.md
 CLAUDE.md
 screenshots/
 *.png
-fixtures/
+# The Dark Reader builds are downloaded (scripts/fetch-fixtures.ts), never
+# committed. The store-listing page is hand-written and has to travel.
+fixtures/*
+!fixtures/webstore-listing/
 progress/
