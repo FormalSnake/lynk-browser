@@ -14,9 +14,11 @@ import { resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { launchApp, type AppHandle, type JsonNode } from "@nativedesktop/test";
 import {
+  SHOTS,
   fail,
   findAcross,
-  shoot as capture,
+  paletteDriver,
+  shoot,
   step,
   textsUnder as textsUnderIn,
   walk,
@@ -25,13 +27,16 @@ import {
 } from "./drive-lib.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
-const SHOTS = `${ROOT}/screenshots`;
 const FIXTURE_KIND = process.env.NB_EXT_FIXTURE === "mv2" ? "mv2" : "mv3";
 // The Linux gate leaves this unset and stays on gtk; ND_BACKEND=appkit runs the
 // same legs against the AppKit host. Each backend keeps its own profile so a
 // run on one never reads the other's registry.
 const BACKEND = process.env.ND_BACKEND === "appkit" ? "appkit" : "gtk";
 const FIXTURE = `${ROOT}/fixtures/darkreader-${FIXTURE_KIND}`;
+// The second extension leg 4c installs alongside Dark Reader. Purpose-built and
+// tiny: a content script, a background page, storage, and one message round
+// trip, which is the whole surface that two extensions at once can break.
+const PAIR_FIXTURE = `${ROOT}/fixtures/pair-probe`;
 const PROFILE = `/tmp/nb-ext-profile-${FIXTURE_KIND}-${BACKEND}`;
 const MARKER = FIXTURE_KIND === "mv2" ? "NB_DARKREADER_OK" : "NB_DARKREADER_MV3_OK";
 // Screenshot prefix. The backend is part of it so an AppKit run never
@@ -63,6 +68,10 @@ const WANT_WARNINGS =
 
 if (!existsSync(`${FIXTURE}/manifest.json`)) {
   console.error(`missing ${FIXTURE}; run: bun scripts/fetch-fixtures.ts`);
+  process.exit(1);
+}
+if (!existsSync(`${PAIR_FIXTURE}/manifest.json`)) {
+  console.error(`missing ${PAIR_FIXTURE}; it is committed, so this checkout is incomplete`);
   process.exit(1);
 }
 
@@ -104,10 +113,6 @@ const base = `http://127.0.0.1:${server.port}`;
 
 // ---------------------------------------------------------------- helpers ---
 
-async function shoot(app: AppHandle, name: string, window?: number): Promise<void> {
-  return capture(app, SHOTS, name, window);
-}
-
 async function waitAcross(app: AppHandle, testId: string, timeoutMs = PATIENCE): Promise<{ node: JsonNode; window: number }> {
   return waitAcrossIn(app, testId, timeoutMs);
 }
@@ -116,41 +121,65 @@ async function textsUnder(app: AppHandle, prefix: string, window: number): Promi
   return textsUnderIn(app, prefix, window);
 }
 
-/// The id the app derived for the fixture, read back off the UI rather than
-/// recomputed, so the drive asserts what the app actually did.
-async function installedId(app: AppHandle): Promise<string> {
+/// Every extension id the UI is showing, read back off the manager rows and
+/// toolbar buttons rather than recomputed, so the drive asserts what the app
+/// actually did.
+async function installedIds(app: AppHandle): Promise<string[]> {
   const { windows } = await app.windows();
+  const found = new Set<string>();
   for (const info of windows) {
-    const tree = await app.tree(info.ref);
-    let found: string | null = null;
+    // A window listed a moment ago can be gone by the time it is walked: the
+    // permission prompt closes itself the instant Add is clicked, which is
+    // exactly when this runs.
+    const tree = await app.tree(info.ref).catch(() => null);
+    if (!tree) continue;
     walk(tree.root, (n) => {
-      if (found) return;
-      if (n.testID?.startsWith("ext-row-")) found = n.testID.slice("ext-row-".length);
-      else if (n.testID?.startsWith("ext-action-")) found = n.testID.slice("ext-action-".length);
+      if (n.testID?.startsWith("ext-row-")) found.add(n.testID.slice("ext-row-".length));
+      else if (n.testID?.startsWith("ext-action-")) found.add(n.testID.slice("ext-action-".length));
     });
-    if (found) return found;
   }
-  return fail("no installed extension row or toolbar button in any window");
+  return [...found];
 }
 
-/// What the extension's isolated world in a tab actually contains. The shim is
-/// injected there as a document_start user script, so this answers "did the
-/// content-script plumbing reach this page at all" independently of whatever
-/// the extension then decided to do.
-async function worldProbe(app: AppHandle, testId: string, extensionId: string): Promise<string> {
+async function installedId(app: AppHandle): Promise<string> {
+  const [first] = await installedIds(app);
+  return first ?? fail("no installed extension row or toolbar button in any window");
+}
+
+/// Reads an expression inside one extension's isolated world, polling until
+/// `check` accepts the answer. Mid-navigation the page has no world to
+/// evaluate in, so a failed attempt is a reason to wait rather than a verdict.
+async function waitInWorld(
+  app: AppHandle,
+  testId: string,
+  extensionId: string,
+  expression: string,
+  check: (value: string) => boolean,
+  what: string,
+): Promise<string> {
+  const deadline = Date.now() + PATIENCE;
   let last = "";
-  for (let attempt = 0; attempt < 20; attempt++) {
+  while (Date.now() < deadline) {
     const result = await app
-      .evalInPage({ testId }, "(globalThis.__ndextRan || 0) + ' scripts, chrome=' + typeof chrome", {
-        world: `ext:${extensionId}`,
-        timeoutMs: 8000,
-      })
+      .evalInPage({ testId }, expression, { world: `ext:${extensionId}`, timeoutMs: 8000 })
       .catch((error: Error) => ({ ok: false, value: null, error: error.message }));
-    if (result.ok) return String(result.value);
-    last = String(result.error);
+    last = result.ok ? String(result.value) : `unavailable (${result.error})`;
+    if (result.ok && check(last)) return last;
     await Bun.sleep(400);
   }
-  return `unavailable (${last})`;
+  return fail(`${what}; the world read ${JSON.stringify(last)}`);
+}
+
+/// What the shim put in an extension's isolated world. It is injected there as
+/// a document_start user script, so this answers "did the content-script
+/// plumbing reach this page at all" independently of whatever the extension
+/// then decided to do.
+const WORLD_PROBE = "(globalThis.__ndextRan || 0) + ' scripts, chrome=' + typeof chrome";
+
+async function worldProbe(app: AppHandle, testId: string, extensionId: string): Promise<string> {
+  return waitInWorld(app, testId, extensionId, WORLD_PROBE, () => true, "the world never answered").catch(
+    (e: Error) => e.message,
+  );
 }
 
 async function mainWindow(app: AppHandle): Promise<number> {
@@ -159,29 +188,7 @@ async function mainWindow(app: AppHandle): Promise<number> {
   return found.window;
 }
 
-// On GTK the omnibox is the flat pill button that opens the palette, so
-// clicking it is the real user path. On AppKit the same slot renders a
-// <searchinput> (App.tsx's addressIsField), which has no click handler at all,
-// so the palette is opened the other way a person would: the Address item in
-// the File menu, which both backends bind to Ctrl+L.
-async function openPalette(app: AppHandle): Promise<void> {
-  const node = await app.find("palette");
-  if (node?.visible) return;
-  await app.click(BACKEND === "appkit" ? "menu-address" : "omnibox");
-  await app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE });
-}
-
-async function goTo(app: AppHandle, url: string): Promise<void> {
-  await openPalette(app);
-  await app.setValue("palette", "");
-  await app.type("palette", url);
-  await app.setValue("palette", true);
-}
-
-async function tabRows(app: AppHandle): Promise<string[]> {
-  const list = await app.mustFind("tab-list");
-  return (list.rows ?? []).map((r) => r.title);
-}
+const { goTo } = paletteDriver({ backend: BACKEND, timeoutMs: PATIENCE });
 
 /// The webview testID of the tab at `index`. Tab ids are handed out by the
 /// session store and an extension can create tabs of its own, so nothing here
@@ -319,11 +326,12 @@ async function waitStored(
   extensionId: string,
   check: (settings: Record<string, unknown>) => boolean,
   what: string,
+  area = "sync",
 ): Promise<Record<string, unknown>> {
   const deadline = Date.now() + PATIENCE;
   let last: Record<string, unknown> = {};
   while (Date.now() < deadline) {
-    last = storedSettings(extensionId);
+    last = storedSettings(extensionId, area);
     if (check(last)) return last;
     await Bun.sleep(300);
   }
@@ -376,7 +384,7 @@ async function waitPopupLoaded(app: AppHandle, id: string): Promise<string> {
 
 // ------------------------------------------------------------------ drive ---
 
-function launch(): Promise<AppHandle> {
+function launch(folders: string[] = [FIXTURE]): Promise<AppHandle> {
   return launchApp({
     entry: "src/main.tsx",
     backend: BACKEND,
@@ -395,9 +403,10 @@ function launch(): Promise<AppHandle> {
       // broken still prints its diagnostic before the drive times out.
       NB_BACKGROUND_READY_MS: String(Math.max(8000, Math.floor(PATIENCE / 2))),
     },
-    // One entry per "Install from…" click: the folder picker answers with the
-    // unpacked fixture, which is exactly what a person would have chosen.
-    dialogScript: { "dialog.openFile": [[FIXTURE], [FIXTURE]] },
+    // One entry per "Install from…" click, in order: the folder picker answers
+    // with an unpacked fixture, which is exactly what a person would have
+    // chosen. A session that installs two extensions passes two folders.
+    dialogScript: { "dialog.openFile": folders.map((folder) => [folder]) },
     readyTimeoutMs: PATIENCE,
     rpcTimeoutMs: PATIENCE,
     // The app narrates its extension plumbing on stderr under NB_TEST_HOOKS.
@@ -511,9 +520,11 @@ try {
   await waitStored(id, TOGGLED_ON, `the ${TOGGLE_COMMAND} command being undone`);
   console.log(`3c. ${TOGGLE_COMMAND} again: the theme is back ${JSON.stringify(toggledOn)}, and storage agrees`);
 
-  // 4 — state survives a restart: the registry row, the grant and storage.
+  // 4 — state survives a restart: the registry row, the grant and storage. The
+  // relaunch arms the folder picker with the SECOND extension, which leg 4c
+  // installs on top of the one that just came back.
   await app.close();
-  app = await launch();
+  app = await launch([PAIR_FIXTURE]);
   await app.waitForPresent("tab-list", { timeoutMs: PATIENCE });
   await waitRows(app, (r) => r.length === 2, "the restored tabs");
   const restartedId = await installedId(app);
@@ -523,21 +534,94 @@ try {
   await step("the toolbar button is back", () => app.waitForPresent(`ext-action-${id}`, { timeoutMs: PATIENCE }));
   // Only the active tab is actionable, so pick the one being asserted on.
   await step("select the first restored tab", () => app.click("menu-tab-0"));
-  console.log(`   content world after restart: ${await worldProbe(app, await pageTestId(app, 0), id)}`);
+  const restoredTab = await pageTestId(app, 0);
+  console.log(`   content world after restart: ${await worldProbe(app, restoredTab, id)}`);
   const settings = storedSettings(id);
   if (Object.keys(settings).length === 0) fail("the extension's chrome.storage.sync did not survive the restart");
   if (!TOGGLED_ON(settings)) fail(`the toggle state did not survive the restart: ${JSON.stringify(settings).slice(0, 200)}`);
-  const afterRestart = await waitDark(app, await pageTestId(app, 0), "the restored tab");
+  const afterRestart = await waitDark(app, restoredTab, "the restored tab");
   console.log(`4. restart: ${id} still enabled, page still darkens ${JSON.stringify(afterRestart)}`);
   console.log(`4b. chrome.storage.sync survived the restart (${Object.keys(settings).length} keys)`);
   await shoot(app, `${WHICH}-06-after-restart`, await mainWindow(app));
+
+  // 4c — a SECOND extension, installed while the first one is enabled and
+  // running in the same tab. This is the case a single-extension drive cannot
+  // see: a script-message handler name is per VIEW on both engines, so two
+  // extensions sharing one name means the second registration takes the
+  // first's bus down (AppKit) or is refused with its messages delivered to the
+  // wrong world (GTK). Every assertion below is per world, per extension.
+  await step("open the manager for the second extension", () => app.click("menu-extensions-manage"));
+  await waitAcross(app, "ext-manager-add-folder");
+  await step("choose the second extension's folder", () => app.click("ext-manager-add-folder"));
+  const pairPrompt = await waitAcross(app, "ext-prompt-window");
+  const pairName = await app.mustFind("ext-prompt-name", { window: pairPrompt.window });
+  if (!String(pairName.text ?? "").includes("Pair Probe")) {
+    fail(`the second prompt names ${JSON.stringify(pairName.text)}, want Pair Probe`);
+  }
+  await step("add the second extension", () => app.click("ext-prompt-add"));
+  const pairId = await step("the second extension appears in the manager", async () => {
+    const deadline = Date.now() + PATIENCE;
+    while (Date.now() < deadline) {
+      const other = (await installedIds(app)).find((each) => each !== id);
+      if (other) return other;
+      await Bun.sleep(200);
+    }
+    return fail(`only ${id} is installed; the second extension never appeared`);
+  });
+
+  // Chrome does not retrofit an already-loaded page either, so the tab is
+  // reloaded once and then carries both extensions' content scripts.
+  await step("select the first tab", () => app.click("menu-tab-0"));
+  await step("reload it so both extensions inject", () => app.click("menu-reload"));
+
+  const pairDark = await waitDark(app, restoredTab, "the first extension with a second one installed");
+  const firstWorld = await waitInWorld(
+    app,
+    restoredTab,
+    id,
+    WORLD_PROBE,
+    (v) => v.includes("chrome=object") && !v.startsWith("0 "),
+    "the first extension's world is empty with two extensions installed",
+  );
+  const pairAnswer = await waitInWorld(
+    app,
+    restoredTab,
+    pairId,
+    "String(globalThis.__ndpair)",
+    (v) => v.startsWith("pong:"),
+    "the second extension's content script never completed its round trip",
+  );
+  if (!pairAnswer.includes(pairId)) {
+    fail(`the second extension's round trip was answered by ${pairAnswer}, want ${pairId}`);
+  }
+  const pairStored = await waitStored(
+    pairId,
+    (s) => Number(s.pings ?? 0) >= 1,
+    "the second extension's ping",
+    "local",
+  );
+  // Cross-talk is what a shared handler name produces: one extension's
+  // envelopes attributed to the other, which lands in the other's storage.
+  if ("pings" in storedSettings(id) || "pings" in storedSettings(id, "local")) {
+    fail("the first extension's storage holds the second extension's key");
+  }
+  const strayKeys = Object.keys(pairStored).filter((key) => key !== "pings" && key !== "lastUrl");
+  if (strayKeys.length > 0) {
+    fail(`the second extension's storage holds keys it never wrote: ${JSON.stringify(strayKeys)}`);
+  }
+  console.log(
+    `4c. two extensions at once: ${id} world ${JSON.stringify(firstWorld)} and still themes ` +
+      `${JSON.stringify(pairDark)}; ${pairId} answered ${JSON.stringify(pairAnswer)} with ` +
+      `${JSON.stringify(pairStored)} in its own storage`,
+  );
+  await shoot(app, `${WHICH}-06b-two-extensions`, await mainWindow(app));
 
   // 5 — disabling it in the manager puts the page back.
   await step("open the manager", () => app.click("menu-extensions-manage"));
   const manager2 = await waitAcross(app, `ext-toggle-${id}`);
   await step("switch the extension off", () => app.setValue({ testId: `ext-toggle-${id}` }, false));
   await step("reload the page", () => app.click("menu-reload"));
-  const light = await waitUnthemed(app, await pageTestId(app, 0), "the page after disabling the extension");
+  const light = await waitUnthemed(app, restoredTab, "the page after disabling the extension");
   console.log(`5. disabled in the manager: the page renders light again ${JSON.stringify(light)}`);
   await shoot(app, `${WHICH}-07-disabled`, manager2.window);
   await shoot(app, `${WHICH}-08-light-again`, await mainWindow(app));

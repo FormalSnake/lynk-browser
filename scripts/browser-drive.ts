@@ -7,9 +7,17 @@
 // Run headless: scripts/headless.sh bun scripts/browser-drive.ts
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { launchApp, type AppHandle } from "@nativedesktop/test";
-import { fail, shoot as capture, step, walk, waitRows as rowsMatching, waitText as textMatching } from "./drive-lib.ts";
+import {
+  SHOTS,
+  fail,
+  paletteDriver,
+  shoot,
+  step,
+  walk,
+  waitRows as rowsMatching,
+  waitText as textMatching,
+} from "./drive-lib.ts";
 
-const SHOTS = `${import.meta.dir}/../screenshots`;
 const PROFILE = "/tmp/nb-drive-profile";
 const DOWNLOADS = "/tmp/nb-drive-downloads";
 // One knob for every wait: the same drive runs on an idle laptop and inside a
@@ -77,33 +85,7 @@ async function waitRows(app: AppHandle, check: (rows: string[]) => boolean, what
   return rowsMatching(app, "tab-list", check, what, PATIENCE);
 }
 
-/// The address bar IS the command palette. Open it (unless something already
-/// did, e.g. New tab), replace the query, then submit it as typed. The palette
-/// presents asynchronously and is not actionable until it does, so every open
-/// waits for it.
-async function openPalette(app: AppHandle): Promise<void> {
-  const node = await app.find("palette");
-  if (node?.visible) return;
-  await step("click the address display", () => app.click("omnibox"));
-  await step("wait for the palette to present", () =>
-    app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE }),
-  );
-}
-
-async function goTo(app: AppHandle, url: string): Promise<void> {
-  await openPalette(app);
-  await typeQuery(app, url);
-  await step("submit the palette query", () => app.setValue("palette", true));
-}
-
-/// setValue(palette, "<string>") replaces the entry text but leaves the app's
-/// controlled `query` state behind (GTK set_text emits changed twice and the
-/// blank intermediate wins), so the ranked item list would not match what the
-/// drive typed. Clearing and inserting keeps both sides in step.
-async function typeQuery(app: AppHandle, text: string): Promise<void> {
-  await step("clear the palette query", () => app.setValue("palette", ""));
-  await step(`type ${JSON.stringify(text)} into the palette`, () => app.type("palette", text));
-}
+const { openPalette, typeQuery, goTo } = paletteDriver({ backend: "gtk", timeoutMs: PATIENCE });
 
 /// The index of the first palette row whose id matches. Palette rows carry
 /// their app-side id on the wire, so a drive names the row it wants instead of
@@ -144,10 +126,6 @@ async function waitUrl(app: AppHandle, suffix: string, timeoutMs = PATIENCE): Pr
 
 async function waitText(app: AppHandle, testId: string, check: (t: string) => boolean, what: string): Promise<string> {
   return textMatching(app, testId, check, what, PATIENCE);
-}
-
-async function shoot(app: AppHandle, name: string, window?: number): Promise<void> {
-  return capture(app, SHOTS, name, window);
 }
 
 // ------------------------------------------------------------------ drive ---

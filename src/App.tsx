@@ -24,7 +24,8 @@ import type { NdNodeRef, SourceTreeAction, SourceTreeNode } from "@nativedesktop
 // not re-export it, hence the direct react import.
 import { Activity } from "react";
 
-import { contentWorld, toNdAccelerator, type ExtensionHost } from "./extensions/host.ts";
+import { bridgeSurface } from "./extensions/bootstrap.ts";
+import { toNdAccelerator, type ExtensionHost } from "./extensions/host.ts";
 import {
   ExtensionActionButtons,
   ExtensionBackgrounds,
@@ -61,13 +62,6 @@ function addressIsField(): boolean {
 }
 
 const TEST_HOOKS = process.env.NB_TEST_HOOKS === "1";
-
-/// A script message from a tab arrives tagged with the world it came from,
-/// which is the only thing identifying which extension sent it.
-function extensionOfWorld(world: string): string | null {
-  const prefix = contentWorld("");
-  return world.startsWith(prefix) ? world.slice(prefix.length) : null;
-}
 
 /// Menu labels for extension commands. The manifest description is the
 /// extension's own wording; the command name is the fallback when it has none.
@@ -1095,8 +1089,11 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                         suppressContextMenu
                         style={{ hexpand: true, vexpand: true }}
                         onScriptMessage={(e) => {
+                          // The handler NAME says who sent this, not the world:
+                          // a name is what both engines route on, and a tab
+                          // with two extensions in it has one per world.
                           const message = e.data as { name: string; world: string; body: unknown };
-                          const extensionId = extensionOfWorld(message.world);
+                          const extensionId = bridgeSurface(message.name);
                           if (!extensionId) return;
                           extensions.handleScriptMessage({ kind: "content", tabId: t.id, extensionId }, message.body);
                         }}

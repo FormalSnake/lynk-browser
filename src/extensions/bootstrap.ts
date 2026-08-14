@@ -11,8 +11,29 @@
 // injection time.
 import type { MatchPattern } from "./match-patterns.ts";
 
-/** The script message handler name registered in each extension world. */
-export const BRIDGE_HANDLER = "ndext";
+const BRIDGE_PREFIX = "ndext_";
+
+/// The script-message handler name for one surface's world.
+///
+/// A handler name is per VIEW, not per world, and both engines say so in their
+/// own way: WebKitGTK routes `script-message-received` by the name and refuses
+/// a name already registered on that view whatever world is asked for, while
+/// WKUserContentController keys on name and world but hands the page a single
+/// `window.webkit.messageHandlers.<name>`. Two extensions in one tab therefore
+/// need two names, or the second registration takes the first one's bus down
+/// (AppKit) or is refused outright with its messages misrouted (GTK).
+///
+/// So the name carries the identity: one per (extension, world), and the
+/// broker reads the SENDER off the name rather than off the reported world,
+/// because the name is what both engines actually route on.
+export function bridgeHandler(surfaceTag: string): string {
+  return BRIDGE_PREFIX + surfaceTag;
+}
+
+/** The surface tag a handler name was minted for, or null if it is not ours. */
+export function bridgeSurface(handlerName: string): string | null {
+  return handlerName.startsWith(BRIDGE_PREFIX) ? handlerName.slice(BRIDGE_PREFIX.length) : null;
+}
 
 export type ContextKind = "content" | "background" | "popup";
 
@@ -153,7 +174,7 @@ var lastError = null;
 function post(env) {
   env.token = token;
   var handlers = window.webkit && window.webkit.messageHandlers;
-  var bridge = handlers && handlers.${BRIDGE_HANDLER};
+  var bridge = handlers && handlers[${JSON.stringify(bridgeHandler(config.extensionId))}];
   if (bridge) bridge.postMessage(env);
 }
 

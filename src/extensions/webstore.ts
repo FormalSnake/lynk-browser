@@ -13,6 +13,7 @@
 // webstore-listing/index.html` stands in for its markup and everything about
 // the REAL store is manually verifiable only: open a listing, confirm the
 // install UI renders, click it, confirm the permission prompt is the app's.
+import { bridgeHandler } from "./bootstrap.ts";
 
 /** The one origin any of this applies to, as a WebKit allow-list pattern. */
 export const WEBSTORE_MATCH = "https://chromewebstore.google.com/*";
@@ -22,13 +23,10 @@ export const WEBSTORE_MATCH = "https://chromewebstore.google.com/*";
 /// `extensionOfWorld` maps the world back to exactly this string.
 export const WEBSTORE_SURFACE = "__webstore";
 
-/// A script-message handler of its own rather than the shim's `ndext`, and this
-/// is load-bearing on BOTH backends: AppKit keys its handler table by name
-/// alone, so a second world registering `ndext` silently tears down the first,
-/// and GTK connects `script-message-received::<name>`, so a second world
-/// registering `ndext` would have every extension's messages delivered twice,
-/// once tagged with the wrong world. Distinct names sidestep both.
-export const WEBSTORE_HANDLER = "ndwebstore";
+/// Its own handler name, minted the same way an extension's is: a name is per
+/// view on both engines, so the hook sharing one with an extension would take
+/// that extension's bus down. See `bridgeHandler`.
+export const WEBSTORE_HANDLER = bridgeHandler(WEBSTORE_SURFACE);
 
 /// Claimed to the store twice: in the user agent a listing sniffs, and in the
 /// `prodversion` the CRX endpoint is asked for. One number, because a listing
@@ -189,7 +187,7 @@ var THRESHOLD = ${INSTALL_SCORE_THRESHOLD};
 
 function bridge() {
   var handlers = window.webkit && window.webkit.messageHandlers;
-  return (handlers && handlers.${WEBSTORE_HANDLER}) || null;
+  return (handlers && handlers[${JSON.stringify(WEBSTORE_HANDLER)}]) || null;
 }
 
 // A click lands on whatever is painted under the pointer, usually a span inside

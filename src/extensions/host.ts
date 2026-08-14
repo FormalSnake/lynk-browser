@@ -11,8 +11,8 @@ import { extname, resolve } from "node:path";
 import { executeJavaScript, notifications, sendCommand, type NdNodeRef } from "@nativedesktop/react";
 
 import {
-  BRIDGE_HANDLER,
   bootstrapSource,
+  bridgeHandler,
   contentScriptWrapper,
   contentStyleWrapper,
   type ContextKind,
@@ -755,7 +755,7 @@ export class ExtensionHost {
   /// extension and is one frame.
   private installBootstrap(ext: LoadedExtension, kind: ContextKind, node: WebViewRef): void {
     const world = kind === "content" ? contentWorld(ext.id) : undefined;
-    sendCommand(node, "registerScriptMessage", { name: BRIDGE_HANDLER, world });
+    sendCommand(node, "registerScriptMessage", { name: bridgeHandler(ext.id), world });
     sendCommand(node, "addUserScript", {
       id: `nd-boot-${ext.id}`,
       source: this.bootstrapFor(ext, kind),
@@ -841,7 +841,11 @@ export class ExtensionHost {
       console.error(`ND_APP armExtensionView kind=${kind} ext=${extensionId} node=${node.id}`);
     }
     if (kind === "popup") {
-      sendCommand(node, "addUserScript", { id: "nd-popup-size", source: POPUP_SIZE_REPORTER, injectionTime: "end" });
+      sendCommand(node, "addUserScript", {
+        id: "nd-popup-size",
+        source: popupSizeReporter(extensionId),
+        injectionTime: "end",
+      });
     }
   }
 
@@ -1759,17 +1763,20 @@ export class ExtensionHost {
 /// The popup's own size, reported once the page has laid out and on every
 /// change after. The window cannot be resized in place (see LEDGER), so this
 /// is what makes the *next* open the right size.
-const POPUP_SIZE_REPORTER = `(function(){
+function popupSizeReporter(extensionId: string): string {
+  return `(function(){
 function report() {
   var el = document.documentElement;
   var w = Math.max(el.scrollWidth, document.body ? document.body.scrollWidth : 0);
   var h = Math.max(el.scrollHeight, document.body ? document.body.scrollHeight : 0);
-  var bridge = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.${BRIDGE_HANDLER};
+  var handlers = window.webkit && window.webkit.messageHandlers;
+  var bridge = handlers && handlers[${JSON.stringify(bridgeHandler(extensionId))}];
   if (bridge) bridge.postMessage({ k: "popupSize", width: w, height: h });
 }
 new ResizeObserver(report).observe(document.documentElement);
 setTimeout(report, 200);
 })();`;
+}
 
 export function contentWorld(extensionId: string): string {
   return `ext:${extensionId}`;

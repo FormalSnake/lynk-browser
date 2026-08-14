@@ -5,7 +5,12 @@
 // Everything here takes its timeout as an argument rather than reading an
 // env var, so a drive keeps one knob (`ND_DRIVE_TIMEOUT_MS`) and this file
 // keeps no state.
+import { resolve } from "node:path";
+
 import type { AppHandle, JsonNode } from "@nativedesktop/test";
+
+/** Where every drive's captures land. The app has one screenshot directory. */
+export const SHOTS = resolve(import.meta.dir, "../screenshots");
 
 export function fail(message: string): never {
   throw new Error(message);
@@ -21,8 +26,8 @@ export async function step<T>(what: string, run: () => Promise<T>): Promise<T> {
   }
 }
 
-export async function shoot(app: AppHandle, dir: string, name: string, window?: number): Promise<void> {
-  const shot = await app.screenshot(`${dir}/${name}.png`, { minBytes: 1000, window });
+export async function shoot(app: AppHandle, name: string, window?: number): Promise<void> {
+  const shot = await app.screenshot(`${SHOTS}/${name}.png`, { minBytes: 1000, window });
   console.log(`  screenshot ${name}.png ${shot.width}x${shot.height}`);
 }
 
@@ -90,6 +95,47 @@ export async function waitText(
     await Bun.sleep(150);
   }
   return fail(`timed out waiting for ${what}; ${testId} read ${JSON.stringify(seen)}`);
+}
+
+/// The app's address bar IS its command palette, and both drives drive it the
+/// same way. Bound to one drive's backend and patience, because the widget the
+/// palette opens from differs per backend and everything else does not.
+export function paletteDriver(config: { backend: string; timeoutMs: number }) {
+  /// Open it, unless something already did (New tab does). The palette
+  /// presents asynchronously and is not actionable until it does, so every
+  /// open waits for it.
+  ///
+  /// On GTK the omnibox is a flat pill button that opens the palette, so
+  /// clicking it is the real user path. On AppKit the same slot renders a
+  /// `<searchinput>` with no click handler at all, so it opens the other way a
+  /// person would: the Address item in the File menu, which both backends bind
+  /// to Ctrl+L.
+  async function openPalette(app: AppHandle): Promise<void> {
+    const node = await app.find("palette");
+    if (node?.visible) return;
+    const opener = config.backend === "appkit" ? "menu-address" : "omnibox";
+    await step(`click ${opener}`, () => app.click(opener));
+    await step("wait for the palette to present", () =>
+      app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: config.timeoutMs }),
+    );
+  }
+
+  /// setValue(palette, "<string>") replaces the entry text but leaves the
+  /// app's controlled `query` state behind (GTK set_text emits changed twice
+  /// and the blank intermediate wins), so the ranked item list would not match
+  /// what the drive typed. Clearing and inserting keeps both sides in step.
+  async function typeQuery(app: AppHandle, text: string): Promise<void> {
+    await step("clear the palette query", () => app.setValue("palette", ""));
+    await step(`type ${JSON.stringify(text)} into the palette`, () => app.type("palette", text));
+  }
+
+  async function goTo(app: AppHandle, url: string): Promise<void> {
+    await openPalette(app);
+    await typeQuery(app, url);
+    await step("submit the palette query", () => app.setValue("palette", true));
+  }
+
+  return { openPalette, typeQuery, goTo };
 }
 
 /// The titles of a SourceTree's rows, polled until they satisfy `check`. Both
