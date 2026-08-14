@@ -18,9 +18,9 @@ import { bridgeHandler } from "./bootstrap.ts";
 /** The one origin any of this applies to, as a WebKit allow-list pattern. */
 export const WEBSTORE_MATCH = "https://chromewebstore.google.com/*";
 
-/// The content world the hook runs in, in place of an extension id. A Chrome id
-/// is 32 letters from a-p, so this cannot collide with one, and the app's
-/// `extensionOfWorld` maps the world back to exactly this string.
+/// Stands in for an extension id: it names the hook's content world and its
+/// handler, and `handleScriptMessage` routes on seeing it. A Chrome id is 32
+/// letters from a-p, so this cannot collide with one.
 export const WEBSTORE_SURFACE = "__webstore";
 
 /// Its own handler name, minted the same way an extension's is: a name is per
