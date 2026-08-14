@@ -26,14 +26,17 @@ import {
 
 const ROOT = resolve(import.meta.dir, "..");
 const SHOTS = `${ROOT}/screenshots`;
-const WHICH = process.env.NB_EXT_FIXTURE === "mv2" ? "mv2" : "mv3";
+const FIXTURE_KIND = process.env.NB_EXT_FIXTURE === "mv2" ? "mv2" : "mv3";
 // The Linux gate leaves this unset and stays on gtk; ND_BACKEND=appkit runs the
 // same legs against the AppKit host. Each backend keeps its own profile so a
 // run on one never reads the other's registry.
 const BACKEND = process.env.ND_BACKEND === "appkit" ? "appkit" : "gtk";
-const FIXTURE = `${ROOT}/fixtures/darkreader-${WHICH}`;
-const PROFILE = BACKEND === "gtk" ? `/tmp/nb-ext-profile-${WHICH}` : `/tmp/nb-ext-profile-${WHICH}-${BACKEND}`;
-const MARKER = WHICH === "mv2" ? "NB_DARKREADER_OK" : "NB_DARKREADER_MV3_OK";
+const FIXTURE = `${ROOT}/fixtures/darkreader-${FIXTURE_KIND}`;
+const PROFILE = `/tmp/nb-ext-profile-${FIXTURE_KIND}-${BACKEND}`;
+const MARKER = FIXTURE_KIND === "mv2" ? "NB_DARKREADER_OK" : "NB_DARKREADER_MV3_OK";
+// Screenshot prefix. The backend is part of it so an AppKit run never
+// overwrites the GTK set that a Linux gate just produced, and vice versa.
+const WHICH = BACKEND === "gtk" ? FIXTURE_KIND : `${BACKEND}-${FIXTURE_KIND}`;
 // Every wait here scales off one number: the same drive runs on an idle laptop
 // and inside a full framework gate sweep, where everything is several times
 // slower. ND_DRIVE_TIMEOUT_MS is what the gate raises.
@@ -44,7 +47,7 @@ const PATIENCE = Number(process.env.ND_DRIVE_TIMEOUT_MS ?? 60_000);
 // runtime (LEDGER), so that build drives the global toggle (Alt+Shift+D)
 // instead — same command channel, same storage round trip, same proof that the
 // extension's own shortcut changes the page and the change survives.
-const TOGGLE_COMMAND = process.env.NB_EXT_COMMAND ?? (WHICH === "mv2" ? "toggle" : "addSite");
+const TOGGLE_COMMAND = process.env.NB_EXT_COMMAND ?? (FIXTURE_KIND === "mv2" ? "toggle" : "addSite");
 const TOGGLED_OFF = (s: Record<string, unknown>): boolean =>
   TOGGLE_COMMAND === "toggle" ? s.enabled === false : (s.disabledFor as string[] | undefined)?.length === 1;
 const TOGGLED_ON = (s: Record<string, unknown>): boolean =>
@@ -54,7 +57,7 @@ const TOGGLED_ON = (s: Record<string, unknown>): boolean =>
 // hosts into host_permissions and drops `tabs` entirely. The prompt has to
 // reflect what the manifest actually asks for, so the expectation differs.
 const WANT_WARNINGS =
-  WHICH === "mv2"
+  FIXTURE_KIND === "mv2"
     ? ["Read and change all your data on all websites", "Access browser tabs"]
     : ["Read and change all your data on all websites"];
 
@@ -384,7 +387,7 @@ function launch(): Promise<AppHandle> {
     env: {
       NB_STORE_DIR: PROFILE,
       NB_TEST_HOOKS: "1",
-      ND_APP_ID: `dev.nativebrowser.ext.${WHICH}`,
+      ND_APP_ID: `dev.nativebrowser.ext.${WHICH.replace(/-/g, "")}`,
       // The restored-tab leg races the background page's boot: a tab that
       // gives up waiting loads without content scripts and comes back
       // unthemed. Under a full gate sweep the product's 8s is not enough.
