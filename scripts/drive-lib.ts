@@ -98,22 +98,19 @@ export async function waitText(
 }
 
 /// The app's address bar IS its command palette, and both drives drive it the
-/// same way. Bound to one drive's backend and patience, because the widget the
-/// palette opens from differs per backend and everything else does not.
-export function paletteDriver(config: { backend: string; timeoutMs: number }) {
+/// same way on both backends. Bound to one drive's patience and nothing else.
+export function paletteDriver(config: { timeoutMs: number }) {
   /// Open it, unless something already did (New tab does). The palette
   /// presents asynchronously and is not actionable until it does, so every
   /// open waits for it.
   ///
-  /// On GTK the omnibox is a flat pill button that opens the palette, so
-  /// clicking it is the real user path. On AppKit the same slot renders a
-  /// `<searchinput>` with no click handler at all, so it opens the other way a
-  /// person would: the Address item in the File menu, which both backends bind
-  /// to Ctrl+L.
+  /// The omnibox is a `<searchinput>` on both backends now, and a field has no
+  /// click handler, so the palette opens the way a person opens it: the
+  /// Address item in the File menu, which both backends bind to Ctrl+L.
   async function openPalette(app: AppHandle): Promise<void> {
     const node = await app.find("palette");
     if (node?.visible) return;
-    const opener = config.backend === "appkit" ? "menu-address" : "omnibox";
+    const opener = "menu-address";
     await step(`click ${opener}`, () => app.click(opener));
     await step("wait for the palette to present", () =>
       app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: config.timeoutMs }),

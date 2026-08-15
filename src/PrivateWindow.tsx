@@ -36,9 +36,27 @@ function blankTab(id: string): PrivateTab {
   return { id, url: "", title: "", canGoBack: false, canGoForward: false, loading: false };
 }
 
-export function PrivateWindow({ onClose }: { onClose: () => void }): React.ReactNode {
+/// What a private window cannot own itself. Settings, the extensions manager
+/// and the downloads list are one per app and live in the main window, so the
+/// private window's menu routes to them rather than growing copies.
+export interface PrivateWindowProps {
+  onClose: () => void;
+  onSettings: () => void;
+  onExtensions: () => void;
+  onDownloads: () => void;
+  onDownload: (url: string, suggested?: string) => void;
+}
+
+export function PrivateWindow({
+  onClose,
+  onSettings,
+  onExtensions,
+  onDownloads,
+  onDownload,
+}: PrivateWindowProps): React.ReactNode {
   const [tabs, setTabs] = useState<PrivateTab[]>([blankTab("p1")]);
   const [activeId, setActiveId] = useState("p1");
+  const [findOpen, setFindOpen] = useState(false);
   const next = useRef(2);
   const views = useRef(new Map<string, NdNodeRef<"webview"> | null>());
 
@@ -71,6 +89,19 @@ export function PrivateWindow({ onClose }: { onClose: () => void }): React.React
   function command(name: "goBack" | "goForward" | "reload"): void {
     const node = views.current.get(active.id);
     if (node) sendCommand(node, name);
+  }
+
+  /// Find runs against the ACTIVE tab's view, the same rule the main window
+  /// follows: the bar belongs to the window, and a search on a hidden tab has
+  /// nothing to highlight.
+  function findCommand(name: "findStart" | "findNext" | "findPrevious" | "findStop", arg?: unknown): void {
+    const node = views.current.get(active.id);
+    if (node) sendCommand(node, name, arg);
+  }
+
+  function closeFind(): void {
+    findCommand("findStop");
+    setFindOpen(false);
   }
 
   function navigate(raw: string): void {
@@ -157,16 +188,66 @@ export function PrivateWindow({ onClose }: { onClose: () => void }): React.React
               style={{ hexpand: true }}
               onActivate={(e) => navigate(e.text)}
             />
+            {/* The app's one primary menu button is packed into whichever
+                header bar the framework last registered, so a second window
+                gets none. This is the private window's own: without it
+                Settings, Extensions, Find and Downloads have no route from
+                here. The three that are one per app open in the main window;
+                Find is this window's own. */}
+            <menubutton slot="end" testID="private-menu" iconName="open-menu-symbolic">
+              <menuitem testID="private-menu-new-tab" label="New Tab" onSelect={() => openTab()} />
+              <menuitem testID="private-menu-find" label="Find in Page" onSelect={() => setFindOpen(true)} />
+              <menuitem role="separator" testID="private-menu-sep" />
+              <menuitem testID="private-menu-downloads" label="Downloads" onSelect={onDownloads} />
+              <menuitem testID="private-menu-extensions" label="Manage Extensions" onSelect={onExtensions} />
+              <menuitem testID="private-menu-settings" label="Settings" onSelect={onSettings} />
+            </menubutton>
           </headerbar>
 
           <box testID="private-content" orientation="vertical" style={{ hexpand: true, vexpand: true }}>
             {/* The marker. A private window that looks like an ordinary one is
-                the failure mode this banner exists to prevent. */}
-            <banner
-              testID="private-banner"
-              title="Private browsing. Pages you visit are not saved to history and this session is discarded when the window closes."
-              revealed
-            />
+                the failure mode this banner exists to prevent. GNOME HIG
+                *Banners*: one short title, no lengthy explanation — the status
+                page below carries what this window actually does. */}
+            <banner testID="private-banner" title="Private browsing: this window saves no history" revealed />
+
+            {findOpen && (
+              <box
+                testID="private-find-bar"
+                orientation="horizontal"
+                spacing={Spacing.sm}
+                style={{ padding: Spacing.sm, hexpand: true }}
+              >
+                <searchinput
+                  testID="private-find-query"
+                  placeholder="Find in Page"
+                  style={{ hexpand: true }}
+                  onChanged={(e) => (e.text ? findCommand("findStart", { text: e.text }) : findCommand("findStop"))}
+                  onActivate={() => findCommand("findNext")}
+                />
+                <button
+                  testID="private-find-previous"
+                  iconName="go-up-symbolic"
+                  tooltip="Previous match"
+                  cssClasses={["flat"]}
+                  onClick={() => findCommand("findPrevious")}
+                />
+                <button
+                  testID="private-find-next"
+                  iconName="go-down-symbolic"
+                  tooltip="Next match"
+                  cssClasses={["flat"]}
+                  onClick={() => findCommand("findNext")}
+                />
+                <button
+                  testID="private-find-close"
+                  iconName="window-close-symbolic"
+                  tooltip="Close"
+                  cssClasses={["flat"]}
+                  onClick={closeFind}
+                />
+              </box>
+            )}
 
             {tabs
               .filter((t) => t.url !== "")
@@ -186,6 +267,13 @@ export function PrivateWindow({ onClose }: { onClose: () => void }): React.React
                     onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
                     onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
                     onNewWindow={(e) => openTab(e.text)}
+                    onDownloadRequested={(e) => {
+                      // Private browsing hides the trail, it does not refuse
+                      // the file: what you download is still saved, and it
+                      // lands in the one downloads list the app has.
+                      const d = e.data as { url: string; suggestedFilename?: string };
+                      onDownload(d.url, d.suggestedFilename);
+                    }}
                   />
                 </Activity>
               ))}

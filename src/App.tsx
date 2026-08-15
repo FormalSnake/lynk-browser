@@ -1,5 +1,4 @@
 import {
-  Platform,
   Spacing,
   clipboard,
   dialog,
@@ -47,19 +46,6 @@ import { PrivateWindow } from "./PrivateWindow.tsx";
 const TAB_ACTIONS: SourceTreeAction[] = [
   { id: "close", iconName: "window-close-symbolic", tooltip: "Close Tab" },
 ];
-
-/// AppKit promotes a titled `<button>` in a header bar to a viewless
-/// NSToolbarItem, which hugs its label at 120pt whatever `hexpand` says. A
-/// `<searchinput>` is the widget NSToolbar stretches across the free run, so
-/// the address display is a field there and a button on GTK, where a flat
-/// button in an AdwHeaderBar expands correctly and reads as GNOME chrome.
-///
-/// Read per render, never captured at module scope: `Platform.backend` is
-/// "unknown" until render()'s handshake completes, which is after this module
-/// is evaluated.
-function addressIsField(): boolean {
-  return Platform.backend === "appkit";
-}
 
 const TEST_HOOKS = process.env.NB_TEST_HOOKS === "1";
 
@@ -169,6 +155,14 @@ function securityOf(url: string, data: unknown): Security {
   if (state.insecureContent) return "mixed";
   if (state.secure) return "secure";
   return url.startsWith("http://") ? "insecure" : "none";
+}
+
+/// A search the engine has answered and answered with nothing. Both halves
+/// matter: a query the engine has not reported on yet is not a failure, and
+/// an empty query is not a search.
+function findFailed(find: FindState): boolean {
+  if (!find.query) return false;
+  return find.count === 0 || find.found === false;
 }
 
 function findSummary(find: FindState): string {
@@ -940,39 +934,39 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                 cssClasses={["flat"]}
                 onClick={() => command(activeRt.loading ? "stop" : "reload")}
               />
-              {/* The indicator's testID carries its state: getTree exposes a
-                  node's text but never its icon name, so this is the only way
-                  a drive can assert which padlock is drawn. */}
+              {/* One indicator, updated in place. The state rides the testID
+                  because getTree exposes a node's text but never its icon
+                  name, so that is the only way a drive can assert which
+                  padlock is drawn; it must NOT ride a `key`, which remounts
+                  the button and left AppKit with one toolbar item per state
+                  the page had ever been in. */}
               <button
                 slot="start"
-                key={activeRt.security}
                 testID={`security-${activeRt.security}`}
                 iconName={SECURITY_ICON[activeRt.security]}
                 tooltip={SECURITY_TOOLTIP[activeRt.security]}
                 cssClasses={["flat"]}
                 onClick={() => openPalette(active.url)}
               />
-              {addressIsField() ? (
-                <searchinput
-                  slot="start"
-                  testID="omnibox"
-                  text={shownUrl}
-                  placeholder="Search or Enter Address"
-                  style={{ hexpand: true }}
-                  onActivate={(e) => commitQuery(e.text)}
-                />
-              ) : (
-                <button
-                  slot="start"
-                  testID="omnibox"
-                  label={shownUrl || "Search or Enter Address"}
-                  tooltip="Search or enter an address (Ctrl+L)"
-                  ellipsize
-                  cssClasses={["flat"]}
-                  style={{ hexpand: true }}
-                  onClick={() => openPalette(active.url)}
-                />
-              )}
+              {/* One address widget on both backends. The private window
+                  proved a `<searchinput>` takes the header bar's whole free
+                  run on GTK too (523px of a 778px bar), so the main window no
+                  longer draws its address as a flat label. Typing and Enter
+                  commit straight from the field; Ctrl+L still opens the
+                  palette, which is where history and command ranking live.
+
+                  The padlock stays a separate button to its left: the widget
+                  has no leading-icon prop on either backend, so putting the
+                  security state inside the field would need a framework arm
+                  (LEDGER). */}
+              <searchinput
+                slot="start"
+                testID="omnibox"
+                text={shownUrl}
+                placeholder="Search or Enter Address"
+                style={{ hexpand: true }}
+                onActivate={(e) => commitQuery(e.text)}
+              />
               <ExtensionActionButtons host={extensions} />
             </headerbar>
 
@@ -986,9 +980,14 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                   spacing={Spacing.sm}
                   style={{ padding: Spacing.sm, hexpand: true }}
                 >
+                  {/* Adwaita's `.error` on the entry is what a search that
+                      found nothing looks like in GNOME; the count label alone
+                      leaves the field claiming everything is fine. Empty
+                      rather than absent, so the class comes back off. */}
                   <searchinput
                     testID="find-query"
                     placeholder="Find in Page"
+                    cssClasses={findFailed(find) ? ["error"] : []}
                     style={{ hexpand: true }}
                     onChanged={(e) => runFind(e.text)}
                     onActivate={() => findCommand("findNext")}
@@ -1183,7 +1182,15 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
     </window>
 
     {settingsOpen && <SettingsWindow onClose={() => setSettingsOpen(false)} />}
-    {privateOpen && schemeReady && <PrivateWindow onClose={() => setPrivateOpen(false)} />}
+    {privateOpen && schemeReady && (
+      <PrivateWindow
+        onClose={() => setPrivateOpen(false)}
+        onSettings={() => setSettingsOpen(true)}
+        onExtensions={() => extensions.setManagerOpen(true)}
+        onDownloads={() => setDownloadsOpen(true)}
+        onDownload={startDownload}
+      />
+    )}
 
     <ExtensionPermissionPrompt host={extensions} />
     {schemeReady && <ExtensionPopupWindow host={extensions} />}

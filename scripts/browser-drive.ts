@@ -85,7 +85,7 @@ async function waitRows(app: AppHandle, check: (rows: string[]) => boolean, what
   return rowsMatching(app, "tab-list", check, what, PATIENCE);
 }
 
-const { openPalette, typeQuery, goTo } = paletteDriver({ backend: "gtk", timeoutMs: PATIENCE });
+const { openPalette, typeQuery, goTo } = paletteDriver({ timeoutMs: PATIENCE });
 
 /// The index of the first palette row whose id matches. Palette rows carry
 /// their app-side id on the wire, so a drive names the row it wants instead of
