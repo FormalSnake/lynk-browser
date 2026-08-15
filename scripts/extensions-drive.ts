@@ -188,7 +188,7 @@ async function mainWindow(app: AppHandle): Promise<number> {
   return found.window;
 }
 
-const { goTo } = paletteDriver({ backend: BACKEND, timeoutMs: PATIENCE });
+const { goTo } = paletteDriver({ timeoutMs: PATIENCE });
 
 /// The webview testID of the tab at `index`. Tab ids are handed out by the
 /// session store and an extension can create tabs of its own, so nothing here
@@ -350,13 +350,22 @@ async function listTestIds(app: AppHandle): Promise<string[]> {
   return out;
 }
 
-/// The popup is loaded when its URL is the extension's popup page AND that page
-/// has PAINTED something. A URL match alone returns while the popup's own
-/// bundle is still booting, which is how the first capture of this window came
-/// out blank: the shot beat the render, not the load.
+/// The popup is loaded when its URL is the extension's popup page AND that
+/// page has finished BUILDING ITSELF. The load event is not that line: Dark
+/// Reader's popup reports 20 characters of text when the document finishes
+/// loading and 437 once its bundle has rendered the UI, and a capture taken
+/// between the two is of an empty window. Any nonzero count used to satisfy
+/// this, which is exactly how the final review got a 91%-flat popup shot.
+///
+/// Settled, not merely nonempty: two consecutive readings the same, at least
+/// one poll apart, with the count above a floor that a bare document body
+/// cannot reach on its own.
+const POPUP_MIN_CHARS = 100;
+
 async function waitPopupLoaded(app: AppHandle, id: string): Promise<string> {
   const deadline = Date.now() + PATIENCE;
   let last = "";
+  let previous = -1;
   while (Date.now() < deadline) {
     const { windows } = await app.windows();
     for (const window of windows) {
@@ -375,7 +384,8 @@ async function waitPopupLoaded(app: AppHandle, id: string): Promise<string> {
         .catch(() => null);
       const chars = Number(painted?.value ?? 0);
       last = `${last} (${chars} chars)`;
-      if (chars > 0) return last;
+      if (chars >= POPUP_MIN_CHARS && chars === previous) return last;
+      previous = chars;
     }
     await Bun.sleep(300);
   }

@@ -51,14 +51,22 @@ function ExtensionWebView({
   url,
   testID,
   hideOnceArmed = false,
+  onArmed,
+  onLoaded,
 }: HostProps & {
   kind: "background" | "popup";
   extensionId: string;
   url: string;
   testID: string;
   hideOnceArmed?: boolean;
+  onArmed?: () => void;
+  onLoaded?: () => void;
 }): React.ReactNode {
   const [armed, setArmed] = useState(false);
+  /// A load has to START before its end means anything: WebKit reports
+  /// `loading: false` on a view that has never navigated, which is the state
+  /// this widget spends its first render in.
+  const started = useRef(false);
   // The scheme handler answers on the view that asked, taken from here rather
   // than from a lookup: a request can arrive while the host's own map is being
   // rebuilt, and an unanswered request leaves the page loading forever.
@@ -77,6 +85,7 @@ function ExtensionWebView({
         self.current = node as NdNodeRef<"webview">;
         host.armExtensionView(kind, extensionId, node as NdNodeRef<"webview">);
         setArmed(true);
+        onArmed?.();
       }}
       onScriptMessage={(e) => {
         const message = e.data as { body: unknown };
@@ -86,9 +95,14 @@ function ExtensionWebView({
         if (self.current) host.serveScheme(self.current, e.data as { id: string; url: string });
       }}
       onJavaScriptResult={onJavaScriptResult}
+      onLoadingChanged={(e) => {
+        if (e.checked) started.current = true;
+        else if (started.current) onLoaded?.();
+      }}
       onLoadFailed={(e) => {
         const failure = e.data as { url: string; error: string };
         console.error(`[nativebrowser] ${extensionId} ${kind} failed to load ${failure.url}: ${failure.error}`);
+        onLoaded?.();
       }}
     />
   );
@@ -133,28 +147,61 @@ export function ExtensionBackgrounds({ host }: HostProps): React.ReactNode {
 
 /// The action popup: its own small window, closed when it loses focus, the way
 /// a browser popup behaves.
+///
+/// Keyed on the surface it shows, so every open starts a fresh
+/// `PopupWindow` — its "has this page loaded yet" state must not survive from
+/// the previous extension's popup.
 export function ExtensionPopupWindow({ host }: HostProps): React.ReactNode {
   const { popup } = useExtensionState(host);
   if (!popup) return null;
   const view = host.views().find((v) => v.id === popup.extensionId);
   return (
-    <window
+    <PopupWindow
+      key={`${popup.extensionId}:${popup.url}`}
+      host={host}
+      popup={popup}
       title={view?.title ?? "Extension"}
-      testID="ext-popup-window"
-      defaultWidth={popup.width}
-      defaultHeight={popup.height}
-      onClosed={() => host.closePopup()}
-    >
-      <box testID="ext-popup" orientation="vertical" style={{ hexpand: true, vexpand: true }}>
-        <ExtensionWebView
-          host={host}
-          kind="popup"
-          extensionId={popup.extensionId}
-          url={popup.url}
-          testID={`ext-popup-view-${popup.extensionId}`}
-        />
-      </box>
-    </window>
+    />
+  );
+}
+
+/// The popup window is built hidden and shown once its page has loaded. A
+/// GtkWindow maps as soon as it is created, so mounting it and the webview in
+/// one commit puts an empty 380x600 window on screen for as long as the
+/// extension's own bundle takes to boot — measured at ~400ms for Dark Reader
+/// on the headless rig, which is what the final review captured as "the popup
+/// paints nothing". The webview still mounts and loads inside the hidden
+/// window, so nothing about the page's timing changes; only the moment the
+/// user sees it does.
+function PopupWindow({
+  host,
+  popup,
+  title,
+}: HostProps & { popup: NonNullable<ReturnType<ExtensionHost["popupState"]>>; title: string }): React.ReactNode {
+  const [armed, setArmed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <Activity mode={armed && !loaded ? "hidden" : "visible"}>
+      <window
+        title={title}
+        testID="ext-popup-window"
+        defaultWidth={popup.width}
+        defaultHeight={popup.height}
+        onClosed={() => host.closePopup()}
+      >
+        <box testID="ext-popup" orientation="vertical" style={{ hexpand: true, vexpand: true }}>
+          <ExtensionWebView
+            host={host}
+            kind="popup"
+            extensionId={popup.extensionId}
+            url={popup.url}
+            testID={`ext-popup-view-${popup.extensionId}`}
+            onArmed={() => setArmed(true)}
+            onLoaded={() => setLoaded(true)}
+          />
+        </box>
+      </window>
+    </Activity>
   );
 }
 
@@ -180,6 +227,31 @@ function promptHeight(warnings: number): number {
   return Math.min(640, Math.max(280, 240 + 32 * warnings));
 }
 
+/// A dialog's action row: pinned to the bottom, buttons at the TRAILING edge,
+/// on both backends.
+///
+/// The trailing edge is bought with an expanding spacer rather than
+/// `halign: "end"`. GTK honours halign on a box; AppKit cannot, because an
+/// NSStackView aligns every arranged subview against its own `alignment`
+/// (`.leading` for a vertical stack) with a constraint that outranks the
+/// trailing pin the style installs — so the row stretched full width and its
+/// buttons packed from the left, which is what the final review measured
+/// (Cancel at x=20pt in a 623pt dialog). A spacer needs nothing from either
+/// backend beyond `hexpand`, which both already honour.
+function ButtonRow({ testID, children }: { testID: string; children: React.ReactNode }): React.ReactNode {
+  return (
+    <box
+      testID={testID}
+      orientation="horizontal"
+      spacing={Spacing.sm}
+      style={{ hexpand: true, vexpand: true, valign: "end" }}
+    >
+      <box testID={`${testID}-spacer`} orientation="horizontal" style={{ hexpand: true }} />
+      {children}
+    </box>
+  );
+}
+
 /// The install prompt. Shown before anything of the extension runs, and the
 /// only thing that can enable it.
 export function ExtensionPermissionPrompt({ host }: HostProps): React.ReactNode {
@@ -187,9 +259,16 @@ export function ExtensionPermissionPrompt({ host }: HostProps): React.ReactNode 
   if (!prompt) return null;
   const broad = broadAccessWarning(host, prompt.id);
   return (
+    // A grant is a decision ABOUT a window, so it is attached to one: Apple's
+    // framing for sheets is that they ensure "a user never loses track of
+    // which window the dialog belongs to", and a free-floating prompt with
+    // live traffic lights can be minimised away from the page that asked.
+    // GTK has no sheets; the framework maps this to the GNOME equivalent, a
+    // modal window transient for its parent.
     <window
       title="Add Extension"
       testID="ext-prompt-window"
+      presentation="sheet"
       defaultWidth={460}
       defaultHeight={promptHeight(prompt.warnings.length)}
     >
@@ -275,7 +354,7 @@ export function ExtensionPermissionPrompt({ host }: HostProps): React.ReactNode 
             </box>
           </box>
 
-          <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end", vexpand: true, valign: "end" }}>
+          <ButtonRow testID="ext-prompt-buttons">
             <button testID="ext-prompt-cancel" label="Cancel" onClick={() => void host.resolvePrompt(false)} />
             <button
               testID="ext-prompt-add"
@@ -283,7 +362,7 @@ export function ExtensionPermissionPrompt({ host }: HostProps): React.ReactNode 
               cssClasses={["suggested-action"]}
               onClick={() => void host.resolvePrompt(true)}
             />
-          </box>
+          </ButtonRow>
         </box>
       </toolbarview>
     </window>
@@ -431,6 +510,17 @@ export function ExtensionsManagerWindow({ host, actions }: HostProps & { actions
                             tooltip={`Remove ${view.name}`}
                             cssClasses={["flat"]}
                             onClick={() => setRemoving(view.id)}
+                          />
+                          {/* The row opens a detail page; the switch and the
+                              trash button were the only things that looked
+                              interactive. GNOME marks a navigation row with a
+                              trailing chevron, last in the suffix run. */}
+                          <image
+                            slot="suffix"
+                            testID={`ext-row-chevron-${view.id}`}
+                            iconName="go-next-symbolic"
+                            symbolScale="small"
+                            cssClasses={["dimmed"]}
                           />
                         </row>
                       ))}
@@ -596,7 +686,7 @@ function RemoveExtensionDialog({
             text="This also deletes its settings and stored data."
             style={{ halign: "start" }}
           />
-          <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end", vexpand: true, valign: "end" }}>
+          <ButtonRow testID="ext-confirm-buttons">
             <button testID="ext-confirm-cancel" label="Cancel" onClick={onClose} />
             <button
               testID="ext-confirm-remove"
@@ -607,7 +697,7 @@ function RemoveExtensionDialog({
                 onRemoved();
               }}
             />
-          </box>
+          </ButtonRow>
         </box>
       </toolbarview>
     </window>
@@ -651,10 +741,10 @@ export function ExtensionStoreDialog({
             onChanged={(e) => setAddress(e.text)}
             onActivate={submit}
           />
-          <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end", vexpand: true, valign: "end" }}>
+          <ButtonRow testID="ext-store-buttons">
             <button testID="ext-store-cancel" label="Cancel" onClick={onClose} />
             <button testID="ext-store-add" label="Continue" cssClasses={["suggested-action"]} onClick={submit} />
-          </box>
+          </ButtonRow>
         </box>
       </toolbarview>
     </window>
