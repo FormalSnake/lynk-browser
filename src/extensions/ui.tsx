@@ -514,10 +514,15 @@ export function ExtensionsManagerWindow({ host, actions }: HostProps & { actions
                           {/* The row opens a detail page; the switch and the
                               trash button were the only things that looked
                               interactive. GNOME marks a navigation row with a
-                              trailing chevron, last in the suffix run. */}
+                              trailing chevron, last in the suffix run.
+
+                              NOT `ext-row-…`: the drives read the installed
+                              set by scanning that prefix and slicing the id
+                              off it, so a second node under it hands them a
+                              extension id that does not exist. */}
                           <image
                             slot="suffix"
-                            testID={`ext-row-chevron-${view.id}`}
+                            testID={`ext-chevron-${view.id}`}
                             iconName="go-next-symbolic"
                             symbolScale="small"
                             cssClasses={["dimmed"]}
