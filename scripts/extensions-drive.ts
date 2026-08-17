@@ -176,10 +176,20 @@ async function waitInWorld(
 /// then decided to do.
 const WORLD_PROBE = "(globalThis.__ndextRan || 0) + ' scripts, chrome=' + typeof chrome";
 
+/// Read the instant a tab is selected, this answers "0 scripts,
+/// chrome=undefined" on a HEALTHY restore as well: the page has not committed
+/// yet, so the world is one WebKit makes up for the question. That is how the
+/// string came to be recorded as the signature of a bug it does not identify.
+/// Waiting for the world to fill in is what makes the line worth printing.
 async function worldProbe(app: AppHandle, testId: string, extensionId: string): Promise<string> {
-  return waitInWorld(app, testId, extensionId, WORLD_PROBE, () => true, "the world never answered").catch(
-    (e: Error) => e.message,
-  );
+  return waitInWorld(
+    app,
+    testId,
+    extensionId,
+    WORLD_PROBE,
+    (value) => value.includes("chrome=object"),
+    "the world never came up",
+  ).catch((e: Error) => e.message);
 }
 
 async function mainWindow(app: AppHandle): Promise<number> {
@@ -515,19 +525,24 @@ try {
   // its controls carry no stable selectors, so the command is the honest
   // equivalent: it runs the same background code path the popup's toggle calls,
   // through chrome.commands, chrome.storage and the background-to-content hop.
+  //
+  // The reload waits on STORAGE, not on a delay. A page that reloads before
+  // the extension has recorded the toggle connects to a background still
+  // holding the old answer, and the answer a document gets on connect is the
+  // one it keeps. Same shape as the restore race, on a user action instead
+  // of a launch.
   await step(`run the ${TOGGLE_COMMAND} command`, () =>
     app.click(`menu-ext-cmd-${id}-${TOGGLE_COMMAND}`),
   );
-  await Bun.sleep(1500);
+  await waitStored(id, TOGGLED_OFF, `the ${TOGGLE_COMMAND} command's effect`);
   await step("reload the page", () => app.click("menu-reload"));
   const toggledOff = await waitUnthemed(app, secondTab, `the page after the ${TOGGLE_COMMAND} command`);
-  await waitStored(id, TOGGLED_OFF, `the ${TOGGLE_COMMAND} command's effect`);
   console.log(`3b. ${TOGGLE_COMMAND} command: the page loses the theme ${JSON.stringify(toggledOff)}, and storage agrees`);
 
   await step(`run ${TOGGLE_COMMAND} again`, () => app.click(`menu-ext-cmd-${id}-${TOGGLE_COMMAND}`));
+  await waitStored(id, TOGGLED_ON, `the ${TOGGLE_COMMAND} command being undone`);
   await step("reload the page", () => app.click("menu-reload"));
   const toggledOn = await waitDark(app, secondTab, `the page after running ${TOGGLE_COMMAND} again`);
-  await waitStored(id, TOGGLED_ON, `the ${TOGGLE_COMMAND} command being undone`);
   console.log(`3c. ${TOGGLE_COMMAND} again: the theme is back ${JSON.stringify(toggledOn)}, and storage agrees`);
 
   // 4 — state survives a restart: the registry row, the grant and storage. The

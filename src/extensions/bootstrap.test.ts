@@ -51,3 +51,97 @@ describe("the injected shim", () => {
     expect(() => new Function(source)).not.toThrow();
   });
 });
+
+interface Envelope {
+  k: string;
+  id?: string;
+  token?: string;
+}
+
+/// Runs the shim against stand-in globals. Everything it reaches for is a
+/// named parameter, so the real global object is never written to and one
+/// run cannot see another's.
+function runShim(kind: BootstrapConfig["kind"], id = ID_A) {
+  const posted: Envelope[] = [];
+  const timers: (() => void)[] = [];
+  const listeners: Record<string, ((event: unknown) => void)[]> = {};
+  const fakeGlobal: Record<string, unknown> = {};
+  const win: Record<string, unknown> = {
+    webkit: { messageHandlers: { [bridgeHandler(id)]: { postMessage: (e: Envelope) => posted.push(e) } } },
+    frames: [],
+    addEventListener: (name: string, fn: (event: unknown) => void) => {
+      (listeners[name] ??= []).push(fn);
+    },
+  };
+  win.top = win;
+  win.parent = win;
+
+  const run = new Function("globalThis", "window", "document", "location", "setTimeout", bootstrapSource({ ...config(id), kind }));
+  run(
+    fakeGlobal,
+    win,
+    { readyState: "loading" },
+    { href: `chrome-extension://${id}/background.html` },
+    (fn: () => void) => timers.push(fn),
+  );
+
+  const token = String(posted[0]?.token);
+  const deliver = (env: Record<string, unknown>): void => {
+    (fakeGlobal.__ndext as { deliver: (e: Record<string, unknown>) => void }).deliver(env);
+  };
+  // The broker's answer to `hello`, which is what releases the send queue.
+  deliver({ k: "ready", to: token, frameId: 0, documentId: "d0", tabId: -1 });
+  return {
+    posted,
+    deliver,
+    chrome: fakeGlobal.chrome as { storage: { local: { get: (keys: unknown) => Promise<unknown> } } },
+    idles: (): Envelope[] => posted.filter((e) => e.k === "idle"),
+    load: () => (listeners.load ?? []).forEach((fn) => fn({})),
+    /// Drains one task's worth of timers. That boundary is what the startup
+    /// gate is defined against: a request settling queues its caller's next
+    /// request as a MICROTASK, so anything checked before the next task sees a
+    /// gap that is not really idle.
+    tick: () => timers.splice(0).forEach((fn) => fn()),
+  };
+}
+
+/// The gate that keeps a tab from committing before the extension it belongs
+/// to can answer. `load` is not that moment: an extension's own startup runs
+/// after it, and a content script that connects inside that window gets an
+/// answer nobody retries.
+describe("the background startup gate", () => {
+  test("reports idle after load, and not before", () => {
+    const shim = runShim("background");
+    shim.tick();
+    expect(shim.idles()).toHaveLength(0);
+
+    shim.load();
+    expect(shim.posted.some((e) => e.k === "loaded")).toBe(true);
+    // Same task as `load`: the extension has not had a turn yet.
+    expect(shim.idles()).toHaveLength(0);
+    shim.tick();
+    expect(shim.idles()).toHaveLength(1);
+  });
+
+  test("an outstanding chrome.* call holds it until it is answered", () => {
+    const shim = runShim("background");
+    shim.load();
+    void shim.chrome.storage.local.get("anything");
+    const call = shim.posted.find((e) => e.k === "call");
+    expect(call?.id).toBeTruthy();
+
+    shim.tick();
+    expect(shim.idles()).toHaveLength(0);
+
+    shim.deliver({ k: "ret", to: shim.posted[0]?.token, id: call?.id, ok: true, value: {} });
+    shim.tick();
+    expect(shim.idles()).toHaveLength(1);
+  });
+
+  test("a content script never reports idle", () => {
+    const shim = runShim("content");
+    shim.load();
+    shim.tick();
+    expect(shim.idles()).toHaveLength(0);
+  });
+});

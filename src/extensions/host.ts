@@ -220,6 +220,8 @@ export class ExtensionHost {
   private queuedForBackground = new Map<string, Record<string, unknown>[]>();
   /** Background pages whose document has finished loading, listeners and all. */
   private backgroundLoaded = new Set<string>();
+  /** Background pages that have also run out of their own startup work. */
+  private backgroundIdle = new Set<string>();
   /** Set once the wait for background pages has been given up on. */
   private backgroundDeadlinePassed = false;
 
@@ -288,7 +290,8 @@ export class ExtensionHost {
     for (const listener of this.listeners) listener();
   }
 
-  /// Whether every enabled extension's background page is up.
+  /// Whether every enabled extension's background page is up AND has finished
+  /// starting itself.
   ///
   /// Tabs hold their navigation until this is true, because a content script
   /// that connects before the background page can answer gets one reply — the
@@ -300,7 +303,7 @@ export class ExtensionHost {
     const waiting = this.enabledExtensions().filter(
       (ext) =>
         (ext.manifest.backgroundPage !== null || ext.manifest.serviceWorker !== null) &&
-        !this.backgroundLoaded.has(ext.id),
+        !(this.backgroundLoaded.has(ext.id) && this.backgroundIdle.has(ext.id)),
     );
     // Every background page reported in, so the deadline has nothing left to
     // rescue. Cancelling it matters for more than tidiness: an armed timer
@@ -319,7 +322,7 @@ export class ExtensionHost {
         this.backgroundDeadline = null;
         this.backgroundDeadlinePassed = true;
         console.error(
-          `[nativebrowser] no background page from ${late} after ${BACKGROUND_READY_TIMEOUT_MS}ms; ` +
+          `[nativebrowser] ${late} did not finish starting after ${BACKGROUND_READY_TIMEOUT_MS}ms; ` +
             "tabs are proceeding without it",
         );
         this.notify();
@@ -523,6 +526,7 @@ export class ExtensionHost {
     this.armed.delete(`background:${id}`);
     this.armed.delete(`popup:${id}`);
     this.backgroundLoaded.delete(id);
+    this.backgroundIdle.delete(id);
     this.queuedForBackground.delete(id);
     this.forgetFrames((surface) => surface.extensionId === id);
     for (const [name, alarm] of this.alarms) {
@@ -833,7 +837,10 @@ export class ExtensionHost {
     // widget arriving twice must not reinstall anything or forget its frames.
     if (this.armed.get(key) === node.id) return;
     this.armed.set(key, node.id);
-    if (kind === "background") this.backgroundLoaded.delete(extensionId);
+    if (kind === "background") {
+      this.backgroundLoaded.delete(extensionId);
+      this.backgroundIdle.delete(extensionId);
+    }
     this.forgetFrames((surface) => surface.kind === kind && surface.extensionId === extensionId);
 
     this.installBootstrap(ext, kind, node);
@@ -1006,6 +1013,8 @@ export class ExtensionHost {
         return void this.onCall(token, env);
       case "loaded":
         return this.onLoaded(token);
+      case "idle":
+        return this.onIdle(token);
       case "msgres":
         return this.settle(String(env.id), env.response);
       case "portOpen":
@@ -1063,6 +1072,25 @@ export class ExtensionHost {
     const waiting = this.queuedForBackground.get(frame.surface.extensionId) ?? [];
     this.queuedForBackground.delete(frame.surface.extensionId);
     for (const envelope of waiting) this.deliver(frame.surface, envelope);
+    this.notify();
+  }
+
+  /// The background page has run out of its own startup work: no chrome.* call
+  /// outstanding and nothing left loading out of its own chrome-extension://
+  /// origin, measured across a task boundary in the page (see the shim).
+  ///
+  /// This, not `loaded`, is what a tab's first navigation waits for. `load`
+  /// fires while the extension's startup is still ahead of it: measured on
+  /// g815, Dark Reader's config requests do not reach the broker until ~150ms
+  /// after `loaded`, and a page that commits in that window connects to a
+  /// background that answers it with an exception nothing retries.
+  private onIdle(token: string): void {
+    const frame = this.frames.get(token);
+    if (!frame || frame.surface.kind !== "background" || frame.frameId !== 0) return;
+    if (process.env.NB_TEST_HOOKS === "1") {
+      console.error(`ND_APP backgroundIdle ext=${frame.surface.extensionId}`);
+    }
+    this.backgroundIdle.add(frame.surface.extensionId);
     // Tabs are holding their navigation until this is true.
     this.notify();
   }

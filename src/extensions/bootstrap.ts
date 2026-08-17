@@ -202,6 +202,116 @@ function call(api, args, callback) {
   });
 }
 
+// ------------------------------------------------------------- startup gate
+
+/// The document's \`load\` event is not the moment an extension can answer a
+/// page. Its own startup runs after it: reading chrome.storage and pulling its
+/// packaged config out of chrome-extension://, and a content script that
+/// connects inside that window is answered wrongly or not at all: Dark
+/// Reader's connect handler throws while its fixes are still unindexed, and
+/// nothing retries. A background page therefore reports again, once it has run
+/// out of work, and the broker holds every tab's first navigation until then.
+///
+/// Only the extension's OWN resources are counted. A background fetching news
+/// off the internet is running, not starting, and waiting for it would mean
+/// waiting for a network that may not answer.
+var busy = 0;
+var idleSent = false;
+var idleArmed = false;
+var idleWatching = false;
+
+function idleNow() {
+  idleArmed = false;
+  if (idleSent || !idleWatching || busy > 0) return;
+  if (Object.keys(pending).length > 0) return;
+  idleSent = true;
+  send({ k: "idle" });
+}
+
+/// setTimeout, not a microtask, and the zero is not a guess: when a request
+/// settles, the extension's continuation is a MICROTASK, so it has already
+/// started the next request by the time any TASK runs. Checking sooner reports
+/// idle in the gap between two links of one chain. The boundary is the point;
+/// the delay is not.
+function armIdle() {
+  if (idleSent || idleArmed) return;
+  idleArmed = true;
+  setTimeout(idleNow, 0);
+}
+
+function ownResource(url) {
+  try {
+    return String(new URL(String(url), location.href)).indexOf(CFG.baseUrl + "/") === 0;
+  } catch (e) {
+    return false;
+  }
+}
+
+/// Installed at document_start so the extension's own top level is counted
+/// too. Counting starts here; REPORTING waits for load (idleWatching).
+function watchStartup() {
+  var XHR = globalThis.XMLHttpRequest;
+  if (XHR && XHR.prototype && XHR.prototype.send) {
+    var nativeOpen = XHR.prototype.open;
+    var nativeSend = XHR.prototype.send;
+    XHR.prototype.open = function (method, url) {
+      this.__ndOwn = ownResource(url);
+      return nativeOpen.apply(this, arguments);
+    };
+    XHR.prototype.send = function () {
+      if (this.__ndOwn && !idleSent) {
+        busy++;
+        var settled = false;
+        this.addEventListener("loadend", function () {
+          if (settled) return;
+          settled = true;
+          busy--;
+          armIdle();
+        });
+      }
+      return nativeSend.apply(this, arguments);
+    };
+  }
+  var nativeFetch = globalThis.fetch;
+  if (typeof nativeFetch !== "function") return;
+  globalThis.fetch = function (input) {
+    var result = nativeFetch.apply(this, arguments);
+    if (idleSent || !ownResource(input && input.url ? input.url : input)) return result;
+    busy++;
+    // A Response settles when its HEADERS arrive and every real caller then
+    // awaits the body, so the request stays counted until a body reader
+    // settles, or until a task passes with nobody having started one.
+    return result.then(
+      function (response) {
+        var open = 1;
+        var settle = function () {
+          if (--open === 0) {
+            busy--;
+            armIdle();
+          }
+        };
+        ["arrayBuffer", "blob", "json", "text"].forEach(function (name) {
+          var native = response[name];
+          if (typeof native !== "function") return;
+          response[name] = function () {
+            open++;
+            var body = native.apply(response, arguments);
+            body.then(settle, settle);
+            return body;
+          };
+        });
+        setTimeout(settle, 0);
+        return response;
+      },
+      function (error) {
+        busy--;
+        armIdle();
+        throw error;
+      },
+    );
+  };
+}
+
 /// Chrome lets the last argument be omitted; this pulls it off only when it is
 /// really a callback so \`get(keys)\` and \`get(keys, cb)\` both work.
 function popCallback(args) {
@@ -311,6 +421,7 @@ var api = {
         if (!settle) return;
         delete pending[env.id];
         settle(env.ok, env.value, env.error);
+        armIdle();
         return;
       }
       case "msg": {
@@ -609,10 +720,20 @@ if (!globalThis.browser) globalThis.browser = chromeApi;
 
 send({ k: "hello", url: location.href, top: window === window.top, kind: CFG.kind });
 
-// A background page registers its runtime.onInstalled / onStartup listeners
-// while its own deferred script runs, so the broker waits for this before
-// firing them rather than guessing at a delay.
-if (document.readyState === "complete") send({ k: "loaded" });
-else window.addEventListener("load", function () { send({ k: "loaded" }); }, { once: true });
+if (CFG.kind === "background") watchStartup();
+
+/// A background page registers its runtime.onInstalled / onStartup listeners
+/// while its own deferred script runs, so the broker waits for \`loaded\` before
+/// firing them rather than guessing at a delay. \`idle\` follows once the
+/// extension's own startup has run out of work; tabs wait for that one.
+function reportLoaded() {
+  send({ k: "loaded" });
+  if (CFG.kind !== "background") return;
+  idleWatching = true;
+  armIdle();
+}
+
+if (document.readyState === "complete") reportLoaded();
+else window.addEventListener("load", reportLoaded, { once: true });
 })();`;
 }
