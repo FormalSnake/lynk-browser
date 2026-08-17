@@ -67,9 +67,16 @@ const app = await launchApp({
 
 const PAGE = "page-t1";
 
+/// The tab's view is not queryable the instant the app has been told to
+/// navigate — it arms a render later — so a lookup that fails is "not yet",
+/// not a verdict. `waitForUrl` is the only caller and it has the deadline.
 async function pageUrl(): Promise<string> {
-  const info = await app.rpc.call("webviewInfo", { testId: PAGE });
-  return String(info.url ?? "");
+  try {
+    const info = await app.rpc.call("webviewInfo", { testId: PAGE });
+    return String(info.url ?? "");
+  } catch (error) {
+    return `<${(error as Error).message}>`;
+  }
 }
 
 async function evalPage(code: string): Promise<string> {
