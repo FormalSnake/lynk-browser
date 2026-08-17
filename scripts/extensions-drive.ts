@@ -313,19 +313,31 @@ async function waitUnthemed(app: AppHandle, testId: string, what: string): Promi
 /// The background page is hidden by design and cannot be evaluated in, so this
 /// is how a drive checks what actually persisted.
 function storedSettings(extensionId: string, area = "sync"): Record<string, unknown> {
-  const db = new Database(`${PROFILE}/extensions.sqlite`, { readonly: true });
-  try {
-    const rows = db
-      .query<{ key: string; value: string }, [string, string]>(
-        "SELECT key, value FROM extension_storage WHERE ext_id = ? AND area = ?",
-      )
-      .all(extensionId, area);
-    const out: Record<string, unknown> = {};
-    for (const row of rows) out[row.key] = JSON.parse(row.value);
-    return out;
-  } finally {
-    db.close();
+  // The app writes this file while the drive reads it, so a read can land on a
+  // held lock. That is a retry, not a failure: sqlite releases within a
+  // transaction's lifetime.
+  let last: unknown;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      const db = new Database(`${PROFILE}/extensions.sqlite`, { readonly: true });
+      try {
+        const rows = db
+          .query<{ key: string; value: string }, [string, string]>(
+            "SELECT key, value FROM extension_storage WHERE ext_id = ? AND area = ?",
+          )
+          .all(extensionId, area);
+        const out: Record<string, unknown> = {};
+        for (const row of rows) out[row.key] = JSON.parse(row.value);
+        return out;
+      } finally {
+        db.close();
+      }
+    } catch (e) {
+      last = e;
+      Bun.sleepSync(50);
+    }
   }
+  throw last as Error;
 }
 
 /// Waits for something to reach the database. Extensions debounce their own

@@ -75,6 +75,23 @@ function listWindows(pid: number): NdshotWindow[] {
 
 const { goTo } = paletteDriver({ timeoutMs: PATIENCE });
 
+/// Right-clicks until a menu window actually opens. Headful synthesis is at the
+/// mercy of what has focus: a click that lands while another app is frontmost
+/// activates this one instead of opening anything.
+async function openMenu(ref: number, what: string): Promise<NdshotWindow[]> {
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const before = new Set(listWindows(app.pid).map((w) => w.windowID));
+    await app.rightClick({ ref });
+    await Bun.sleep(1200);
+    const opened = listWindows(app.pid).filter((w) => !before.has(w.windowID));
+    if (opened.length > 0) return opened;
+    console.log(`   ${what}: no menu on attempt ${attempt}, retrying`);
+    await app.keys("escape").catch(() => {});
+    await Bun.sleep(600);
+  }
+  return fail(`${what}: WebKit never showed a context menu`);
+}
+
 const app = await launchApp({
   entry: "src/main.tsx",
   backend: "appkit",
@@ -93,19 +110,10 @@ try {
   await goTo(app, `${base}/`);
   await Bun.sleep(1500);
   const page = await app.mustFind("page-t1");
-  const before = listWindows(app.pid);
-
-  await step("right-click inside the page", () => app.rightClick({ ref: page.ref }));
   // The menu is a tracking loop in the app process: it opens a window of its
   // own, which is what tells us WebKit answered the click at all.
-  await Bun.sleep(1200);
-  const after = listWindows(app.pid);
-  const known = new Set(before.map((w) => w.windowID));
-  const opened = after.filter((w) => !known.has(w.windowID));
-
-  console.log(`windows before the click: ${JSON.stringify(before.map((w) => [w.windowID, w.title, w.width, w.height]))}`);
-  console.log(`windows after the click:  ${JSON.stringify(after.map((w) => [w.windowID, w.title, w.width, w.height]))}`);
-  if (opened.length === 0) fail("no new window opened: WebKit never showed a context menu");
+  const opened = await step("right-click inside the page", () => openMenu(page.ref, "first right-click"));
+  console.log(`menu windows: ${JSON.stringify(opened.map((w) => [w.windowID, w.width, w.height]))}`);
 
   for (const window of opened) {
     const out = `${SHOTS}/appkit-context-menu-${window.windowID}.png`;
@@ -119,9 +127,19 @@ try {
   // are the LAST two, so arrowing up twice from nothing selected lands on
   // "Open Link in New Tab" whatever WebKit put above it.
   const tabsBefore = ((await app.mustFind("tab-list")).rows ?? []).length;
+  // The menu's tracking loop needs a beat between posted events: back to back,
+  // the first arrow can land before the loop starts pulling from the queue.
   await step("select the app's item", async () => {
+    await Bun.sleep(400);
     await app.keys("up");
+    await Bun.sleep(250);
     await app.keys("up");
+    await Bun.sleep(250);
+    if (process.env.NB_CTXMENU_DEBUG === "1") {
+      for (const window of opened) {
+        Bun.spawnSync([NDSHOT, "capture", "--out", `${SHOTS}/appkit-context-menu-selected.png`, "--window-id", String(window.windowID)]);
+      }
+    }
     await app.keys("return");
   });
   const deadline = Date.now() + 15_000;
@@ -151,12 +169,7 @@ try {
   await step("select the fixture tab", () => app.click("menu-tab-0"));
   await Bun.sleep(500);
   const withExtension = await app.mustFind("page-t1");
-  const beforeSecond = listWindows(app.pid);
-  await step("right-click again", () => app.rightClick({ ref: withExtension.ref }));
-  await Bun.sleep(1200);
-  const knownSecond = new Set(beforeSecond.map((w) => w.windowID));
-  const secondMenus = listWindows(app.pid).filter((w) => !knownSecond.has(w.windowID));
-  if (secondMenus.length === 0) fail("no menu opened on the second right-click");
+  const secondMenus = await step("right-click again", () => openMenu(withExtension.ref, "second right-click"));
   for (const window of secondMenus) {
     const out = `${SHOTS}/appkit-context-menu-extension-${window.windowID}.png`;
     const shot = Bun.spawnSync([NDSHOT, "capture", "--out", out, "--window-id", String(window.windowID)]);
