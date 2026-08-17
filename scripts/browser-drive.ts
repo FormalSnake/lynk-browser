@@ -20,12 +20,20 @@ import {
 
 const PROFILE = "/tmp/nb-drive-profile";
 const DOWNLOADS = "/tmp/nb-drive-downloads";
+// The webview jar lives under the user data dir, so the cookie round trip needs
+// one of its own — otherwise it reads a jar the dev box already had and a
+// browser that persists nothing still passes.
+const DATA_HOME = "/tmp/nb-drive-data";
+// Fresh per run for the same reason: a value left behind by the previous run
+// would survive a restart no matter what the engine did with this one.
+const COOKIE_VALUE = `v${Date.now()}`;
 // One knob for every wait: the same drive runs on an idle laptop and inside a
 // full framework gate sweep, where everything is several times slower.
 const PATIENCE = Number(process.env.ND_DRIVE_TIMEOUT_MS ?? 60_000);
 
 rmSync(PROFILE, { recursive: true, force: true });
 rmSync(DOWNLOADS, { recursive: true, force: true });
+rmSync(DATA_HOME, { recursive: true, force: true });
 mkdirSync(SHOTS, { recursive: true });
 
 // ---------------------------------------------------------------- fixture ---
@@ -55,6 +63,23 @@ const server = Bun.serve({
       case "/long": {
         const rows = Array.from({ length: 400 }, (_, i) => `<p id="p${i}">row ${i}</p>`).join("");
         return page("long", "Long page", `<h1>Long page</h1>${rows}`);
+      }
+      case "/setcookie":
+        return new Response(
+          '<!doctype html><meta charset="utf-8"><title>Cookie set</title><h1>Cookie set</h1>',
+          {
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              "set-cookie": `nbdrive=${COOKIE_VALUE}; Path=/; Max-Age=3600`,
+            },
+          },
+        );
+      case "/whoami": {
+        const sent = /(?:^|;\s*)nbdrive=([^;]+)/.exec(req.headers.get("cookie") ?? "");
+        return new Response(
+          `<!doctype html><meta charset="utf-8"><title>Who am I</title><h1>cookie=${sent ? sent[1] : "none"}</h1>`,
+          { headers: { "content-type": "text/html; charset=utf-8" } },
+        );
       }
       case "/popup":
         // The link is clicked from the app side (see NB_TEST_JS below): WebKit
@@ -137,6 +162,19 @@ async function waitText(app: AppHandle, testId: string, check: (t: string) => bo
   return textMatching(app, testId, check, what, PATIENCE);
 }
 
+/// The visible tab's webview, by ref. Every tab keeps a live view and only the
+/// active one is shown, so "the page the drive is looking at" is a tree lookup
+/// rather than a name the drive can compose.
+async function shownPageRef(app: AppHandle): Promise<number> {
+  const tree = await app.tree();
+  let found: number | null = null;
+  walk(tree.root, (n) => {
+    if (found === null && n.testID?.startsWith("page-") && n.visible) found = n.ref;
+  });
+  if (found === null) fail("no visible webview in the tree");
+  return found;
+}
+
 // ------------------------------------------------------------------ drive ---
 
 function launch(storeDir: string): Promise<AppHandle> {
@@ -146,6 +184,7 @@ function launch(storeDir: string): Promise<AppHandle> {
     env: {
       NB_STORE_DIR: storeDir,
       NB_DOWNLOAD_DIR: DOWNLOADS,
+      XDG_DATA_HOME: DATA_HOME,
       NB_TEST_HOOKS: "1",
       NB_TEST_JS: "document.getElementById('open').click()",
       // What the Debug menu's "Context: save image" hook downloads.
@@ -364,6 +403,15 @@ try {
   await waitUrl(app, "/a");
   console.log("8. close tab + reopen closed tab restored the same URL");
 
+  // Stage 6 — cookies outlive the process. The engine keeps its jar in memory
+  // unless the host names a file for it, and a browser that forgets every
+  // cookie at quit reads as sites ignoring what you told them: a cookie banner
+  // accepted yesterday is back today, and on a site that bounces through a
+  // consent host it is back on every launch. Set it here, read it back after
+  // the restart below.
+  await goTo(app, `${base}/setcookie`);
+  await waitUrl(app, "/setcookie");
+
   // Acceptance 7 — restart: the session store brings back the same tabs and the same active one.
   const before = (await tabRows(app)).map((r) => r.title);
   const activeBefore = await shownUrl(app);
@@ -374,6 +422,37 @@ try {
   await waitUrl(app, activeBefore);
   console.log(`9. restart restored ${after.length} tabs and the active tab (${activeBefore})`);
   await shoot(app, "09-restored");
+
+  // The other half of the cookie round trip, read off the page rather than out
+  // of the app: /whoami echoes the cookie the engine actually sent.
+  await goTo(app, `${base}/whoami`);
+  await waitUrl(app, "/whoami");
+  const echoed = await step("read the cookie back after the restart", async () => {
+    const deadline = Date.now() + PATIENCE;
+    let last = "";
+    while (Date.now() < deadline) {
+      const answer = await app.rpc.call("webviewEval", {
+        ref: await shownPageRef(app),
+        code: "document.body.innerText",
+        timeoutMs: 5_000,
+      });
+      last = answer.ok ? String(answer.value) : `error: ${answer.error}`;
+      if (last.includes("cookie=")) return last;
+      await Bun.sleep(200);
+    }
+    return fail(`the page never reported a cookie line; last read ${JSON.stringify(last)}`);
+  });
+  if (!echoed.includes(`cookie=${COOKIE_VALUE}`)) {
+    fail(`the cookie did not survive the restart: /whoami read ${JSON.stringify(echoed)}`);
+  }
+  if (!existsSync(`${DATA_HOME}/nd-webview-profiles/default/cookies.sqlite`)) {
+    fail(`no cookie jar at ${DATA_HOME}/nd-webview-profiles/default/cookies.sqlite`);
+  }
+  console.log(`13. the cookie survived a restart (${COOKIE_VALUE}) and the jar is on disk`);
+  // Put the active tab back where the rest of the drive expects it: the steps
+  // below assert against page A, and the round trip above borrowed this tab.
+  await goTo(app, `${base}/a`);
+  await waitUrl(app, "/a");
 
   // Acceptance 6 — download. It runs with every tab from the rest of the drive
   // still live: WebKitGTK's download-started lives on the shared network

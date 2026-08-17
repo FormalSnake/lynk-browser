@@ -347,6 +347,14 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
     void recordVisit(url, "").then(refreshHistory);
   }
 
+  /// A load that stopped, at whatever address it stopped on. Anything that has
+  /// to re-navigate a tab belongs here rather than in `onNavigated`: that one
+  /// reports the address the engine is still fetching, so acting on it cancels
+  /// the fetch it is reporting.
+  function onLoadSettled(id: string): void {
+    extensions.notifyLoadSettled(id, committed.current.get(id) ?? "");
+  }
+
   function onTitled(id: string, title: string): void {
     const url = tabs.find((t) => t.id === id)?.url ?? "";
     session.update((s) => ({ ...s, tabs: s.tabs.map((t) => (t.id === id ? { ...t, title } : t)) }));
@@ -1111,7 +1119,10 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                         }}
                         onNavigate={(e) => onNavigated(t.id, e.text)}
                         onTitleChanged={(e) => onTitled(t.id, e.text)}
-                        onLoadingChanged={(e) => patch(t.id, { loading: e.checked })}
+                        onLoadingChanged={(e) => {
+                          patch(t.id, { loading: e.checked });
+                          if (!e.checked) onLoadSettled(t.id);
+                        }}
                         onLoadProgress={(e) => patch(t.id, { progress: e.value })}
                         onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
                         onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}

@@ -211,6 +211,10 @@ export class ExtensionHost {
   private storeUserAgent = new Map<string, number>();
   /** Tab id -> the node id the store install hook is installed on. */
   private storeHooked = new Map<string, number>();
+  /** Tab id -> the node id owed a reload once its store load settles. */
+  private storeReloadPending = new Map<string, number>();
+  /** Tab id -> `${node id}:${url}` already corrected, so it happens once. */
+  private storeReloaded = new Map<string, string>();
   /** Every frame that has said hello, keyed by the token it generated. */
   private frames = new Map<string, FrameRef>();
   private frameCounters = new Map<string, number>();
@@ -635,6 +639,8 @@ export class ExtensionHost {
       this.tabViews.delete(id);
       this.storeUserAgent.delete(id);
       this.storeHooked.delete(id);
+      this.storeReloadPending.delete(id);
+      this.storeReloaded.delete(id);
       for (const [token, frame] of this.frames) {
         if (frame.surface.kind === "content" && frame.surface.tabId === id) this.frames.delete(token);
       }
@@ -719,12 +725,11 @@ export class ExtensionHost {
   /// tab enters the store origin and off the moment it leaves, which keeps the
   /// engine's own user agent as what every other origin sees.
   ///
-  /// The cost of doing it here: a navigation is reported after the engine has
-  /// already asked for the document, so the listing that triggers the flip was
-  /// fetched under the old user agent and is reloaded once. That cannot loop:
-  /// it fires on the transition only, and the view is already flipped by the
-  /// time the reload commits. Leaving the store does NOT reload: that page is
-  /// one request that went out as Chrome, and a second full load to correct a
+  /// A navigation is reported after the engine has already asked for the
+  /// document, so the listing that triggers the flip was fetched under the old
+  /// user agent and owes a reload. That reload is not issued here; see
+  /// `notifyLoadSettled`. Leaving the store does NOT reload: that page is one
+  /// request that went out as Chrome, and a second full load to correct a
   /// header nothing acted on is the worse trade.
   private applyStoreUserAgent(tabId: string, url: string): void {
     const node = this.tabViews.get(tabId);
@@ -733,12 +738,40 @@ export class ExtensionHost {
     if (wanted === (this.storeUserAgent.get(tabId) === node.id)) return;
     if (!wanted) {
       this.storeUserAgent.delete(tabId);
+      this.storeReloadPending.delete(tabId);
       sendCommand(node, "setUserAgent", "");
       return;
     }
     this.storeUserAgent.set(tabId, node.id);
     this.installWebstoreHook(tabId, node);
     sendCommand(node, "setUserAgent", chromeUserAgent());
+    this.storeReloadPending.set(tabId, node.id);
+  }
+
+  /// The reload the user agent flip owes, taken off a SETTLED load rather than
+  /// off the navigation that triggered it.
+  ///
+  /// A navigation is reported at the provisional address, while the engine is
+  /// still fetching it, so reloading from there cancels the navigation being
+  /// reported. On the store that is not theoretical: a listing in the EU
+  /// bounces through consent.google.com, accepting sends the browser back to
+  /// the listing, the reload cancels that redirect, the consent screen returns,
+  /// and the click reads as having done nothing. Worse, the app and the engine
+  /// then disagree about which address the tab is on and each keeps correcting
+  /// the other — an unbounded navigation loop, and a runtime that runs out of
+  /// memory a few minutes later.
+  ///
+  /// `storeReloaded` bounds this whatever the engine does: one correction per
+  /// view per address, so no sequence of loads can make a loop out of it.
+  notifyLoadSettled(tabId: string, url: string): void {
+    const node = this.tabViews.get(tabId);
+    if (!node) return;
+    if (this.storeReloadPending.get(tabId) !== node.id) return;
+    this.storeReloadPending.delete(tabId);
+    if (!isWebstoreUrl(url)) return;
+    const corrected = `${node.id}:${url}`;
+    if (this.storeReloaded.get(tabId) === corrected) return;
+    this.storeReloaded.set(tabId, corrected);
     sendCommand(node, "reload");
   }
 
