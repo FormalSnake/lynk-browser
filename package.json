@@ -4,7 +4,7 @@
   "type": "module",
   "trustedDependencies": [],
   "scripts": {
-    "dev": "nd dev",
+    "dev": "bash scripts/dev.sh",
     "compile": "babel src --out-dir dist --config-file ./babel.config.json --extensions .ts,.tsx --keep-file-extension",
     "package": "nd package"
   },

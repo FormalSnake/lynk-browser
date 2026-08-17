@@ -16,8 +16,14 @@ bun install
 bun run dev
 ```
 
-`bun run dev` is `nd dev`, which resolves the host binary for your platform and starts the app with
-hot reload. Force a backend with `nd dev --backend gtk` or `--backend appkit`.
+`bun run dev` is `scripts/dev.sh`, a thin wrapper around `nd dev`, which resolves the host binary for
+your platform and starts the app with hot reload. Force a backend with `nd dev --backend gtk` or
+`--backend appkit`.
+
+The wrapper exists for one reason: on Linux, WebKitGTK gets TLS from glib-networking, and without
+that GIO module every `https://` page fails with "TLS support is not enabled" while `http://` keeps
+working. When no backend is installed it re-enters the framework's flake dev shell, which ships one.
+Point `ND_FRAMEWORK_DIR` at the framework checkout if it does not sit beside this one.
 
 Extensions need fixtures, which are not in the repo:
 
