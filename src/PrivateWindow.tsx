@@ -9,8 +9,13 @@
 // (its ranking reads history) and no downloads list; the address field IS the
 // address bar, which is also the only place in the app that exercises
 // `<searchinput>` on GTK.
-import { Spacing, sendCommand, useRef, useState } from "@nativedesktop/react";
-import type { NdNodeRef, SourceTreeAction, SourceTreeNode } from "@nativedesktop/react";
+import { Spacing, sendCommand, setContextMenuItems, useRef, useState } from "@nativedesktop/react";
+import type {
+  ContextMenuItemClick,
+  NdNodeRef,
+  SourceTreeAction,
+  SourceTreeNode,
+} from "@nativedesktop/react";
 import { Activity } from "react";
 
 import { displayUrl, hostOf, toUrl } from "./lib/url.ts";
@@ -59,6 +64,9 @@ export function PrivateWindow({
   const [findOpen, setFindOpen] = useState(false);
   const next = useRef(2);
   const views = useRef(new Map<string, NdNodeRef<"webview"> | null>());
+  /// Views whose context-menu items have been pushed. An inline ref callback
+  /// runs on every render, and the items here never change.
+  const menuedViews = useRef(new Set<number>());
 
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0]!;
 
@@ -256,6 +264,14 @@ export function PrivateWindow({
                   <webview
                     ref={(node) => {
                       views.current.set(t.id, node as NdNodeRef<"webview"> | null);
+                      if (!node || menuedViews.current.has(node.id)) return;
+                      menuedViews.current.add(node.id);
+                      // No extensions run in a private window, so this is the
+                      // whole menu the app adds to the engine's own.
+                      setContextMenuItems(node as NdNodeRef<"webview">, [
+                        { id: "nb-open-link", label: "Open Link in New Tab", contexts: ["link"] },
+                        { id: "nb-save-image", label: "Save Image", contexts: ["image"] },
+                      ]);
                     }}
                     url={t.url}
                     profile={PRIVATE_PROFILE}
@@ -267,6 +283,11 @@ export function PrivateWindow({
                     onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
                     onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
                     onNewWindow={(e) => openTab(e.text)}
+                    onContextMenuItemClicked={(e) => {
+                      const click = e.data as ContextMenuItemClick;
+                      if (click.id === "nb-open-link" && click.linkUrl) openTab(click.linkUrl);
+                      if (click.id === "nb-save-image" && click.imageUrl) onDownload(click.imageUrl);
+                    }}
                     onDownloadRequested={(e) => {
                       // Private browsing hides the trail, it does not refuse
                       // the file: what you download is still saved, and it

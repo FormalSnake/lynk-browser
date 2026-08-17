@@ -347,6 +347,7 @@ Event.prototype.emit = function (args) {
   return out;
 };
 
+var menuSeq = 0;
 var events = Object.create(null);
 function event(name) {
   return events[name] || (events[name] = new Event());
@@ -654,7 +655,18 @@ var chromeApi = {
     onCommand: event("commands.onCommand"),
   },
   contextMenus: {
-    create: function (props, cb) { void call("contextMenus.create", { props: props || {} }, cb); return (props && props.id) || ""; },
+    // Chrome answers with the item's id SYNCHRONOUSLY, so one is minted here
+    // when the extension did not supply one and the broker is told which id it
+    // was: an extension that keeps the return value can still update or remove
+    // the item it just made.
+    create: function (props, cb) {
+      props = props || {};
+      if (props.id === undefined || props.id === null || props.id === "") {
+        props.id = "nb-menu-" + (++menuSeq);
+      }
+      void call("contextMenus.create", { props: props }, cb);
+      return props.id;
+    },
     update: function (id, props, cb) { return call("contextMenus.update", { id: id, props: props || {} }, cb); },
     remove: function (id, cb) { return call("contextMenus.remove", { id: id }, cb); },
     removeAll: function (cb) { return call("contextMenus.removeAll", {}, cb); },

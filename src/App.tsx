@@ -1,12 +1,12 @@
 import {
   Spacing,
-  clipboard,
   dialog,
   executeJavaScript,
   onJavaScriptResult,
   onToastButtonClicked,
   onToastDismissed,
   sendCommand,
+  setContextMenuItems,
   showToast,
   useMountEffect,
   useRef,
@@ -14,7 +14,13 @@ import {
   useStoreValue,
   webviewEngine,
 } from "@nativedesktop/react";
-import type { NdNodeRef, SourceTreeAction, SourceTreeNode } from "@nativedesktop/react";
+import type {
+  ContextMenuItem,
+  ContextMenuItemClick,
+  NdNodeRef,
+  SourceTreeAction,
+  SourceTreeNode,
+} from "@nativedesktop/react";
 // <Activity mode="hidden"> is React's own keep-mounted-but-hidden primitive; it
 // drives the renderer's hideInstance/unhideInstance hooks, which the host turns
 // into gtk_widget_set_visible. That is what lets every tab keep a LIVE webview:
@@ -39,7 +45,7 @@ import { runDownload } from "./lib/downloads.ts";
 import { faviconFor, fetchFavicon, rememberFavicon } from "./lib/favicons.ts";
 import { recentVisits, recordTitle, recordVisit, searchHistory, type Visit } from "./lib/history.ts";
 import { session } from "./lib/session.ts";
-import { SEARCH_ENGINES, settings } from "./lib/settings.ts";
+import { SEARCH_ENGINES, engineOf, settings } from "./lib/settings.ts";
 import { displayUrl, fileNameFromUrl, hostOf, isSearch, toUrl } from "./lib/url.ts";
 import { PrivateWindow } from "./PrivateWindow.tsx";
 
@@ -123,15 +129,6 @@ const IDLE: Runtime = {
   security: "none",
   attempt: 0,
 };
-
-/// The page context menu's items, built from the hit test WebKit reports.
-interface PageMenu {
-  tabId: string;
-  link?: string;
-  image?: string;
-  selection?: string;
-  hasSelection: boolean;
-}
 
 interface FindState {
   open: boolean;
@@ -222,7 +219,6 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [history, setHistory] = useState<Visit[]>(initialHistory);
   const [find, setFind] = useState<FindState>(NO_FIND);
-  const [pageMenu, setPageMenu] = useState<PageMenu | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [privateOpen, setPrivateOpen] = useState(false);
   /// Bumped when a favicon lands. The cache lives outside React, so this is
@@ -239,6 +235,9 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   /// tab back where it was.
   const committed = useRef(new Map<string, string>());
   const views = useRef(new Map<string, NdNodeRef<"webview"> | null>());
+  /// Last context-menu tree sent to each tab's view, so an unchanged one is
+  /// never re-sent.
+  const sentMenus = useRef(new Map<string, string>());
   const toast = useRef<NdNodeRef<"toastoverlay">>(null);
 
   const rt = (id: string): Runtime => runtime[id] ?? IDLE;
@@ -262,6 +261,10 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
       if (props.active) selectTab(id);
     },
   };
+  // Same rule, same reason: an extension registering a menu, a tab navigating
+  // or a new search engine all change what a right-click should show, and all
+  // three land as a render. The push is skipped when the tree is unchanged.
+  syncContextMenus();
 
   function refreshHistory(): void {
     void recentVisits().then(setHistory);
@@ -399,75 +402,74 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
 
   // ------------------------------------------------------- context menu ---
 
-  function closePageMenu(): void {
-    setPageMenu(null);
+  /// The engine draws the menu: Back/Forward/Reload, Open Link, Copy Image,
+  /// Look Up and Inspect Element are WebKit's own and always there. These are
+  /// the three things a browser has to add on top, because they act on the
+  /// browser rather than on the page: a tab, this app's downloads, and the
+  /// search engine the user picked.
+  function appContextMenuItems(): ContextMenuItem[] {
+    return [
+      { id: "nb-open-link", label: "Open Link in New Tab", contexts: ["link"] },
+      { id: "nb-save-image", label: "Save Image", contexts: ["image"] },
+      { id: "nb-search-selection", label: `Search with ${engineOf(prefs.searchEngine).name}`, contexts: ["selection"] },
+    ];
   }
 
-  /// A page-menu action runs against the tab the menu was opened on, not
-  /// whatever is active by the time it is clicked.
-  function runPageMenu(run: () => void): void {
-    closePageMenu();
-    run();
+  /// Pushes each tab's menu to its own view: the app's items plus whatever the
+  /// enabled extensions have registered for THAT tab's URL. Sent only when the
+  /// tree actually changes, which is what makes calling it per render safe (the
+  /// `setTabs` idiom above).
+  function syncContextMenus(only?: string): void {
+    for (const tab of tabs) {
+      if (only !== undefined && tab.id !== only) continue;
+      const node = views.current.get(tab.id);
+      if (!node) continue;
+      const items = [...appContextMenuItems(), ...extensions.contextMenuItemsFor(tab.id)];
+      const shape = JSON.stringify(items);
+      // Keyed on the widget as well as the tree: a remounted view (Try Again
+      // bumps the webview's key) starts with no items of its own.
+      const stamp = `${node.id}|${shape}`;
+      if (sentMenus.current.get(tab.id) === stamp) continue;
+      sentMenus.current.set(tab.id, stamp);
+      setContextMenuItems(node, items);
+      if (TEST_HOOKS) console.error(`ND_APP CTXMENU tab=${tab.id} ${shape}`);
+    }
   }
 
-  function copyText(text: string): void {
-    void clipboard.writeText(text).catch(() => {});
-  }
-
-  function saveImage(url: string): void {
-    startDownload(url);
-  }
-
-  /// The menu the hit test earns, plus whatever the enabled extensions have
-  /// registered through `chrome.contextMenus`. Order follows Chrome: what you
-  /// clicked first, page navigation last.
-  function pageMenuItems(menu: PageMenu | null): { id: string; label: string; run: () => void }[] {
-    if (!menu) return [];
-    const items: { id: string; label: string; run: () => void }[] = [];
-    if (menu.link) {
-      const link = menu.link;
-      items.push({ id: "open-link", label: "Open Link in New Tab", run: () => openTab(link, true) });
-      items.push({ id: "copy-link", label: "Copy Link", run: () => copyText(link) });
+  /// An item the user chose in a page's context menu. Extension items are the
+  /// broker's; the rest are the three above.
+  function onContextMenuItem(tabId: string, click: ContextMenuItemClick): void {
+    if (extensions.handleContextMenuClick(tabId, click)) return;
+    switch (click.id) {
+      case "nb-open-link":
+        if (click.linkUrl) openTab(click.linkUrl, true);
+        return;
+      case "nb-save-image":
+        if (click.imageUrl) startDownload(click.imageUrl);
+        return;
+      case "nb-search-selection":
+        // WebKitGTK's hit test reports THAT there is a selection but never its
+        // text, so on that backend the page is asked for it.
+        if (click.selectionText) {
+          openTab(toUrl(click.selectionText) ?? "", true);
+          return;
+        }
+        {
+          const node = view(tabId);
+          if (!node) return;
+          void executeJavaScript(node, "String(window.getSelection())")
+            .then((raw) => {
+              // The engines serialize the result as JSON; a string comes back
+              // quoted, and an older host may answer it raw.
+              const text = raw.startsWith('"') ? (JSON.parse(raw) as string) : raw;
+              if (text.trim()) openTab(toUrl(text) ?? "", true);
+            })
+            .catch(() => {});
+        }
+        return;
+      default:
+        return;
     }
-    if (menu.image) {
-      const image = menu.image;
-      items.push({ id: "copy-image", label: "Copy Image Address", run: () => copyText(image) });
-      items.push({ id: "save-image", label: "Save Image", run: () => saveImage(image) });
-    }
-    if (menu.hasSelection) {
-      const selection = menu.selection ?? "";
-      // WebKitGTK's hit test reports THAT there is a selection but never its
-      // text, so Copy runs through the page's own clipboard command there.
-      items.push({
-        id: "copy",
-        label: "Copy",
-        run: () => {
-          if (selection) copyText(selection);
-          else {
-            const node = view(menu.tabId);
-            if (node) void executeJavaScript(node, "document.execCommand('copy')").catch(() => {});
-          }
-        },
-      });
-      if (selection) {
-        items.push({
-          id: "search-selection",
-          label: `Search for "${selection.slice(0, 24)}"`,
-          run: () => openTab(toUrl(selection) ?? "", true),
-        });
-      }
-    }
-    items.push({ id: "back", label: "Back", run: () => command("goBack") });
-    items.push({ id: "forward", label: "Forward", run: () => command("goForward") });
-    items.push({ id: "reload", label: "Reload", run: () => command("reload") });
-    for (const item of extensions.extensionMenuItems()) {
-      items.push({
-        id: `ext-${item.extensionId}-${item.id}`,
-        label: item.title,
-        run: () => extensions.clickContextMenuItem(item.extensionId, item.id),
-      });
-    }
-    return items;
   }
 
   // ------------------------------------------------------------ favicon ---
@@ -781,21 +783,45 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                 if (node && code) void executeJavaScript(node, code).catch(() => {});
               }}
             />
-            {/* GTK4 synthesises no pointer input, so a right-click inside page
-                content is unreachable from a drive and WebKit's own
-                `context-menu` signal never fires headlessly. This opens the
-                same menu off a synthetic hit test, which exercises everything
-                the app owns: what the menu contains and what its items do. */}
+            {/* The menu itself belongs to the engine now, and no automation can
+                open one: GTK4 synthesises no pointer input, and WebKit's
+                `context-menu` signal never fires headlessly. These feed the
+                app's own handler the payload a real click would carry, which
+                is the half the app owns. What the menu CONTAINS is asserted
+                from the ND_APP CTXMENU trace instead. */}
             <menuitem
-              testID="menu-open-page-menu"
-              label="Open page menu"
+              testID="menu-ctx-open-link"
+              label="Context: open link in new tab"
               onSelect={() =>
-                setPageMenu({
-                  tabId: active.id,
-                  link: `${active.url || "https://example.com/"}#link`,
-                  image: `${active.url || "https://example.com/"}#image`,
-                  hasSelection: true,
-                  selection: "selected words",
+                onContextMenuItem(active.id, {
+                  id: "nb-open-link",
+                  pageUrl: active.url,
+                  linkUrl: `${active.url || "https://example.com/"}#link`,
+                  editable: false,
+                })
+              }
+            />
+            <menuitem
+              testID="menu-ctx-save-image"
+              label="Context: save image"
+              onSelect={() =>
+                onContextMenuItem(active.id, {
+                  id: "nb-save-image",
+                  pageUrl: active.url,
+                  imageUrl: process.env.NB_TEST_IMAGE || `${active.url || "https://example.com/"}#image`,
+                  editable: false,
+                })
+              }
+            />
+            <menuitem
+              testID="menu-ctx-search-selection"
+              label="Context: search the selection"
+              onSelect={() =>
+                onContextMenuItem(active.id, {
+                  id: "nb-search-selection",
+                  pageUrl: active.url,
+                  selectionText: "selected words",
+                  editable: false,
                 })
               }
             />
@@ -1024,25 +1050,6 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                 </box>
               )}
 
-              {/* The page context menu. WebKit reports the click position, but
-                  neither backend exposes a point-anchored popup menu, so this
-                  popover anchors to the content pane instead (framework ask).
-                  Its rows are native buttons, so automation can click them. */}
-              <popover testID="context-menu" open={pageMenu !== null} position="bottom" onClosed={closePageMenu}>
-                <box orientation="vertical" spacing={0} style={{ padding: Spacing.xs }}>
-                  {pageMenuItems(pageMenu).map((item) => (
-                    <button
-                      key={item.id}
-                      testID={`context-menu-${item.id}`}
-                      label={item.label}
-                      labelAlign="start"
-                      cssClasses={["flat"]}
-                      onClick={() => runPageMenu(item.run)}
-                    />
-                  ))}
-                </box>
-              </popover>
-
               {/* Presents over the active window wherever it is mounted. */}
               <commandpalette
                 testID="palette"
@@ -1081,11 +1088,13 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                           views.current.set(t.id, node as NdNodeRef<"webview"> | null);
                           if (!node) return;
                           extensions.armTabView(t.id, node as NdNodeRef<"webview">);
+                          // The view exists now, so its menu can be pushed; the
+                          // render-time sync could only skip it.
+                          syncContextMenus(t.id);
                           setArmedTabs((a) => (a[t.id] ? a : { ...a, [t.id]: true }));
                         }}
                         url={armedTabs[t.id] && extensionsReady ? t.url : ""}
                         testID={`page-${t.id}`}
-                        suppressContextMenu
                         style={{ hexpand: true, vexpand: true }}
                         onScriptMessage={(e) => {
                           // The handler NAME says who sent this, not the world:
@@ -1120,15 +1129,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                             r.done ? { ...f, found: r.matchFound } : { ...f, count: r.matchCount ?? null },
                           );
                         }}
-                        onContextMenu={(e) => {
-                          const hit = e.data as {
-                            link?: string;
-                            image?: string;
-                            selection?: string;
-                            hasSelection: boolean;
-                          };
-                          setPageMenu({ tabId: t.id, ...hit });
-                        }}
+                        onContextMenuItemClicked={(e) => onContextMenuItem(t.id, e.data as ContextMenuItemClick)}
                         onDownloadRequested={(e) => {
                           const d = e.data as { url: string; suggestedFilename?: string };
                           startDownload(d.url, d.suggestedFilename);

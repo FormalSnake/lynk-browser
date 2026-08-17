@@ -60,6 +60,15 @@ const server = Bun.serve({
         // The link is clicked from the app side (see NB_TEST_JS below): WebKit
         // blocks a gesture-less target=_blank click made by the page itself.
         return page("popup", "Popup page", '<a id="open" href="/c" target="_blank">open c</a>');
+      case "/image.png":
+        // 1x1 PNG, so "Save Image" has something real to fetch.
+        return new Response(
+          Buffer.from(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+            "base64",
+          ),
+          { headers: { "content-type": "image/png" } },
+        );
       case "/file.txt":
         return new Response("nativebrowser download fixture\n", {
           headers: {
@@ -139,6 +148,8 @@ function launch(storeDir: string): Promise<AppHandle> {
       NB_DOWNLOAD_DIR: DOWNLOADS,
       NB_TEST_HOOKS: "1",
       NB_TEST_JS: "document.getElementById('open').click()",
+      // What the Debug menu's "Context: save image" hook downloads.
+      NB_TEST_IMAGE: `${base}/image.png`,
       // A D-Bus name, so no hyphens: GTK accepts an invalid application id and
       // then degrades silently.
       ND_APP_ID: "dev.nativebrowser.browser",
@@ -147,7 +158,31 @@ function launch(storeDir: string): Promise<AppHandle> {
     // waitFor blocks host-side for its full condition timeout, so the client's
     // per-RPC timeout has to be the larger of the two.
     rpcTimeoutMs: PATIENCE,
+    // The context-menu tree is only observable as what the app SENDS the
+    // engine: no automation can open a real menu.
+    onStderr: (line) => {
+      if (line.includes("ND_APP CTXMENU")) menuTraces.push(line.trim());
+    },
   });
+}
+
+const menuTraces: string[] = [];
+
+interface MenuTraceItem {
+  id?: string;
+  label?: string;
+  contexts?: string[];
+  children?: MenuTraceItem[];
+}
+
+function lastMenuTree(): MenuTraceItem[] | null {
+  for (let i = menuTraces.length - 1; i >= 0; i--) {
+    const at = menuTraces[i]!.indexOf("ND_APP CTXMENU tab=");
+    if (at < 0) continue;
+    const json = menuTraces[i]!.slice(menuTraces[i]!.indexOf(" ", at + 19) + 1);
+    return JSON.parse(json) as MenuTraceItem[];
+  }
+  return null;
 }
 
 const app = await launch(PROFILE);
@@ -286,39 +321,6 @@ try {
   await step("close the find bar", () => app.click("find-close"));
   await step("the find bar goes away", () => app.waitFor({ testId: "find-bar", state: "gone" }, { timeoutMs: PATIENCE }));
   console.log(`12. find in page: "row 399" -> ${JSON.stringify(counted)}, absent text -> ${JSON.stringify(missing)}`);
-
-  // Stage 5 — the page context menu. WebKit's own context-menu signal needs a
-  // real right-click, which GTK4 will not synthesize, so the drive opens the
-  // menu off a synthetic hit test (NB_TEST_HOOKS) and then runs an item. What
-  // is proved is the app's half: the menu the hit test earns, and the action.
-  await step("open the page menu", () => app.click("menu-open-page-menu"));
-  await step("the page menu presents", () =>
-    app.waitFor({ testId: "context-menu-open-link", state: "present" }, { timeoutMs: PATIENCE }),
-  );
-  const wanted = [
-    "context-menu-open-link",
-    "context-menu-copy-link",
-    "context-menu-copy-image",
-    "context-menu-save-image",
-    "context-menu-copy",
-    "context-menu-search-selection",
-    "context-menu-back",
-    "context-menu-forward",
-    "context-menu-reload",
-  ];
-  for (const item of wanted) {
-    if (!(await app.find(item))) fail(`the page menu is missing ${item}`);
-  }
-  // A GtkPopover does not map under headless weston (its items report
-  // visible=false with unallocated geometry), so the click below is refused as
-  // not-actionable on GTK. The menu is verified visually on AppKit instead,
-  // where the same items map and are clickable. The item SET is the portable
-  // assertion and it is the app's half of the feature.
-  const clicked = await app
-    .click("context-menu-reload")
-    .then(() => true)
-    .catch(() => false);
-  console.log(`13. page context menu: ${wanted.length} items for a link+image+selection hit; item click ran=${clicked}`);
 
   // Acceptance 4 — target=_blank opens a background tab. GTK automation cannot deliver a
   //    click into page content, and WebKit refuses a gesture-less popup, so the
@@ -467,6 +469,47 @@ try {
   await step("dismiss the palette", () => app.click("menu-address"));
   await shoot(app, "13-settings", (await app.find("settings-window"))?.ref);
   console.log(`15. settings: engine + restore persisted, palette now offers ${JSON.stringify(searchTitle)}`);
+
+  // Stage 6: the page context menu. The menu itself is WebKit's own now
+  // (`contextMenuMode` defaults to native), and no drive can open one: GTK4
+  // synthesises no pointer input and the engine's menu wants a live
+  // right-click. The two halves the app owns are asserted instead: the tree it
+  // pushes into the view, and what each of its items does when chosen, fed
+  // through the same handler a real click lands in (NB_TEST_HOOKS).
+  const menuTree = lastMenuTree();
+  if (!menuTree) fail("the app never pushed a context-menu tree to any view");
+  const menuLabels = menuTree!.map((i) => i.label ?? "");
+  const wantedItems = ["Open Link in New Tab", "Save Image", "Search with Google"];
+  for (const wanted of wantedItems) {
+    if (!menuLabels.includes(wanted)) fail(`the context menu is missing ${JSON.stringify(wanted)}: ${JSON.stringify(menuLabels)}`);
+  }
+  const linkItem = menuTree!.find((i) => i.id === "nb-open-link");
+  if (JSON.stringify(linkItem?.contexts) !== JSON.stringify(["link"])) {
+    fail(`the open-link item should be link-only, got ${JSON.stringify(linkItem)}`);
+  }
+
+  const tabsBefore = (await tabRows(app)).length;
+  await step("context menu: open a link in a new tab", () => app.click("menu-ctx-open-link"));
+  await waitRows(app, (r) => r.length === tabsBefore + 1, "a background tab from the context menu");
+  const afterOpen = await tabRows(app);
+  if (afterOpen[tabsBefore] === undefined) fail("the context menu opened no new tab");
+  // A background tab, so the one that was active still is.
+  await waitUrl(app, "/a");
+
+  await step("context menu: save an image", () => app.click("menu-ctx-save-image"));
+  const savedImage = `${DOWNLOADS}/image.png`;
+  const imageLanded = Date.now() + 25_000;
+  while (Date.now() < imageLanded && !existsSync(savedImage)) await Bun.sleep(150);
+  if (!existsSync(savedImage)) fail(`Save Image did not land at ${savedImage}`);
+
+  await step("context menu: search the selection", () => app.click("menu-ctx-search-selection"));
+  await waitRows(app, (r) => r.length === tabsBefore + 2, "a tab for the searched selection");
+  const searchTab = (await tabRows(app))[tabsBefore + 1];
+  console.log(
+    `16. page context menu: ${menuLabels.length} app items (${JSON.stringify(menuLabels)}), ` +
+      `open-link and search each opened a tab (last is ${JSON.stringify(searchTab?.title ?? "")}), ` +
+      `Save Image landed ${savedImage}`,
+  );
 
   console.log("NB_MVP_OK");
 } catch (e) {

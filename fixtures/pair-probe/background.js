@@ -12,3 +12,42 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
   });
   return true;
 });
+
+// A real chrome.contextMenus registration: a parent with two children, one of
+// them a checkbox, and one link-only item with a target pattern. That is the
+// whole shape a browser has to carry (nesting, item types, per-hit filtering),
+// and the drive asserts both the model the broker keeps and the
+// info a click delivers.
+chrome.contextMenus.create({ id: "pair-parent", title: "Pair Probe tools", contexts: ["all"] });
+chrome.contextMenus.create({
+  id: "pair-open",
+  parentId: "pair-parent",
+  title: "Pair: run the probe",
+  contexts: ["all"],
+});
+chrome.contextMenus.create({
+  id: "pair-sticky",
+  parentId: "pair-parent",
+  type: "checkbox",
+  checked: false,
+  title: "Pair: sticky",
+  contexts: ["all"],
+});
+chrome.contextMenus.create({
+  id: "pair-link",
+  title: "Pair: only local links",
+  contexts: ["link"],
+  targetUrlPatterns: ["*://127.0.0.1/*"],
+});
+
+chrome.contextMenus.onClicked.addListener(function (info) {
+  chrome.storage.local.set({
+    lastMenu: [
+      info.menuItemId,
+      info.parentMenuItemId || "",
+      info.checked === true,
+      info.wasChecked === true,
+      info.pageUrl || "",
+    ].join("|"),
+  });
+});

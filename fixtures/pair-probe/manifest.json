@@ -3,7 +3,7 @@
   "name": "Pair Probe",
   "version": "1.0.0",
   "description": "A second extension, so a drive can prove two of them run at once.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "contextMenus"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [

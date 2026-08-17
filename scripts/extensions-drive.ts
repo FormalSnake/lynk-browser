@@ -404,6 +404,23 @@ async function waitPopupLoaded(app: AppHandle, id: string): Promise<string> {
 
 // ------------------------------------------------------------------ drive ---
 
+/// Every `ND_APP CTXMENU` line the app has printed, newest last. This is how
+/// the context-menu tree is asserted: no automation can open a real menu (GTK4
+/// synthesises no pointer input, and WebKit's menu wants a live right-click),
+/// so what the app SENDS the engine is the observable.
+const menuTraces: string[] = [];
+
+function menuTraceFor(tabId: string): unknown[] | null {
+  for (let i = menuTraces.length - 1; i >= 0; i--) {
+    const line = menuTraces[i]!;
+    const head = `ND_APP CTXMENU tab=${tabId} `;
+    const at = line.indexOf(head);
+    if (at < 0) continue;
+    return JSON.parse(line.slice(at + head.length)) as unknown[];
+  }
+  return null;
+}
+
 function launch(folders: string[] = [FIXTURE]): Promise<AppHandle> {
   return launchApp({
     entry: "src/main.tsx",
@@ -434,6 +451,7 @@ function launch(folders: string[] = [FIXTURE]): Promise<AppHandle> {
     // NB_EXT_VERBOSE=1 mirrors the whole host log, which is the only way to see
     // the widget-command traffic a failing extension leg turns on.
     onStderr: (line) => {
+      if (line.includes("ND_APP CTXMENU")) menuTraces.push(line.trim());
       if (process.env.NB_EXT_VERBOSE === "1") console.log(`   host | ${line.trimEnd()}`);
       else if (line.includes("ND_APP") || line.includes("[nativebrowser]")) console.log(`   app | ${line.trim()}`);
     },
@@ -640,6 +658,86 @@ try {
       `${JSON.stringify(pairStored)} in its own storage`,
   );
   await shoot(app, `${WHICH}-06b-two-extensions`, await mainWindow(app));
+
+  // 4d, the page context menu. The menu itself is the ENGINE's now, and no
+  // automation can open one (GTK4 synthesises no pointer input, WebKit's menu
+  // wants a live right-click), so the two halves the app owns are asserted
+  // instead: the tree it pushes to the view, and what a click on an item does.
+  const menuTabId = restoredTab.replace(/^page-/, "");
+  const tree = await step("the app pushed this tab's context-menu tree", async () => {
+    const deadline = Date.now() + PATIENCE;
+    let last: unknown[] | null = null;
+    while (Date.now() < deadline) {
+      last = menuTraceFor(menuTabId);
+      if (last && JSON.stringify(last).includes("pair-parent")) return last;
+      await Bun.sleep(250);
+    }
+    return fail(`Pair Probe's items never reached the view (last ${JSON.stringify(last)})`);
+  });
+  const labels = (tree as { label?: string }[]).map((i) => i.label ?? "");
+  for (const wanted of ["Open Link in New Tab", "Save Image"]) {
+    if (!labels.includes(wanted)) fail(`the app's own item ${JSON.stringify(wanted)} is missing from ${JSON.stringify(labels)}`);
+  }
+  // Two roots from one extension group under its name, which is what Chrome
+  // does; one root would ride inline.
+  const group = (tree as { label?: string; children?: unknown[] }[]).find((i) => i.label === "Pair Probe");
+  if (!group) fail(`no group for Pair Probe in ${JSON.stringify(labels)}`);
+  const groupChildren = (group!.children ?? []) as { id?: string; label?: string; children?: unknown[]; targetUrlGlobs?: string[] }[];
+  const tools = groupChildren.find((c) => c.label === "Pair Probe tools");
+  if (!tools) fail(`no "Pair Probe tools" submenu in ${JSON.stringify(groupChildren.map((c) => c.label))}`);
+  const toolChildren = (tools!.children ?? []) as { id?: string; label?: string; type?: string; checked?: boolean }[];
+  if (toolChildren.length !== 2) fail(`the submenu should carry two items, got ${JSON.stringify(toolChildren)}`);
+  const sticky = toolChildren.find((c) => c.type === "checkbox");
+  if (!sticky || sticky.checked !== false) fail(`the checkbox item is wrong: ${JSON.stringify(toolChildren)}`);
+  const linkOnly = groupChildren.find((c) => c.label === "Pair: only local links");
+  if (!linkOnly?.targetUrlGlobs?.length) fail(`the link-only item lost its target patterns: ${JSON.stringify(linkOnly)}`);
+  console.log(
+    `4d. context menu for ${menuTabId}: ${labels.length} entries, Pair Probe grouped with ` +
+      `${groupChildren.length} of its own (${JSON.stringify(toolChildren.map((c) => c.label))} nested one deeper)`,
+  );
+
+  // The click itself rides the menubar, which lists the same items and runs the
+  // same broker path: a checkbox toggles the model, and the extension is told
+  // both states, exactly as Chrome reports them.
+  await step("click the extension's checkbox item", () => app.click(`menu-ext-menu-${pairId}-pair-sticky`));
+  const firstClick = await waitStored(
+    pairId,
+    (s) => typeof s.lastMenu === "string" && (s.lastMenu as string).startsWith("pair-sticky|"),
+    "the extension's contextMenus.onClicked",
+    "local",
+  );
+  if (!String(firstClick.lastMenu).startsWith(`pair-sticky|pair-parent|true|false|${base}`)) {
+    fail(`the first click reported ${JSON.stringify(firstClick.lastMenu)}`);
+  }
+  const rechecked = await step("the toggled state reaches the view", async () => {
+    const deadline = Date.now() + PATIENCE;
+    while (Date.now() < deadline) {
+      const current = menuTraceFor(menuTabId);
+      if (current && JSON.stringify(current).includes('"checked":true')) return true;
+      await Bun.sleep(250);
+    }
+    return false;
+  });
+  if (!rechecked) fail("the toggled checkbox state never reached the view");
+  await step("click it again", () => app.click(`menu-ext-menu-${pairId}-pair-sticky`));
+  const secondClick = await waitStored(
+    pairId,
+    (s) => typeof s.lastMenu === "string" && (s.lastMenu as string).includes("|false|true|"),
+    "the checkbox toggling back",
+    "local",
+  );
+  console.log(
+    `4d. checkbox round trip: ${JSON.stringify(firstClick.lastMenu)} then ` +
+      `${JSON.stringify(secondClick.lastMenu)}, and the checked state reached the view in between`,
+  );
+  // Dark Reader declares contextMenus as an OPTIONAL permission and only
+  // registers its own menu when its `enableContextMenus` setting is on, which
+  // is off by default and only reachable from its own page UI, which is not
+  // clickable on GTK. So the assertion is the honest one: it contributes
+  // nothing until it asks, and nothing phantom shows up in its name.
+  if (JSON.stringify(tree).includes(id)) {
+    fail(`${id} contributed context-menu items without ever registering any`);
+  }
 
   // 5 — disabling it in the manager puts the page back.
   await step("open the manager", () => app.click("menu-extensions-manage"));

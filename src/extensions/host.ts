@@ -8,7 +8,14 @@
 // schemeRequest). Everything else is decided here.
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { extname, resolve } from "node:path";
-import { executeJavaScript, notifications, sendCommand, type NdNodeRef } from "@nativedesktop/react";
+import {
+  executeJavaScript,
+  notifications,
+  sendCommand,
+  type ContextMenuItem,
+  type ContextMenuItemClick,
+  type NdNodeRef,
+} from "@nativedesktop/react";
 
 import {
   bootstrapSource,
@@ -19,6 +26,7 @@ import {
 } from "./bootstrap.ts";
 import { extractZip, idFromPath, isCrx, parseCrx } from "./crx.ts";
 import { loadMessages, parseManifest, pickIcon, type ExtensionManifest } from "./manifest.ts";
+import { ContextMenuRegistry, parseFrameworkId, type MenuProps } from "./context-menus.ts";
 import { compileMatcher, toWebKitPatterns, type CompiledMatcher } from "./match-patterns.ts";
 import { permissionWarnings } from "./permissions.ts";
 import {
@@ -211,7 +219,7 @@ export class ExtensionHost {
   private ports = new Map<string, PortLink>();
   private alarms = new Map<string, { timer: ReturnType<typeof setTimeout>; scheduled: number; periodInMinutes?: number }>();
   private actions = new Map<string, ActionState>();
-  private contextMenuItems = new Map<string, { id: string; title: string }[]>();
+  private menus = new ContextMenuRegistry();
   private popupSizes = new Map<string, { width: number; height: number }>();
   private sessionStorage = new Map<string, Record<string, unknown>>();
   /** Extensions added in this session, so onInstalled reports "install" once. */
@@ -535,7 +543,7 @@ export class ExtensionHost {
         this.alarms.delete(name);
       }
     }
-    this.contextMenuItems.delete(id);
+    this.menus.forget(id);
   }
 
   // --------------------------------------------------------------------- view
@@ -578,12 +586,28 @@ export class ExtensionHost {
     this.notify();
   }
 
+  /// Flat list for the menubar's Extensions menu. A menubar has no hit test,
+  /// so it shows every registered item that has a label.
   extensionMenuItems(): { extensionId: string; id: string; title: string }[] {
     const out: { extensionId: string; id: string; title: string }[] = [];
-    for (const [extensionId, items] of this.contextMenuItems) {
-      for (const item of items) out.push({ extensionId, id: item.id, title: item.title });
+    for (const extensionId of this.menus.extensionIds()) {
+      for (const entry of this.menus.entries(extensionId)) {
+        if (entry.type === "separator" || !entry.visible || !entry.title) continue;
+        out.push({ extensionId, id: entry.id, title: entry.title });
+      }
     }
     return out;
+  }
+
+  /// The page context menu an extension contributes to ONE tab: its items,
+  /// filtered by `documentUrlPatterns` against that tab's URL and shaped for
+  /// the framework's `setContextMenuItems`.
+  contextMenuItemsFor(tabId: string): ContextMenuItem[] {
+    const tab = this.tabs.find((t) => t.id === tabId);
+    return this.menus.itemsForPage(
+      this.enabledExtensions().map((e) => ({ id: e.id, name: e.manifest.name })),
+      tab?.url ?? "",
+    );
   }
 
   // --------------------------------------------------------------------- tabs
@@ -1446,23 +1470,22 @@ export class ExtensionHost {
 
       // --- context menus, notifications, permissions, odds and ends
       case "contextMenus.create": {
-        const props = (args.props ?? {}) as { id?: string; title?: string };
-        const items = this.contextMenuItems.get(extensionId) ?? [];
-        items.push({ id: String(props.id ?? props.title ?? ""), title: String(props.title ?? "") });
-        this.contextMenuItems.set(extensionId, items);
+        const id = this.menus.create(extensionId, (args.props ?? {}) as MenuProps);
+        this.notify();
+        return id;
+      }
+      case "contextMenus.update": {
+        this.menus.update(extensionId, String(args.id), (args.props ?? {}) as MenuProps);
         this.notify();
         return null;
       }
-      case "contextMenus.update":
-        return null;
       case "contextMenus.remove": {
-        const items = (this.contextMenuItems.get(extensionId) ?? []).filter((i) => i.id !== String(args.id));
-        this.contextMenuItems.set(extensionId, items);
+        this.menus.remove(extensionId, String(args.id));
         this.notify();
         return null;
       }
       case "contextMenus.removeAll": {
-        this.contextMenuItems.delete(extensionId);
+        this.menus.removeAll(extensionId);
         this.notify();
         return null;
       }
@@ -1762,12 +1785,58 @@ export class ExtensionHost {
     this.emitTo(extensionId, "commands.onCommand", [command, active ? this.tabInfo(active) : null]);
   }
 
+  /// The menubar path: no hit test, so the click carries the active tab's URL
+  /// and nothing else.
   clickContextMenuItem(extensionId: string, itemId: string): void {
     const active = this.tabs.find((t) => t.active);
-    this.emitTo(extensionId, "contextMenus.onClicked", [
-      { menuItemId: itemId, pageUrl: active?.url ?? "" },
-      active ? this.tabInfo(active) : null,
-    ]);
+    this.deliverMenuClick(extensionId, itemId, active?.id ?? "", {
+      id: "",
+      pageUrl: active?.url ?? "",
+      editable: false,
+    });
+  }
+
+  /// A click on an item this broker put in a page's context menu. Returns false
+  /// when the id is not an extension's, so the app can handle its own items.
+  handleContextMenuClick(tabId: string, click: ContextMenuItemClick): boolean {
+    const owner = parseFrameworkId(click.id);
+    if (!owner) return false;
+    this.deliverMenuClick(owner.extensionId, owner.entryId, tabId, click);
+    return true;
+  }
+
+  private deliverMenuClick(
+    extensionId: string,
+    entryId: string,
+    tabId: string,
+    click: ContextMenuItemClick,
+  ): void {
+    const entry = this.menus.entry(extensionId, entryId);
+    if (!entry) return;
+    const tab = this.tabs.find((t) => t.id === tabId) ?? this.tabs.find((t) => t.active);
+    const pageUrl = click.pageUrl || tab?.url || "";
+    const targetUrl = click.linkUrl ?? click.imageUrl ?? "";
+    // The framework filters on globs, which are looser than a match pattern.
+    // Chrome would never have shown this item, so the extension never hears it.
+    if (!this.menus.clickAllowed(entry, pageUrl, targetUrl)) return;
+
+    const state = this.menus.applyClick(extensionId, entry);
+    if (Object.keys(state).length > 0) this.notify();
+
+    const info: Record<string, unknown> = {
+      menuItemId: entry.id,
+      pageUrl,
+      frameUrl: pageUrl,
+      editable: click.editable,
+    };
+    if (entry.parentId !== null) info.parentMenuItemId = entry.parentId;
+    if (click.linkUrl) info.linkUrl = click.linkUrl;
+    if (click.imageUrl) info.srcUrl = click.imageUrl;
+    if (click.imageUrl) info.mediaType = "image";
+    if (click.selectionText) info.selectionText = click.selectionText;
+    if (state.checked !== undefined) info.checked = state.checked;
+    if (state.wasChecked !== undefined) info.wasChecked = state.wasChecked;
+    this.emitTo(extensionId, "contextMenus.onClicked", [info, tab ? this.tabInfo(tab) : null]);
   }
 
   // --------------------------------------------------------------- app hooks
