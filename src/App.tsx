@@ -981,23 +981,31 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
           {(!compact || Platform.backend === "appkit") && (
             <toolbarview slot="sidebar" testID="sidebar-toolbar">
               <headerbar testID="sidebar-header" title="NativeBrowser" />
+              {/* No horizontal padding: a source-list row insets its own
+                  content, and AppKit holds this pane at the framework's 180pt
+                  floor whatever `sidebarWidth` asks for, so every point the
+                  container takes comes straight off the tab title. */}
               <box
                 testID="sidebar"
                 orientation="vertical"
                 spacing={Spacing.xs}
-                style={{ vexpand: true, padding: Spacing.sm }}
+                style={{ vexpand: true, padding: { top: Spacing.sm, bottom: Spacing.sm } }}
               >
                 {/* Full-width and left-aligned, so it reads as the first row of
-                    the column rather than a button parked above it. */}
-                <button
-                  testID="new-tab"
-                  label="New Tab"
-                  iconName="tab-new-symbolic"
-                  labelAlign="start"
-                  cssClasses={["flat"]}
-                  style={{ hexpand: true }}
-                  onClick={newTab}
-                />
+                    the column rather than a button parked above it. The box
+                    around it carries the row inset the button itself cannot:
+                    `padding` on a button only inflates its intrinsic size. */}
+                <box orientation="horizontal" style={{ hexpand: true, padding: { left: Spacing.md } }}>
+                  <button
+                    testID="new-tab"
+                    label="New Tab"
+                    iconName="tab-new-symbolic"
+                    labelAlign="start"
+                    cssClasses={["flat"]}
+                    style={{ hexpand: true }}
+                    onClick={newTab}
+                  />
+                </box>
                 <sourcetree
                   testID="tab-list"
                   nodes={nodes}
@@ -1128,7 +1136,12 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                   {/* Stacked boxes rather than a list widget: a popover sizes
                       itself from what it contains, and every list widget here
                       is a scroll view, which contributes no height at all. */}
-                  <box testID="downloads-panel" orientation="vertical" spacing={Spacing.sm}>
+                  <box
+                    testID="downloads-panel"
+                    orientation="vertical"
+                    spacing={Spacing.sm}
+                    style={{ padding: Spacing.sm }}
+                  >
                     <label text="Downloads" cssClasses={["heading"]} style={{ halign: "start" }} />
                     {recentDownloads.length === 0 ? (
                       <label

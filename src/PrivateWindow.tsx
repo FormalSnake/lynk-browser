@@ -138,26 +138,32 @@ export function PrivateWindow({
       <splitview sidebarWidth={0.24} testID="private-split">
         <toolbarview slot="sidebar" testID="private-sidebar-toolbar">
           <headerbar testID="private-sidebar-header" title="Private" />
+          {/* Same metrics as the main window's column: see the comments there
+              for why the row inset rides a box around the New Tab button and
+              why the tree indents by nothing. */}
           <box
             testID="private-sidebar"
             orientation="vertical"
             spacing={Spacing.xs}
-            style={{ vexpand: true, padding: Spacing.sm }}
+            style={{ vexpand: true, padding: { top: Spacing.sm, bottom: Spacing.sm } }}
           >
-            <button
-              testID="private-new-tab"
-              label="New Tab"
-              iconName="tab-new-symbolic"
-              labelAlign="start"
-              cssClasses={["flat"]}
-              style={{ hexpand: true }}
-              onClick={() => openTab()}
-            />
+            <box orientation="horizontal" style={{ hexpand: true, padding: { left: Spacing.md } }}>
+              <button
+                testID="private-new-tab"
+                label="New Tab"
+                iconName="tab-new-symbolic"
+                labelAlign="start"
+                cssClasses={["flat"]}
+                style={{ hexpand: true }}
+                onClick={() => openTab()}
+              />
+            </box>
             <sourcetree
               testID="private-tab-list"
               nodes={nodes}
               actions={TAB_ACTIONS}
               selectedId={active.id}
+              indentationPerLevel={0}
               style={{ vexpand: true }}
               onSelectionChanged={(e) => {
                 const { nodeId } = e.data as { nodeId: string | null };
