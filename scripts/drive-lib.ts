@@ -135,8 +135,10 @@ export function paletteDriver(config: { timeoutMs: number }) {
   return { openPalette, typeQuery, goTo };
 }
 
-/// The titles of a SourceTree's rows, polled until they satisfy `check`. Both
-/// drives assert on a tab list; only the widget's testId differs.
+/// The titles of a SourceTree's item rows, polled until they satisfy `check`.
+/// Both drives assert on a tab list; only the widget's testId differs. A
+/// `section` heading is a row too and carries no testID, so filtering on that
+/// is what keeps "the second tab" meaning the second TAB.
 export async function waitRows(
   app: AppHandle,
   testId: string,
@@ -147,7 +149,7 @@ export async function waitRows(
   const deadline = Date.now() + timeoutMs;
   let last: string[] = [];
   while (Date.now() < deadline) {
-    last = ((await app.mustFind(testId)).rows ?? []).map((r) => r.title);
+    last = ((await app.mustFind(testId)).rows ?? []).filter((r) => r.testID).map((r) => r.title);
     if (check(last)) return last;
     await Bun.sleep(120);
   }

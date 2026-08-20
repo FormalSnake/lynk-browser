@@ -6,13 +6,14 @@
 //
 // Run headless: scripts/headless.sh bun scripts/browser-drive.ts
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { launchApp, type AppHandle } from "@nativedesktop/test";
+import { launchApp, type AppHandle, type JsonNode } from "@nativedesktop/test";
 import {
   SHOTS,
   fail,
   paletteDriver,
   shoot,
   step,
+  textsUnder,
   walk,
   waitRows as rowsMatching,
   waitText as textMatching,
@@ -110,9 +111,84 @@ const base = `http://127.0.0.1:${server.port}`;
 
 // ---------------------------------------------------------------- helpers ---
 
+/// Tab rows only: the sidebar's "Pinned"/"Tabs" headings are rows as well, and
+/// they are the ones without a testID.
 async function tabRows(app: AppHandle): Promise<{ title: string; testID: string | null }[]> {
   const list = await app.mustFind("tab-list");
-  return (list.rows ?? []).map((r) => ({ title: r.title, testID: r.testID }));
+  return (list.rows ?? []).filter((r) => r.testID).map((r) => ({ title: r.title, testID: r.testID }));
+}
+
+/// The section headings the sidebar is currently drawing, in order.
+async function tabSections(app: AppHandle): Promise<string[]> {
+  const list = await app.mustFind("tab-list");
+  return (list.rows ?? []).filter((r) => !r.testID).map((r) => r.title);
+}
+
+/// The fixture's load counters once they have stopped moving. The omnibox
+/// shows the address the app set, not the page the engine fetched, so a
+/// navigation is still in flight when the address already reads as arrived;
+/// comparing counters across a layout switch needs them settled first.
+async function settledLoads(): Promise<string> {
+  let last = "";
+  for (let stable = 0; stable < 8; ) {
+    const now = JSON.stringify(loads);
+    stable = now === last ? stable + 1 : 0;
+    last = now;
+    await Bun.sleep(200);
+  }
+  return last;
+}
+
+/// Where the page area starts, in logical units from the window's left edge.
+/// This is what "there is no tab column" means on either backend: GTK takes
+/// the sidebar pane out and AppKit collapses its split item, and neither
+/// shows up as the sidebar node disappearing from the tree.
+async function contentInset(app: AppHandle): Promise<number> {
+  return (await app.mustFind("content")).geometry?.x ?? -1;
+}
+
+async function waitContentInset(app: AppHandle, check: (x: number) => boolean): Promise<void> {
+  const deadline = Date.now() + PATIENCE;
+  let seen = -1;
+  while (Date.now() < deadline) {
+    seen = await contentInset(app);
+    if (check(seen)) return;
+    await Bun.sleep(150);
+  }
+  fail(`the page area still starts at x=${seen}`);
+}
+
+/// A row action the app only offers under some condition, retried until the
+/// row actually declares it. The alternative is sleeping and hoping.
+async function clickRowAction(app: AppHandle, testId: string, action: string): Promise<void> {
+  const deadline = Date.now() + PATIENCE;
+  for (;;) {
+    try {
+      await app.click({ testId, action });
+      return;
+    } catch (e) {
+      if (Date.now() > deadline) throw e;
+      await Bun.sleep(200);
+    }
+  }
+}
+
+/// Tab row testIDs, polled until they satisfy `check`. A row's title is
+/// whatever its page last called itself, and a page that redirects keeps
+/// changing it; the testID is the tab.
+async function waitTabIds(
+  app: AppHandle,
+  check: (ids: string[]) => boolean,
+  what: string,
+): Promise<string[]> {
+  const deadline = Date.now() + PATIENCE;
+  let ids: string[] = [];
+  while (Date.now() < deadline) {
+    ids = (await tabRows(app)).map((r) => r.testID!);
+    if (check(ids)) return ids;
+    await Bun.sleep(150);
+  }
+  return fail(`timed out waiting for ${what}; tab rows were ${JSON.stringify(ids)}`);
 }
 
 async function waitRows(app: AppHandle, check: (rows: string[]) => boolean, what: string): Promise<string[]> {
@@ -469,17 +545,43 @@ try {
   const body = readFileSync(downloaded, "utf8");
   if (!body.startsWith("nativebrowser download fixture")) fail(`downloaded file has wrong content: ${JSON.stringify(body)}`);
 
+  // Downloads live in the content header now, not the sidebar: a toolbar
+  // button opens a popover listing the recent ones. A transfer opens it by
+  // itself, which is what makes it findable here without a click.
+  const mainWindow = (await app.windows()).windows[0]!.ref;
   let downloadRows: string[] = [];
   const listed = Date.now() + 15_000;
   while (Date.now() < listed) {
-    downloadRows = ((await app.mustFind("downloads-list")).rows ?? []).map((r) => r.title);
+    downloadRows = await textsUnder(app, "downloads-item-", mainWindow);
     if (downloadRows.includes("fixture.txt")) break;
     await Bun.sleep(150);
   }
-  if (!downloadRows.includes("fixture.txt")) fail(`downloads list is ${JSON.stringify(downloadRows)}, want a fixture.txt row`);
+  if (!downloadRows.includes("fixture.txt")) {
+    fail(`the downloads panel lists ${JSON.stringify(downloadRows)}, want a fixture.txt row`);
+  }
   // The name comes from the engine's suggestedFilename now, and exactly one
   // event arrives however many views are live.
   if (downloadRows.length !== 1) fail(`one download expected, got ${JSON.stringify(downloadRows)}`);
+  if (await app.find("downloads-empty")) fail("the downloads panel still shows its empty state");
+  // Reveal is per row and only offered once the file is actually on disk.
+  const reveal = await step("find the row's reveal action", async () => {
+    const found: JsonNode[] = [];
+    walk((await app.tree(mainWindow)).root, (n) => {
+      if (n.testID?.startsWith("downloads-reveal-")) found.push(n);
+    });
+    return found[0] ?? fail("the finished download offers no way to show it in a folder");
+  });
+  if (!reveal.enabled) fail("the reveal action is disabled on a download that finished");
+  // The whole point of the move: nothing about downloads is in the tab column
+  // any more.
+  const inSidebar: string[] = [];
+  walk((await app.tree(mainWindow)).root, (n) => {
+    if (n.testID !== "sidebar") return;
+    walk(n, (child) => {
+      if (child.testID?.startsWith("downloads")) inSidebar.push(child.testID);
+    });
+  });
+  if (inSidebar.length > 0) fail(`downloads are back in the sidebar: ${JSON.stringify(inSidebar)}`);
 
   // A download is not a navigation: the tab stays on the page it was showing.
   await waitUrl(app, "/a");
@@ -590,6 +692,99 @@ try {
       `open-link and search each opened a tab (last is ${JSON.stringify(searchTab?.title ?? "")}), ` +
       `Save Image landed ${savedImage}`,
   );
+
+  // Pinning is a second row action on the same rows, and it re-sorts the
+  // sidebar: a pinned tab moves under its own heading, ahead of the rest.
+  // Last, because it deliberately reorders the tabs every leg above indexes by.
+  const beforePin = await tabRows(app);
+  if ((await tabSections(app)).length !== 0) fail("an unpinned window should draw no section headings");
+  const toPin = beforePin[beforePin.length - 1]!;
+  // Pin is offered on the row you are on, so the drive selects it first, which
+  // is what a person clicking a tab and then its pin button does.
+  await step("select the tab to pin", () => app.click(`menu-tab-${beforePin.length - 1}`));
+  await step("pin it from its row action", () => clickRowAction(app, toPin.testID!, "pin"));
+  await waitTabIds(app, (ids) => ids[0] === toPin.testID, "the pinned tab to sort to the top");
+  const sections = await step("read the sidebar's section headings", async () => {
+    const deadline = Date.now() + PATIENCE;
+    let seen: string[] = [];
+    while (Date.now() < deadline) {
+      seen = await tabSections(app);
+      if (seen.length === 2) return seen;
+      await Bun.sleep(150);
+    }
+    return fail(`pinning should split the sidebar in two, headings were ${JSON.stringify(seen)}`);
+  });
+  if (sections[0] !== "Pinned" || sections[1] !== "Tabs") {
+    fail(`sidebar headings are ${JSON.stringify(sections)}, want Pinned then Tabs`);
+  }
+  await shoot(app, "17-pinned-tab", mainWindow);
+  // A pin that a restart forgets is a preference the browser only pretended to
+  // keep, so the store on disk is the assertion.
+  await Bun.sleep(800);
+  const pinnedOnDisk =
+    (
+      JSON.parse(readFileSync(`${PROFILE}/session.json`, "utf8")) as {
+        data?: { tabs?: { pinned?: boolean }[] };
+      }
+    ).data?.tabs?.filter((t) => t.pinned).length ?? 0;
+  if (pinnedOnDisk !== 1) fail(`the session store holds ${pinnedOnDisk} pinned tabs, want 1`);
+
+  await step("unpin it again", () => clickRowAction(app, toPin.testID!, "unpin"));
+  await step("the headings go with the last pin", async () => {
+    const deadline = Date.now() + PATIENCE;
+    let seen: string[] = [];
+    while (Date.now() < deadline) {
+      seen = await tabSections(app);
+      if (seen.length === 0) return;
+      await Bun.sleep(150);
+    }
+    return fail(`the sidebar still draws ${JSON.stringify(seen)} with nothing pinned`);
+  });
+  const unpinned = (await tabRows(app)).map((r) => r.testID!);
+  if (unpinned.length !== beforePin.length) fail(`unpinning changed the tab count: ${JSON.stringify(unpinned)}`);
+  console.log(`17. pin sorts ${toPin.testID} under a Pinned heading and persists; unpin takes the headings away`);
+
+  // Compact drops the whole tab column and moves its two jobs into the one
+  // toolbar row. The live pages must not notice: the server's load counters are
+  // the proof that no `<webview>` was rebuilt on the way through, so they
+  // bracket each switch on its own.
+  const beforeCompact = (await tabRows(app)).map((r) => r.testID!);
+  const activeBeforeCompact = await shownUrl(app);
+  let loadsAt = await settledLoads();
+  const insetBefore = await contentInset(app);
+  if (insetBefore <= 0) fail(`the sidebar layout should inset the content, it starts at x=${insetBefore}`);
+  await step("switch to the compact layout", () => app.click("menu-layout"));
+  await step("the content reclaims the tab column's width", () => waitContentInset(app, (x) => x === 0));
+  await app.mustFind("tabs-menu");
+  await app.mustFind("header-new-tab");
+  await waitUrl(app, activeBeforeCompact);
+  const afterDrop = await settledLoads();
+  if (loadsAt !== afterDrop) fail(`dropping the sidebar reloaded a page: ${loadsAt} -> ${afterDrop}`);
+  await shoot(app, "18-compact", mainWindow);
+
+  // The address bar still drives the same tab, which is the whole point of a
+  // layout that has nothing else.
+  await goTo(app, `${base}/c`);
+  await waitUrl(app, "/c");
+
+  loadsAt = await settledLoads();
+  await step("switch back to the sidebar layout", () => app.click("menu-layout"));
+  await step("the tab column takes its width back", () => waitContentInset(app, (x) => x === insetBefore));
+  const afterCompact = await waitTabIds(
+    app,
+    (ids) => ids.length === beforeCompact.length,
+    "the tab rows to come back",
+  );
+  const afterRestore = await settledLoads();
+  if (loadsAt !== afterRestore) fail(`restoring the sidebar reloaded a page: ${loadsAt} -> ${afterRestore}`);
+  // The same tabs in the same order, and the one the compact omnibox drove is
+  // still showing the page it was sent to.
+  if (JSON.stringify(afterCompact) !== JSON.stringify(beforeCompact)) {
+    fail(`the round trip through compact changed the tab list: ${JSON.stringify(beforeCompact)} -> ${JSON.stringify(afterCompact)}`);
+  }
+  await waitUrl(app, "/c");
+  await shoot(app, "19-sidebar-again", mainWindow);
+  console.log(`18. compact drops the sidebar and still navigates; the round trip kept ${afterCompact.length} live tabs`);
 
   console.log("NB_MVP_OK");
 } catch (e) {
