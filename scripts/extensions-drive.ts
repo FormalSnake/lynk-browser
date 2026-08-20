@@ -370,7 +370,7 @@ async function waitDark(app: AppHandle, testId: string, what: string, code = PAG
     .then((r) => (r.ok ? String(r.value) : `unreadable (${r.error})`))
     .catch((e: Error) => `unreadable (${e.message})`);
   return fail(
-    `${what} never got Dark Reader's theme on ${testId} (last probe ${JSON.stringify(last)}${lastError ? `, last error ${lastError}` : ""}; the view is on ${where})`,
+    `${what} never got Dark Reader's theme on ${testId} (last probe ${JSON.stringify(last)}${lastError ? `, last error ${lastError}` : ""}; the view is on ${where})${hostDied()}`,
   );
 }
 
@@ -392,7 +392,7 @@ async function waitUnthemed(app: AppHandle, testId: string, what: string): Promi
     await Bun.sleep(400);
   }
   return fail(
-    `${what} still carries Dark Reader's theme on ${testId} (last probe ${JSON.stringify(last)}${lastError ? `, last error ${lastError}` : ""})`,
+    `${what} still carries Dark Reader's theme on ${testId} (last probe ${JSON.stringify(last)}${lastError ? `, last error ${lastError}` : ""})${hostDied()}`,
   );
 }
 
@@ -444,12 +444,12 @@ async function waitStored(
 ): Promise<Record<string, unknown>> {
   const deadline = Date.now() + PATIENCE;
   let last: Record<string, unknown> = {};
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !hostFatal) {
     last = storedSettings(extensionId, area);
     if (check(last)) return last;
     await Bun.sleep(300);
   }
-  return fail(`${what} never reached chrome.storage (last ${JSON.stringify(last).slice(0, 300)})`);
+  return fail(`${what} never reached chrome.storage (last ${JSON.stringify(last).slice(0, 300)})${hostDied()}`);
 }
 
 async function listTestIds(app: AppHandle): Promise<string[]> {
@@ -514,6 +514,18 @@ async function waitPopupLoaded(app: AppHandle, id: string): Promise<string> {
 /// so what the app SENDS the engine is the observable.
 const menuTraces: string[] = [];
 
+/// The host's dying words, if it printed any. GDK treats an X protocol error as
+/// fatal, so a host that hits one is gone: every later widget command lands
+/// nowhere and every wait in here runs its full timeout before blaming the
+/// extension for something it never saw. Latching the line is what turns that
+/// into a diagnosis.
+let hostFatal = "";
+const FATAL_HOST_LINES = ["Gdk-ERROR", "X Window System error", "ND_RUNTIME_ERROR"];
+
+function hostDied(): string {
+  return hostFatal ? `; the host process died first: ${hostFatal}` : "";
+}
+
 function menuTraceFor(tabId: string): unknown[] | null {
   for (let i = menuTraces.length - 1; i >= 0; i--) {
     const line = menuTraces[i]!;
@@ -556,6 +568,7 @@ function launch(folders: string[] = [FIXTURE]): Promise<AppHandle> {
     // NB_EXT_VERBOSE=1 mirrors the whole host log, which is the only way to see
     // the widget-command traffic a failing extension leg turns on.
     onStderr: (line) => {
+      if (!hostFatal && FATAL_HOST_LINES.some((mark) => line.includes(mark))) hostFatal = line.trim();
       if (line.includes("ND_APP CTXMENU")) menuTraces.push(line.trim());
       if (process.env.NB_EXT_VERBOSE === "1") console.log(`   host | ${line.trimEnd()}`);
       else if (line.includes("ND_APP") || line.includes("[nativebrowser]")) console.log(`   app | ${line.trim()}`);

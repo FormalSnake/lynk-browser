@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { launchApp, type AppHandle, type JsonNode } from "@nativedesktop/test";
 import {
   SHOTS,
+  CHROMIUM_ENGINE,
   ENGINE_ENV,
   fail,
   paletteDriver,
@@ -522,12 +523,17 @@ try {
   if (!echoed.includes(`cookie=${COOKIE_VALUE}`)) {
     fail(`the cookie did not survive the restart: /whoami read ${JSON.stringify(echoed)}`);
   }
-  // The on-disk jar is a WebKitGTK artifact; WKWebView keeps cookies inside
-  // its website data store, so the /whoami echo above is the whole proof there.
-  if (app.backend === "gtk" && !existsSync(`${DATA_HOME}/nd-webview-profiles/default/cookies.sqlite`)) {
-    fail(`no cookie jar at ${DATA_HOME}/nd-webview-profiles/default/cookies.sqlite`);
-  }
-  console.log(`13. the cookie survived a restart (${COOKIE_VALUE}) and the jar is on disk`);
+  // That path is WebKitGTK's own layout, so it is only an assertion on the
+  // system engine. WKWebView keeps cookies inside its website data store and
+  // Chromium keeps them in a jar of its own under the cache path, and on both
+  // the /whoami echo above is the whole proof: it is the cookie the engine
+  // actually sent, after a restart, which is what the step is about.
+  const jar = `${DATA_HOME}/nd-webview-profiles/default/cookies.sqlite`;
+  const onDisk = app.backend === "gtk" && !CHROMIUM_ENGINE;
+  if (onDisk && !existsSync(jar)) fail(`no cookie jar at ${jar}`);
+  console.log(
+    `13. the cookie survived a restart (${COOKIE_VALUE})${onDisk ? " and the jar is on disk" : ""}`,
+  );
   // Put the active tab back where the rest of the drive expects it: the steps
   // below assert against page A, and the round trip above borrowed this tab.
   await goTo(app, `${base}/a`);
