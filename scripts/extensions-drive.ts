@@ -34,14 +34,6 @@ const FIXTURE_KIND = process.env.NB_EXT_FIXTURE === "mv2" ? "mv2" : "mv3";
 // same legs against the AppKit host. Each backend keeps its own profile so a
 // run on one never reads the other's registry.
 const BACKEND = process.env.ND_BACKEND === "appkit" ? "appkit" : "gtk";
-// Whether the fixture page may carry a subframe. On the Chromium engine it may
-// not: an isolated world's execution-context id is cached by world NAME with no
-// frame filter (nd-cef-wave swift/Sources/NDShell/NDCefDevTools.swift:145), so a
-// subframe's context overwrites the main frame's and every world-scoped
-// evaluation, which is the broker's whole delivery path, lands in the subframe.
-// The main frame is then left with content scripts nothing can answer. Measured:
-// the same page without the iframe themes correctly on this engine.
-const SUBFRAMES = process.env.ND_WEBVIEW_ENGINE !== "chromium";
 const FIXTURE = `${ROOT}/fixtures/darkreader-${FIXTURE_KIND}`;
 // The second extension leg 4c installs alongside Dark Reader. Purpose-built and
 // tiny: a content script, a background page, storage, and one message round
@@ -111,7 +103,7 @@ const server = Bun.serve({
         return page(
           "Fixture one",
           "<h1>Fixture one</h1><p>A light page.</p>" +
-            (SUBFRAMES ? '<iframe id="sub" src="/frame" width="320" height="140"></iframe>' : ""),
+            '<iframe id="sub" src="/frame" width="320" height="140"></iframe>',
           "#ffffff",
         );
       case "/two":
@@ -635,17 +627,8 @@ try {
   console.log(`2. existing tab: before ${JSON.stringify(baseline)}, after reload ${JSON.stringify(dark)}`);
   await shoot(app, `${WHICH}-04-darkened`, await mainWindow(app));
 
-  if (SUBFRAMES) {
-    const framed = await waitDark(app, firstTab, "the iframe inside the fixture", FRAME_PROBE);
-    console.log(`2b. all_frames: the iframe darkened too ${JSON.stringify(framed)}`);
-  } else {
-    console.log(
-      "ND_SKIP_CHROMIUM 2b all_frames: the fixture page carries no subframe on this engine. " +
-        "A world-scoped evaluation resolves its execution context by world name alone " +
-        "(nd-cef-wave swift/Sources/NDShell/NDCefDevTools.swift:145), so a subframe's context " +
-        "replaces the main frame's and the broker answers the wrong frame.",
-    );
-  }
+  const framed = await waitDark(app, firstTab, "the iframe inside the fixture", FRAME_PROBE);
+  console.log(`2b. all_frames: the iframe darkened too ${JSON.stringify(framed)}`);
 
   await step("open a second tab", () => app.click("menu-new-tab"));
   await waitRows(app, (r) => r.length === 2, "a second tab row");
