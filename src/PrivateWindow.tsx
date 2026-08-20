@@ -18,7 +18,7 @@ import type {
 } from "@nativedesktop/react";
 import { Activity } from "react";
 
-import { displayUrl, hostOf, toUrl } from "./lib/url.ts";
+import { displayUrl, toUrl } from "./lib/url.ts";
 
 const TAB_ACTIONS: SourceTreeAction[] = [
   { id: "close", iconName: "window-close-symbolic", tooltip: "Close Tab" },
@@ -122,7 +122,6 @@ export function PrivateWindow({
   const nodes: SourceTreeNode[] = tabs.map((t) => ({
     id: t.id,
     title: t.title || (t.url ? displayUrl(t.url) : "New Tab"),
-    caption: hostOf(t.url) || undefined,
     iconName: "view-conceal-symbolic",
     actionIds: ["close"],
     testID: `private-tab-${t.id}`,
@@ -143,7 +142,7 @@ export function PrivateWindow({
             testID="private-sidebar"
             orientation="vertical"
             spacing={Spacing.xs}
-            style={{ vexpand: true, padding: Spacing.xs }}
+            style={{ vexpand: true, padding: Spacing.sm }}
           >
             <button
               testID="private-new-tab"
@@ -151,6 +150,7 @@ export function PrivateWindow({
               iconName="tab-new-symbolic"
               labelAlign="start"
               cssClasses={["flat"]}
+              style={{ hexpand: true }}
               onClick={() => openTab()}
             />
             <sourcetree
@@ -215,9 +215,9 @@ export function PrivateWindow({
           <box testID="private-content" orientation="vertical" style={{ hexpand: true, vexpand: true }}>
             {/* The marker. A private window that looks like an ordinary one is
                 the failure mode this banner exists to prevent. GNOME HIG
-                *Banners*: one short title, no lengthy explanation — the status
-                page below carries what this window actually does. */}
-            <banner testID="private-banner" title="Private browsing: this window saves no history" revealed />
+                *Banners*: one short title, no lengthy explanation, so it states
+                the fact and the status page below carries the detail. */}
+            <banner testID="private-banner" title="Private browsing. This window keeps no history." revealed />
 
             {findOpen && (
               <box
@@ -304,7 +304,7 @@ export function PrivateWindow({
                 testID="private-new-tab-page"
                 iconName="view-conceal-symbolic"
                 title="Private Browsing"
-                description="This window keeps no history, cookies or cache. Anything you download is still saved."
+                description="Cookies, cache and history are discarded when you close this window. Anything you download is still saved."
                 style={{ vexpand: true }}
               />
             )}

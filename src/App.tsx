@@ -5,6 +5,9 @@ import {
   onJavaScriptResult,
   onToastButtonClicked,
   onToastDismissed,
+  openPath,
+  Platform,
+  revealPath,
   sendCommand,
   setContextMenuItems,
   showToast,
@@ -41,17 +44,25 @@ import {
   useExtensionState,
 } from "./extensions/ui.tsx";
 import type { DownloadItem } from "./lib/downloads.ts";
-import { runDownload } from "./lib/downloads.ts";
+import { downloadDir, runDownload } from "./lib/downloads.ts";
 import { faviconFor, fetchFavicon, rememberFavicon } from "./lib/favicons.ts";
 import { recentVisits, recordTitle, recordVisit, searchHistory, type Visit } from "./lib/history.ts";
 import { session } from "./lib/session.ts";
-import { SEARCH_ENGINES, engineOf, settings } from "./lib/settings.ts";
+import { LAYOUTS, SEARCH_ENGINES, engineOf, settings, type Layout } from "./lib/settings.ts";
 import { displayUrl, fileNameFromUrl, hostOf, isSearch, toUrl } from "./lib/url.ts";
 import { PrivateWindow } from "./PrivateWindow.tsx";
 
+/// Every action a tab row can carry. A row names the ones it wants through
+/// `actionIds`, which is what keeps Pin and Unpin off the same row.
 const TAB_ACTIONS: SourceTreeAction[] = [
+  { id: "pin", iconName: "view-pin-symbolic", tooltip: "Pin Tab" },
+  { id: "unpin", iconName: "view-pin-symbolic", tooltip: "Unpin Tab" },
   { id: "close", iconName: "window-close-symbolic", tooltip: "Close Tab" },
 ];
+
+/// Most recent downloads the toolbar popover lists. Older ones are still on
+/// disk; the panel is a receipt for what just happened, not a file manager.
+const DOWNLOADS_SHOWN = 6;
 
 const TEST_HOOKS = process.env.NB_TEST_HOOKS === "1";
 
@@ -76,7 +87,8 @@ const COMMANDS: { id: string; title: string; hint: string; iconName: string }[] 
   { id: "reopen-tab", title: "Reopen Closed Tab", hint: "Ctrl+Shift+T", iconName: "edit-undo-symbolic" },
   { id: "reload", title: "Reload", hint: "Ctrl+R", iconName: "view-refresh-symbolic" },
   { id: "find", title: "Find in Page", hint: "Ctrl+F", iconName: "edit-find-symbolic" },
-  { id: "downloads", title: "Downloads", hint: "Sidebar", iconName: "folder-download-symbolic" },
+  { id: "downloads", title: "Downloads", hint: "Toolbar", iconName: "folder-download-symbolic" },
+  { id: "layout", title: "Switch Layout", hint: "Sidebar or compact", iconName: "sidebar-show-symbolic" },
   { id: "private", title: "New Private Window", hint: "Ctrl+Shift+P", iconName: "view-conceal-symbolic" },
   { id: "settings", title: "Settings", hint: "Ctrl+Comma", iconName: "preferences-system-symbolic" },
   { id: "zoom-in", title: "Zoom In", hint: "Ctrl++", iconName: "zoom-in-symbolic" },
@@ -162,6 +174,16 @@ function findFailed(find: FindState): boolean {
   return find.count === 0 || find.found === false;
 }
 
+/// One line under a download's name. A transfer in flight and one that failed
+/// each say so; a finished one says where it came from, which is the only
+/// thing about it still worth knowing.
+function downloadStatus(d: DownloadItem): string {
+  if (d.state === "running") return "Downloading…";
+  if (d.state === "failed") return "Download failed";
+  const host = hostOf(d.url);
+  return host ? `From ${host}` : "Saved";
+}
+
 function findSummary(find: FindState): string {
   if (!find.query) return "";
   if (find.count !== null) return find.count === 1 ? "1 match" : `${find.count} matches`;
@@ -239,6 +261,9 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   /// never re-sent.
   const sentMenus = useRef(new Map<string, string>());
   const toast = useRef<NdNodeRef<"toastoverlay">>(null);
+  /// Download ids only have to be unique within a run, and a short one keeps
+  /// the panel's row testIDs readable.
+  const downloadSeq = useRef(0);
 
   const rt = (id: string): Runtime => runtime[id] ?? IDLE;
   const patch = (id: string, part: Partial<Runtime>): void =>
@@ -278,7 +303,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
       created = id;
       return {
         ...s,
-        tabs: [...s.tabs, { id, url, title: "" }],
+        tabs: [...s.tabs, { id, url, title: "", pinned: false }],
         activeId: background ? s.activeId : id,
         nextTabId: s.nextTabId + 1,
       };
@@ -297,10 +322,29 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
       const rest = s.tabs.filter((t) => t.id !== id);
       if (rest.length === 0) {
         const fresh = `t${s.nextTabId}`;
-        return { ...s, tabs: [{ id: fresh, url: "", title: "" }], activeId: fresh, nextTabId: s.nextTabId + 1 };
+        return {
+          ...s,
+          tabs: [{ id: fresh, url: "", title: "", pinned: false }],
+          activeId: fresh,
+          nextTabId: s.nextTabId + 1,
+        };
       }
       const nextActive = s.activeId === id ? rest[Math.min(index, rest.length - 1)]!.id : s.activeId;
       return { ...s, tabs: rest, activeId: nextActive };
+    });
+  }
+
+  /// Pinning moves the tab to the end of the pinned block and unpinning moves
+  /// it to the head of the rest, which is the same index either way. Keeping
+  /// the array in sidebar order is what lets Ctrl+Tab and the Tabs menu walk
+  /// the tabs in the order they are drawn.
+  function setPinned(id: string, pinned: boolean): void {
+    session.update((s) => {
+      const tab = s.tabs.find((t) => t.id === id);
+      if (!tab || tab.pinned === pinned) return s;
+      const rest = s.tabs.filter((t) => t.id !== id);
+      const boundary = rest.filter((t) => t.pinned).length;
+      return { ...s, tabs: [...rest.slice(0, boundary), { ...tab, pinned }, ...rest.slice(boundary)] };
     });
   }
 
@@ -382,6 +426,14 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   function command(name: "goBack" | "goForward" | "reload" | "stop"): void {
     const node = view(active.id);
     if (node) sendCommand(node, name);
+  }
+
+  /// The sidebar pane is the only thing the two layouts disagree about, and it
+  /// is a SIBLING of the content pane rather than its ancestor: dropping it
+  /// leaves every tab's `<webview>` at the same place in the tree, so the live
+  /// pages survive the switch instead of remounting.
+  function setLayout(next: Layout): void {
+    settings.update((s) => (s.layout === next ? s : { ...s, layout: next }));
   }
 
   // ---------------------------------------------------------------- find ---
@@ -497,7 +549,6 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   }
 
   function startDownload(url: string, suggested?: string): void {
-    const now = Date.now();
     // A download is not a navigation: whichever tab aimed at this URL goes back
     // to the page it was showing, so the restored session never points at it.
     session.update((s) => ({
@@ -505,7 +556,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
       tabs: s.tabs.map((t) => (t.url === url ? { ...t, url: committed.current.get(t.id) ?? "" } : t)),
     }));
 
-    const id = `d${downloads.length}-${now}`;
+    const id = `d${downloadSeq.current++}`;
     const guess = suggested || fileNameFromUrl(url);
     setDownloads((d) => [{ id, name: guess, url, path: "", state: "running" }, ...d]);
     setDownloadsOpen(true);
@@ -589,6 +640,8 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
         return openFind();
       case "downloads":
         return setDownloadsOpen(true);
+      case "layout":
+        return setLayout(prefs.layout === "sidebar" ? "compact" : "sidebar");
       case "private":
         return setPrivateOpen(true);
       case "settings":
@@ -603,33 +656,43 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   }
 
   const activeRt = rt(active.id);
+  const compact = prefs.layout === "compact";
+  const recentDownloads = downloads.slice(0, DOWNLOADS_SHOWN);
   const shownUrl = displayUrl(active.url);
   const pageTitle = active.title || (active.url ? displayUrl(active.url) : "New Tab");
 
-  // Two tabs on the same host produce identical captions, which is exactly the
-  // case where the path is the only thing telling them apart.
-  const hostCounts = new Map<string, number>();
-  for (const t of tabs) {
-    const host = hostOf(t.url);
-    if (host) hostCounts.set(host, (hostCounts.get(host) ?? 0) + 1);
-  }
-
   void iconEpoch;
-  const nodes: SourceTreeNode[] = tabs.map((t) => {
-    const host = hostOf(t.url);
-    const repeated = host !== "" && (hostCounts.get(host) ?? 0) > 1;
+  // One line per tab: favicon and title, nothing else. A second line of host
+  // costs a third of the column's height and repeats what the address bar
+  // already says about the tab you are looking at.
+  function tabNode(t: (typeof tabs)[number]): SourceTreeNode {
     return {
       id: t.id,
       title: t.title || (t.url ? displayUrl(t.url) : "New Tab"),
-      caption: (repeated ? displayUrl(t.url) : host) || undefined,
       // The site's own icon when it has been seen, the generic page glyph
       // until then. iconData wins over iconName when both are set.
       iconData: faviconFor(t.url),
       iconName: "web-browser-symbolic",
-      actionIds: ["close"],
+      // Pin rides the selected row only. Every action a row declares reserves
+      // its width whether or not it is being hovered, and a second one on a
+      // 190pt column costs a third of the title; the Tabs menu covers pinning
+      // from the keyboard.
+      actionIds: t.id === active.id ? [t.pinned ? "unpin" : "pin", "close"] : ["close"],
       testID: `tab-${t.id}`,
     };
-  });
+  }
+
+  // Headings only once a tab is pinned: an unpinned window is a plain column of
+  // tabs, and a lone "Tabs" heading over it would be labelling the obvious.
+  const pinned = tabs.filter((t) => t.pinned);
+  const loose = tabs.filter((t) => !t.pinned);
+  const nodes: SourceTreeNode[] = [];
+  if (pinned.length > 0) {
+    nodes.push({ id: "section-pinned", title: "Pinned", section: true });
+    for (const t of pinned) nodes.push(tabNode(t));
+    if (loose.length > 0) nodes.push({ id: "section-tabs", title: "Tabs", section: true });
+  }
+  for (const t of loose) nodes.push(tabNode(t));
 
   // Ranking is entirely the app's job: <commandpalette> renders what it is
   // given, in order. Address first (that is what a browser bar is for), then
@@ -729,6 +792,13 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
         </menu>
         <menu label="View" testID="menu-view">
           <menuitem testID="menu-reload" label="Reload" accelerator="primary+r" onSelect={() => command("reload")} />
+          <menuitem
+            testID="menu-layout"
+            label={prefs.layout === "sidebar" ? "Use Compact Layout" : "Use Sidebar Layout"}
+            accelerator="primary+shift+s"
+            onSelect={() => setLayout(prefs.layout === "sidebar" ? "compact" : "sidebar")}
+          />
+          <menuitem testID="menu-downloads" label="Downloads" onSelect={() => setDownloadsOpen(true)} />
           <menuitem role="separator" testID="menu-view-sep" />
           <menuitem
             testID="menu-zoom-in"
@@ -751,6 +821,11 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
             label="Previous Tab"
             accelerator="primary+shift+tab"
             onSelect={() => cycleTab(-1)}
+          />
+          <menuitem
+            testID="menu-pin-tab"
+            label={active.pinned ? "Unpin Tab" : "Pin Tab"}
+            onSelect={() => setPinned(active.id, !active.pinned)}
           />
           <menuitem role="separator" testID="menu-tabs-sep" />
           {tabs.map((t, i) => (
@@ -895,61 +970,57 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
       </menubar>
 
       <toastoverlay ref={toast} onToastButtonClicked={onToastButtonClicked} onToastDismissed={onToastDismissed}>
-        <splitview sidebarWidth={0.24} testID="split">
-          <toolbarview slot="sidebar" testID="sidebar-toolbar">
-            <headerbar testID="sidebar-header" title="NativeBrowser" />
-            <box
-              testID="sidebar"
-              orientation="vertical"
-              spacing={Spacing.xs}
-              style={{ vexpand: true, padding: Spacing.xs }}
-            >
-              <button
-                testID="new-tab"
-                label="New Tab"
-                iconName="tab-new-symbolic"
-                labelAlign="start"
-                cssClasses={["flat"]}
-                onClick={newTab}
-              />
-              <sourcetree
-                testID="tab-list"
-                nodes={nodes}
-                actions={TAB_ACTIONS}
-                selectedId={active.id}
-                style={{ vexpand: true }}
-                onSelectionChanged={(e) => {
-                  const { nodeId } = e.data as { nodeId: string | null };
-                  if (nodeId) selectTab(nodeId);
-                }}
-                onActionClicked={(e) => {
-                  const { nodeId, actionId } = e.data as { nodeId: string; actionId: string };
-                  if (actionId === "close") closeTab(nodeId);
-                }}
-              />
-              <separator orientation="horizontal" />
-              <expander
-                testID="downloads"
-                label={downloads.length > 0 ? `Downloads (${downloads.length})` : "Downloads"}
-                expanded={downloadsOpen}
-                onToggled={(e) => setDownloadsOpen(e.checked)}
+        <splitview sidebarWidth={0.24} collapsed={compact} testID="split">
+          {/* Taking the tab column away needs a different move per backend.
+              GTK drops the sidebar child, which is what clears its
+              show-sidebar and hands the content the full width; AppKit keeps
+              the NSSplitViewItem whatever React removes and only reacts to
+              `collapsed`. Each backend gets its working half, and the content
+              pane stays this splitview's second child either way, so no
+              `<webview>` moves and no page reloads. (framework ask) */}
+          {(!compact || Platform.backend === "appkit") && (
+            <toolbarview slot="sidebar" testID="sidebar-toolbar">
+              <headerbar testID="sidebar-header" title="NativeBrowser" />
+              <box
+                testID="sidebar"
+                orientation="vertical"
+                spacing={Spacing.xs}
+                style={{ vexpand: true, padding: Spacing.sm }}
               >
-                <box orientation="vertical" spacing={Spacing.xs}>
-                  <sourcelist
-                    testID="downloads-list"
-                    items={downloads.map((d) => ({
-                      title: d.name,
-                      iconName: d.state === "failed" ? "dialog-warning-symbolic" : "folder-download-symbolic",
-                      badge: d.state === "running" ? "…" : undefined,
-                    }))}
-                    emptyIconName="folder-download-symbolic"
-                    emptyTitle="No Downloads Yet"
-                    emptyDescription="Files you download appear here."
-                  />
-                </box>
-              </expander>
-            </box>
-          </toolbarview>
+                {/* Full-width and left-aligned, so it reads as the first row of
+                    the column rather than a button parked above it. */}
+                <button
+                  testID="new-tab"
+                  label="New Tab"
+                  iconName="tab-new-symbolic"
+                  labelAlign="start"
+                  cssClasses={["flat"]}
+                  style={{ hexpand: true }}
+                  onClick={newTab}
+                />
+                <sourcetree
+                  testID="tab-list"
+                  nodes={nodes}
+                  actions={TAB_ACTIONS}
+                  selectedId={active.id}
+                  // A flat list has no levels, and the reserved indent is what
+                  // pushed the tab rows out of line with the New Tab row.
+                  indentationPerLevel={0}
+                  style={{ vexpand: true }}
+                  onSelectionChanged={(e) => {
+                    const { nodeId } = e.data as { nodeId: string | null };
+                    if (nodeId && tabs.some((t) => t.id === nodeId)) selectTab(nodeId);
+                  }}
+                  onActionClicked={(e) => {
+                    const { nodeId, actionId } = e.data as { nodeId: string; actionId: string };
+                    if (actionId === "close") closeTab(nodeId);
+                    if (actionId === "pin") setPinned(nodeId, true);
+                    if (actionId === "unpin") setPinned(nodeId, false);
+                  }}
+                />
+              </box>
+            </toolbarview>
+          )}
 
           <toolbarview slot="content" testID="content-toolbar">
             <headerbar
@@ -960,6 +1031,16 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
               onBack={() => command("goBack")}
               onForward={() => command("goForward")}
             >
+              {/* One icon for both directions: Adwaita's sidebar-hide glyph has
+                  no SF Symbol behind it, so the state rides the tooltip. */}
+              <button
+                slot="start"
+                testID="layout-toggle"
+                iconName="sidebar-show-symbolic"
+                tooltip={prefs.layout === "sidebar" ? "Use Compact Layout" : "Use Sidebar Layout"}
+                cssClasses={["flat"]}
+                onClick={() => setLayout(prefs.layout === "sidebar" ? "compact" : "sidebar")}
+              />
               <button
                 slot="start"
                 testID="reload"
@@ -1001,6 +1082,107 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                 style={{ hexpand: true }}
                 onActivate={(e) => commitQuery(e.text)}
               />
+
+              {/* Compact has no sidebar, so the two things the column carried
+                  move here: the tab list and the way to add one. */}
+              {compact && (
+                <menubutton slot="end" testID="tabs-menu" iconName="view-list-symbolic" tooltip="Tabs">
+                  {tabs.map((t, i) => (
+                    <menuitem
+                      key={t.id}
+                      testID={`tabs-menu-${i}`}
+                      label={t.title || (t.url ? displayUrl(t.url) : "New Tab")}
+                      onSelect={() => selectTab(t.id)}
+                    />
+                  ))}
+                </menubutton>
+              )}
+              {compact && (
+                <button
+                  slot="end"
+                  testID="header-new-tab"
+                  iconName="tab-new-symbolic"
+                  tooltip="New Tab"
+                  cssClasses={["flat"]}
+                  onClick={newTab}
+                />
+              )}
+
+              {/* A popover anchors on its TREE parent on both backends, and a
+                  header bar's own handle never joins a view hierarchy, so the
+                  button it hangs off has to be boxed. */}
+              <box slot="end" testID="downloads-anchor" orientation="horizontal">
+                <button
+                  testID="downloads-button"
+                  iconName="folder-download-symbolic"
+                  tooltip="Downloads"
+                  cssClasses={["flat"]}
+                  onClick={() => setDownloadsOpen(!downloadsOpen)}
+                />
+                <popover
+                  testID="downloads-popover"
+                  open={downloadsOpen}
+                  position="bottom"
+                  onClosed={() => setDownloadsOpen(false)}
+                >
+                  {/* Stacked boxes rather than a list widget: a popover sizes
+                      itself from what it contains, and every list widget here
+                      is a scroll view, which contributes no height at all. */}
+                  <box testID="downloads-panel" orientation="vertical" spacing={Spacing.sm}>
+                    <label text="Downloads" cssClasses={["heading"]} style={{ halign: "start" }} />
+                    {recentDownloads.length === 0 ? (
+                      <label
+                        testID="downloads-empty"
+                        text="Files you download appear here."
+                        cssClasses={["dimmed"]}
+                        style={{ halign: "start" }}
+                      />
+                    ) : (
+                      recentDownloads.map((d) => (
+                        <box key={d.id} orientation="horizontal" spacing={Spacing.sm}>
+                          <image
+                            iconName={d.state === "failed" ? "dialog-warning-symbolic" : "folder-download-symbolic"}
+                            symbolScale="small"
+                            cssClasses={d.state === "failed" ? ["error"] : ["dimmed"]}
+                          />
+                          <box orientation="vertical" style={{ hexpand: true }}>
+                            <label
+                              testID={`downloads-item-${d.id}`}
+                              text={d.name}
+                              ellipsize
+                              style={{ halign: "start" }}
+                            />
+                            <label
+                              testID={`downloads-status-${d.id}`}
+                              text={downloadStatus(d)}
+                              cssClasses={["dimmed", "caption"]}
+                              style={{ halign: "start" }}
+                            />
+                          </box>
+                          {/* Only once the transfer has produced a file. */}
+                          {d.state === "done" && (
+                            <button
+                              testID={`downloads-reveal-${d.id}`}
+                              iconName="folder-symbolic"
+                              tooltip="Show in Folder"
+                              cssClasses={["flat"]}
+                              style={{ halign: "end", valign: "center" }}
+                              onClick={() => void revealPath(d.path).catch(() => {})}
+                            />
+                          )}
+                        </box>
+                      ))
+                    )}
+                    <button
+                      testID="downloads-folder"
+                      label="Open Downloads Folder"
+                      cssClasses={["flat"]}
+                      onClick={() => void openPath(downloadDir()).catch(() => {})}
+                    />
+                  </box>
+                </popover>
+              </box>
+
               <ExtensionActionButtons host={extensions} />
             </headerbar>
 
@@ -1217,19 +1399,41 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   );
 }
 
-/// Settings. Three preferences, native rows, written straight through the
-/// store: there is no Apply button because there is nothing to apply.
+/// Settings. A handful of preferences, native rows, written straight through
+/// the store: there is no Apply button because there is nothing to apply.
+/// Grouped the way the window is used: how it looks, what it searches, what it
+/// opens with, and where files land.
 function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
   const prefs = useStoreValue(settings);
   const engineIndex = Math.max(0, SEARCH_ENGINES.findIndex((e) => e.id === prefs.searchEngine));
+  const layoutIndex = Math.max(0, LAYOUTS.findIndex((l) => l.id === prefs.layout));
 
   return (
-    <window title="Settings" testID="settings-window" defaultWidth={560} defaultHeight={420} onClosed={onClose}>
+    <window title="Settings" testID="settings-window" defaultWidth={560} defaultHeight={620} onClosed={onClose}>
       <toolbarview testID="settings-toolbar">
         <headerbar testID="settings-header" title="Settings" />
         <scrollview testID="settings-scroll" style={{ hexpand: true, vexpand: true }}>
           <clamp maximumSize={640}>
             <box orientation="vertical" spacing={Spacing.lg} style={{ padding: Spacing.lg, hexpand: true }}>
+              <settingsgroup testID="settings-appearance" title="Appearance">
+                <row
+                  testID="settings-layout-row"
+                  title="Layout"
+                  subtitle="Sidebar keeps a tab column; compact puts everything in the toolbar"
+                >
+                  <segmentedcontrol
+                    slot="suffix"
+                    testID="settings-layout"
+                    options={LAYOUTS.map((l) => l.name)}
+                    selectedIndex={layoutIndex}
+                    onSelectionChanged={(e) => {
+                      const layout = LAYOUTS[e.index]?.id ?? "sidebar";
+                      settings.update((s) => ({ ...s, layout }));
+                    }}
+                  />
+                </row>
+              </settingsgroup>
+
               <settingsgroup testID="settings-search" title="Search">
                 <row testID="settings-engine-row" title="Search Engine" subtitle="Used when what you type is not an address">
                   <select
@@ -1262,6 +1466,22 @@ function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
                   checked={prefs.restoreOnLaunch}
                   onToggled={(e) => settings.update((s) => ({ ...s, restoreOnLaunch: e.checked }))}
                 />
+              </settingsgroup>
+
+              {/* Read-only: the folder is the OS download folder, or whatever
+                  NB_DOWNLOAD_DIR names for a drive run. The row exists so the
+                  answer to "where did that go" is in the app. */}
+              <settingsgroup testID="settings-downloads" title="Downloads">
+                <row testID="settings-download-dir-row" title="Save Files To" subtitle={downloadDir()}>
+                  <button
+                    slot="suffix"
+                    testID="settings-download-dir"
+                    label="Open Folder"
+                    cssClasses={["flat"]}
+                    style={{ halign: "end" }}
+                    onClick={() => void openPath(downloadDir()).catch(() => {})}
+                  />
+                </row>
               </settingsgroup>
             </box>
           </clamp>

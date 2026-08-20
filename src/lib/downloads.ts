@@ -13,7 +13,12 @@ export interface DownloadItem {
 
 /// NB_DOWNLOAD_DIR lets a drive run land files somewhere disposable.
 export function downloadDir(): string {
-  const dir = process.env.NB_DOWNLOAD_DIR ?? resolve(homedir(), "Downloads");
+  return process.env.NB_DOWNLOAD_DIR ?? resolve(homedir(), "Downloads");
+}
+
+/// Settings only reads the path; a transfer needs the folder to exist.
+function ensureDownloadDir(): string {
+  const dir = downloadDir();
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -37,7 +42,7 @@ export async function runDownload(url: string, suggested?: string): Promise<{ na
   const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
   const name = decodeURIComponent(match?.[1] ?? suggested ?? fileNameFromUrl(url));
 
-  const path = uniquePath(downloadDir(), name);
+  const path = uniquePath(ensureDownloadDir(), name);
   await Bun.write(path, response);
   return { name: path.slice(path.lastIndexOf("/") + 1), path };
 }

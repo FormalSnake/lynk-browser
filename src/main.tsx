@@ -4,9 +4,10 @@ import { ExtensionHost } from "./extensions/host.ts";
 import { openFavicons } from "./lib/favicons.ts";
 import { openHistory, recentVisits } from "./lib/history.ts";
 import { normalize, session } from "./lib/session.ts";
-import { settings } from "./lib/settings.ts";
+import { normalizeSettings, settings } from "./lib/settings.ts";
 
-const prefs = await settings.load();
+const prefs = normalizeSettings(await settings.load());
+settings.set(prefs);
 const stored = await session.load();
 // "Reopen tabs on launch" off starts on the homepage, or the new-tab page when
 // none is set. The tab NUMBERING carries over either way, so a fresh id can
@@ -16,7 +17,7 @@ const restored = normalize(
     ? stored
     : {
         ...stored,
-        tabs: prefs.homepage ? [{ id: `t${stored.nextTabId}`, url: prefs.homepage, title: "" }] : [],
+        tabs: prefs.homepage ? [{ id: `t${stored.nextTabId}`, url: prefs.homepage, title: "", pinned: false }] : [],
         activeId: prefs.homepage ? `t${stored.nextTabId}` : "",
         nextTabId: stored.nextTabId + (prefs.homepage ? 1 : 0),
       },
