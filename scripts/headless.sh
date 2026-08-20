@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Runs any command under a headless weston compositor. Used by the drive
-# wrappers; weston is the only Wayland compositor available on the CI box.
+# Runs any command under a headless compositor. Used by the drive wrappers.
 #
 # Theming is pinned as well as the compositor. Without that, every screenshot
 # this app takes renders the CAPTURE HOST's GTK theme rather than stock
@@ -16,9 +15,7 @@ cd "$(dirname "$0")/.."
 FRAMEWORK_SCRIPTS="${ND_FRAMEWORK_DIR:-../NativeDesktop}/scripts"
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$(mktemp -d)}"
-export WAYLAND_DISPLAY=nb-headless-0
 export GSK_RENDERER=cairo
-export GDK_BACKEND=wayland
 
 if [ -r "$FRAMEWORK_SCRIPTS/headless-theme.sh" ]; then
   . "$FRAMEWORK_SCRIPTS/headless-fonts.sh"
@@ -35,15 +32,32 @@ if [ -z "${NB_HEADLESS_BUS:-}" ] && command -v dbus-run-session >/dev/null 2>&1;
   exec dbus-run-session -- "$0" "$@"
 fi
 
-weston --backend=headless --socket="$WAYLAND_DISPLAY" --idle-time=0 &
-WESTON_PID=$!
-# Never `kill "${VAR:-0}"`: an empty variable signals the whole process group,
-# which over ssh takes the session down with it.
-trap '[ -n "${WESTON_PID:-}" ] && kill "$WESTON_PID" 2>/dev/null; true' EXIT
-
-for _ in $(seq 1 50); do
-  [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ] && break
-  sleep 0.1
-done
+# CEF's windowed embedding is X11-only, so the chromium engine needs a real X
+# server instead of the system engine's plain Wayland compositor.
+if [ "${ND_WEBVIEW_ENGINE:-}" = "chromium" ]; then
+  export DISPLAY="${ND_CEF_DISPLAY:-:96}"
+  export GDK_BACKEND=x11
+  Xvfb "$DISPLAY" -screen 0 1280x900x24 -nolisten tcp >/dev/null 2>&1 &
+  COMPOSITOR_PID=$!
+  # Never `kill "${VAR:-0}"`: an empty variable signals the whole process group,
+  # which over ssh takes the session down with it.
+  trap '[ -n "${COMPOSITOR_PID:-}" ] && kill "$COMPOSITOR_PID" 2>/dev/null; true' EXIT
+  for _ in $(seq 1 100); do
+    xwininfo -root >/dev/null 2>&1 && break
+    sleep 0.1
+  done
+else
+  export WAYLAND_DISPLAY=nb-headless-0
+  export GDK_BACKEND=wayland
+  weston --backend=headless --socket="$WAYLAND_DISPLAY" --idle-time=0 &
+  COMPOSITOR_PID=$!
+  # Never `kill "${VAR:-0}"`: an empty variable signals the whole process group,
+  # which over ssh takes the session down with it.
+  trap '[ -n "${COMPOSITOR_PID:-}" ] && kill "$COMPOSITOR_PID" 2>/dev/null; true' EXIT
+  for _ in $(seq 1 50); do
+    [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ] && break
+    sleep 0.1
+  done
+fi
 
 "$@"
