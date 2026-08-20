@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-FRAMEWORK="${ND_FRAMEWORK_DIR:-$(cd .. && pwd)/nd-browser-wave}"
+FRAMEWORK="${ND_FRAMEWORK_DIR:-$(cd .. && pwd)/NativeDesktop}"
 
 tls_backend_present() {
   local dir so

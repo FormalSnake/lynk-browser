@@ -50,7 +50,6 @@ const loads: string[] = [];
 
 const app = await launchApp({
   entry: "src/main.tsx",
-  backend: "gtk",
   env: {
     NB_STORE_DIR: STORE_DIR,
     NB_DOWNLOAD_DIR: "/tmp/nb-consent-check-downloads",

@@ -13,7 +13,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-FRAMEWORK_SCRIPTS="../nd-browser-wave/scripts"
+FRAMEWORK_SCRIPTS="${ND_FRAMEWORK_DIR:-../NativeDesktop}/scripts"
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$(mktemp -d)}"
 export WAYLAND_DISPLAY=nb-headless-0

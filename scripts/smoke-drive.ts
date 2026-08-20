@@ -7,7 +7,7 @@
 // the file:/override deps in package.json point at ../nd-browser-wave).
 import { launchApp } from "@nativedesktop/test";
 
-const app = await launchApp({ entry: "src/main.tsx", backend: "gtk" });
+const app = await launchApp({ entry: "src/main.tsx" });
 
 const { windows } = await app.windows();
 if (windows.length !== 1) throw new Error(`expected 1 window, got ${windows.length}`);

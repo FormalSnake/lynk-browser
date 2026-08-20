@@ -180,7 +180,6 @@ async function shownPageRef(app: AppHandle): Promise<number> {
 function launch(storeDir: string): Promise<AppHandle> {
   return launchApp({
     entry: "src/main.tsx",
-    backend: "gtk",
     env: {
       NB_STORE_DIR: storeDir,
       NB_DOWNLOAD_DIR: DOWNLOADS,
@@ -445,7 +444,9 @@ try {
   if (!echoed.includes(`cookie=${COOKIE_VALUE}`)) {
     fail(`the cookie did not survive the restart: /whoami read ${JSON.stringify(echoed)}`);
   }
-  if (!existsSync(`${DATA_HOME}/nd-webview-profiles/default/cookies.sqlite`)) {
+  // The on-disk jar is a WebKitGTK artifact; WKWebView keeps cookies inside
+  // its website data store, so the /whoami echo above is the whole proof there.
+  if (app.backend === "gtk" && !existsSync(`${DATA_HOME}/nd-webview-profiles/default/cookies.sqlite`)) {
     fail(`no cookie jar at ${DATA_HOME}/nd-webview-profiles/default/cookies.sqlite`);
   }
   console.log(`13. the cookie survived a restart (${COOKIE_VALUE}) and the jar is on disk`);
