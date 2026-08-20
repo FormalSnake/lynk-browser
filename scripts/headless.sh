@@ -35,6 +35,14 @@ fi
 # CEF's windowed embedding is X11-only, so the chromium engine needs a real X
 # server instead of the system engine's plain Wayland compositor.
 if [ "${ND_WEBVIEW_ENGINE:-}" = "chromium" ]; then
+  # libcef.so is a generic-Linux binary needing 26 sonames NixOS does not put on
+  # the default loader path; the framework's flake dev shell exports their
+  # closure as ND_CEF_LD_LIBRARY_PATH. Without this promotion dlopen fails with
+  # FileNotFound, the host prints one ND_WARN and falls back to WebKitGTK, and
+  # the run reports on an engine it never used.
+  if [ -n "${ND_CEF_LD_LIBRARY_PATH:-}" ]; then
+    export LD_LIBRARY_PATH="$ND_CEF_LD_LIBRARY_PATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  fi
   export DISPLAY="${ND_CEF_DISPLAY:-:96}"
   export GDK_BACKEND=x11
   Xvfb "$DISPLAY" -screen 0 1280x900x24 -nolisten tcp >/dev/null 2>&1 &
