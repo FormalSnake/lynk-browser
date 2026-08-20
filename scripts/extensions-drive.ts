@@ -53,6 +53,9 @@ const PATIENCE = Number(process.env.ND_DRIVE_TIMEOUT_MS ?? 60_000);
 // instead — same command channel, same storage round trip, same proof that the
 // extension's own shortcut changes the page and the change survives.
 const TOGGLE_COMMAND = process.env.NB_EXT_COMMAND ?? (FIXTURE_KIND === "mv2" ? "toggle" : "addSite");
+// Dark Reader's background page: a real one under MV2, the app's service-worker
+// wrapper under MV3.
+const DARK_READER_BACKGROUND = FIXTURE_KIND === "mv2" ? "/background/index.html" : "/__nd_service_worker.html";
 const TOGGLED_OFF = (s: Record<string, unknown>): boolean =>
   TOGGLE_COMMAND === "toggle" ? s.enabled === false : (s.disabledFor as string[] | undefined)?.length === 1;
 const TOGGLED_ON = (s: Record<string, unknown>): boolean =>
@@ -212,6 +215,79 @@ async function pageTestId(app: AppHandle, index: number): Promise<string> {
 
 async function waitRows(app: AppHandle, check: (rows: string[]) => boolean, what: string): Promise<string[]> {
   return rowsMatching(app, "tab-list", check, what, PATIENCE);
+}
+
+/// A view that was handed an address and never went there.
+///
+/// Every `<webview>` this app creates mounts with no url and is given one on
+/// the next render, once its content scripts or its shim are registered: a user
+/// script added after a load has begun never sees document_start. The chromium
+/// engine drops that address. It arrives while the browser is still being
+/// created, `ndSetURL` parks it in `pendingURL`, and `adoptBrowser` never loads
+/// it (nd-cef-wave swift/Sources/NDShell/NDCefWebView.swift:235 and :163), so
+/// the view sits on about:blank forever while a LATER address on the same view
+/// loads normally. It costs the app every tab, every background page and every
+/// popup.
+///
+/// Driving the page to the address the app already believes it is on is what
+/// gets the rest of the drive past it. The scripts were registered before this
+/// load starts, so document_start is still document_start and every extension
+/// assertion below still means what it says. It is announced rather than
+/// absorbed: a gate reading this output has to see that the engine lost a
+/// navigation.
+///
+/// A settled reading is the only usable one. While the browser is being created
+/// the same engine answers `webviewInfo` with the address it was ASKED for
+/// rather than the one it is on (`ndPageState` reports `pendingURL`), so the
+/// view claims to be on the target for about a second before falling back.
+async function ensureCommitted(app: AppHandle, testId: string, url: string): Promise<void> {
+  const found = await waitAcross(app, testId);
+  const window = found.window;
+  const deadline = Date.now() + 12_000;
+  let last = "";
+  // A view the socket never answers for is left alone: this may only act on a
+  // view it has actually watched sit still on the wrong address.
+  let answered = false;
+  while (Date.now() < deadline) {
+    const info = await app.webviewInfo({ testId, window }).catch(() => null);
+    if (info) {
+      answered = true;
+      last = String(info.url ?? "");
+      if (last === url && info.loading === false) return;
+    }
+    await Bun.sleep(250);
+  }
+  if (!answered || last === url) return;
+  console.log(
+    `ND_SKIP_CHROMIUM ${testId} never left ${JSON.stringify(last)} for ${url}; ` +
+      `the engine dropped the address it was given while its browser was being created ` +
+      `(NDCefWebView.swift ndSetURL/adoptBrowser). Driving the page there instead.`,
+  );
+  const kicked = await app.evalInPage({ testId, window }, `location.replace(${JSON.stringify(url)}), "kicked"`);
+  if (!kicked.ok) fail(`${testId} is stuck on ${JSON.stringify(last)} and will not navigate: ${kicked.error}`);
+  const settled = Date.now() + PATIENCE;
+  while (Date.now() < settled) {
+    const info = await app.webviewInfo({ testId, window }).catch(() => null);
+    if (String(info?.url ?? "") === url) return;
+    await Bun.sleep(250);
+  }
+  // An extension page that will not load at all is a different fault from a
+  // dropped address, and it is the one that ends the drive: nothing of an
+  // extension runs without its own origin. Naming it here is what keeps the
+  // failure from reading as a mystery timeout six legs later.
+  const why = url.startsWith("chrome-extension:")
+    ? "; the engine rewrites it to chrome-extension://invalid/ and blocks it (ERR_BLOCKED_BY_CLIENT), " +
+      "so registerScheme never gets its factory consulted for this scheme " +
+      "(nd-cef-wave swift/Sources/NDShell/NDCefProfiles.swift:295)"
+    : "";
+  fail(`${testId} never reached ${url} even after being driven there${why}`);
+}
+
+/// Where an extension's background page lives. MV3 has no page of its own, so
+/// the app serves a wrapper at a reserved path (host.ts SERVICE_WORKER_PATH)
+/// that hosts the service worker; MV2 declares a real one.
+function backgroundUrl(extensionId: string, page = "/__nd_service_worker.html"): string {
+  return `chrome-extension://${extensionId}${page}`;
 }
 
 // --------------------------------------------------------------- darkness ---
@@ -479,8 +555,9 @@ try {
   // is what "an existing tab" means in leg 2, and the baseline every later
   // probe is compared against.
   await goTo(app, `${base}/one`);
-  await waitRows(app, (r) => r[0]!.startsWith("Fixture one"), "the first fixture page");
   const firstTab = await pageTestId(app, 0);
+  await ensureCommitted(app, firstTab, `${base}/one`);
+  await waitRows(app, (r) => r[0]!.startsWith("Fixture one"), "the first fixture page");
   const baseline = await probe(app, firstTab);
   if (baseline.theme !== 0 || baseline.fallback !== 0) {
     fail(`the page carries Dark Reader styles before anything is installed: ${JSON.stringify(baseline)}`);
@@ -515,6 +592,7 @@ try {
   const managerAfter = await waitAcross(app, `ext-row-${id}`);
   await shoot(app, `${WHICH}-03-manager-installed`, managerAfter.window);
   console.log(`1b. installed as ${id}`);
+  await ensureCommitted(app, `ext-background-${id}`, backgroundUrl(id, DARK_READER_BACKGROUND));
 
   // 1c — Dark Reader opens its own welcome tab from runtime.onInstalled, which
   // is chrome.tabs.create arriving from the background page. Chrome does the
@@ -538,14 +616,16 @@ try {
   await step("open a second tab", () => app.click("menu-new-tab"));
   await waitRows(app, (r) => r.length === 2, "a second tab row");
   await goTo(app, `${base}/two`);
-  await waitRows(app, (r) => r[1]!.startsWith("Fixture two"), "the second fixture page");
   const secondTab = await pageTestId(app, 1);
+  await ensureCommitted(app, secondTab, `${base}/two`);
+  await waitRows(app, (r) => r[1]!.startsWith("Fixture two"), "the second fixture page");
   const fresh = await waitDark(app, secondTab, "a freshly opened tab");
   console.log(`2c. a tab opened after install darkened with no reload ${JSON.stringify(fresh)}`);
 
   // 3 — the action popup: the extension's own page in a native window.
   await step("open the action popup", () => app.click(`ext-action-${id}`));
   const popup = await waitAcross(app, "ext-popup-window");
+  await ensureCommitted(app, `ext-popup-view-${id}`, `chrome-extension://${id}/ui/popup/index.html`);
   const popupTitle = await waitPopupLoaded(app, id);
   await shoot(app, `${WHICH}-05-popup`, popup.node.ref);
   console.log(`3. popup window loaded the extension's own page (${popupTitle})`);
@@ -584,12 +664,14 @@ try {
   await waitRows(app, (r) => r.length === 2, "the restored tabs");
   const restartedId = await installedId(app);
   if (restartedId !== id) fail(`after a restart the extension id is ${restartedId}, was ${id}`);
+  await ensureCommitted(app, `ext-background-${id}`, backgroundUrl(id, DARK_READER_BACKGROUND));
   // The toolbar button only exists for an enabled extension, so its presence
   // is the assertion that the grant survived rather than just the row.
   await step("the toolbar button is back", () => app.waitForPresent(`ext-action-${id}`, { timeoutMs: PATIENCE }));
   // Only the active tab is actionable, so pick the one being asserted on.
   await step("select the first restored tab", () => app.click("menu-tab-0"));
   const restoredTab = await pageTestId(app, 0);
+  await ensureCommitted(app, restoredTab, `${base}/one`);
   console.log(`   content world after restart: ${await worldProbe(app, restoredTab, id)}`);
   const settings = storedSettings(id);
   if (Object.keys(settings).length === 0) fail("the extension's chrome.storage.sync did not survive the restart");
@@ -623,6 +705,7 @@ try {
     }
     return fail(`only ${id} is installed; the second extension never appeared`);
   });
+  await ensureCommitted(app, `ext-background-${pairId}`, backgroundUrl(pairId));
 
   // Chrome does not retrofit an already-loaded page either, so the tab is
   // reloaded once and then carries both extensions' content scripts.
