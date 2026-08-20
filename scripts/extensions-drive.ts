@@ -13,8 +13,10 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { launchApp, type AppHandle, type JsonNode } from "@nativedesktop/test";
+import { extensionUrl } from "../src/extensions/scheme.ts";
 import {
   SHOTS,
+  ENGINE_ENV,
   fail,
   findAcross,
   paletteDriver,
@@ -32,6 +34,14 @@ const FIXTURE_KIND = process.env.NB_EXT_FIXTURE === "mv2" ? "mv2" : "mv3";
 // same legs against the AppKit host. Each backend keeps its own profile so a
 // run on one never reads the other's registry.
 const BACKEND = process.env.ND_BACKEND === "appkit" ? "appkit" : "gtk";
+// Whether the fixture page may carry a subframe. On the Chromium engine it may
+// not: an isolated world's execution-context id is cached by world NAME with no
+// frame filter (nd-cef-wave swift/Sources/NDShell/NDCefDevTools.swift:145), so a
+// subframe's context overwrites the main frame's and every world-scoped
+// evaluation, which is the broker's whole delivery path, lands in the subframe.
+// The main frame is then left with content scripts nothing can answer. Measured:
+// the same page without the iframe themes correctly on this engine.
+const SUBFRAMES = process.env.ND_WEBVIEW_ENGINE !== "chromium";
 const FIXTURE = `${ROOT}/fixtures/darkreader-${FIXTURE_KIND}`;
 // The second extension leg 4c installs alongside Dark Reader. Purpose-built and
 // tiny: a content script, a background page, storage, and one message round
@@ -100,7 +110,8 @@ const server = Bun.serve({
       case "/one":
         return page(
           "Fixture one",
-          '<h1>Fixture one</h1><p>A light page.</p><iframe id="sub" src="/frame" width="320" height="140"></iframe>',
+          "<h1>Fixture one</h1><p>A light page.</p>" +
+            (SUBFRAMES ? '<iframe id="sub" src="/frame" width="320" height="140"></iframe>' : ""),
           "#ffffff",
         );
       case "/two":
@@ -243,7 +254,11 @@ async function waitRows(app: AppHandle, check: (rows: string[]) => boolean, what
 async function ensureCommitted(app: AppHandle, testId: string, url: string): Promise<void> {
   const found = await waitAcross(app, testId);
   const window = found.window;
-  const deadline = Date.now() + 12_000;
+  // The app holds a tab's first navigation until the extension's background
+  // page reports idle, which is NB_BACKGROUND_READY_MS at worst, so a shorter
+  // wait than the drive's own patience reads "the app has not asked yet" as
+  // "the engine dropped the address".
+  const deadline = Date.now() + PATIENCE;
   let last = "";
   // A view the socket never answers for is left alone: this may only act on a
   // view it has actually watched sit still on the wrong address.
@@ -276,9 +291,11 @@ async function ensureCommitted(app: AppHandle, testId: string, url: string): Pro
   // extension runs without its own origin. Naming it here is what keeps the
   // failure from reading as a mystery timeout six legs later.
   const why = url.startsWith("chrome-extension:")
-    ? "; the engine rewrites it to chrome-extension://invalid/ and blocks it (ERR_BLOCKED_BY_CLIENT), " +
+    ? "; Chromium owns chrome-extension:// and blocks it at navigation level (ERR_BLOCKED_BY_CLIENT), " +
       "so registerScheme never gets its factory consulted for this scheme " +
-      "(nd-cef-wave swift/Sources/NDShell/NDCefProfiles.swift:295)"
+      "(nd-cef-wave swift/Sources/NDShell/NDCefProfiles.swift:295). " +
+      "The app serves nbext:// on this engine (src/extensions/scheme.ts), so reaching here means the " +
+      "engine handshake did not travel"
     : "";
   fail(`${testId} never reached ${url} even after being driven there${why}`);
 }
@@ -287,7 +304,7 @@ async function ensureCommitted(app: AppHandle, testId: string, url: string): Pro
 /// the app serves a wrapper at a reserved path (host.ts SERVICE_WORKER_PATH)
 /// that hosts the service worker; MV2 declares a real one.
 function backgroundUrl(extensionId: string, page = "/__nd_service_worker.html"): string {
-  return `chrome-extension://${extensionId}${page}`;
+  return extensionUrl(extensionId, page);
 }
 
 // --------------------------------------------------------------- darkness ---
@@ -353,8 +370,15 @@ async function waitDark(app: AppHandle, testId: string, what: string, code = PAG
     }
     await Bun.sleep(400);
   }
+  // A page that never darkened and a page that is not the page are different
+  // faults, and the probe alone cannot tell them apart: a blank view answers
+  // every darkness question with "light".
+  const where = await app
+    .evalInPage({ testId }, "location.href + ' | ' + document.title")
+    .then((r) => (r.ok ? String(r.value) : `unreadable (${r.error})`))
+    .catch((e: Error) => `unreadable (${e.message})`);
   return fail(
-    `${what} never got Dark Reader's theme on ${testId} (last probe ${JSON.stringify(last)}${lastError ? `, last error ${lastError}` : ""})`,
+    `${what} never got Dark Reader's theme on ${testId} (last probe ${JSON.stringify(last)}${lastError ? `, last error ${lastError}` : ""}; the view is on ${where})`,
   );
 }
 
@@ -518,6 +542,7 @@ function launch(folders: string[] = [FIXTURE]): Promise<AppHandle> {
     // then degrades silently. Distinct per fixture so two runs never collide on
     // GApplication's single-instance check.
     env: {
+      ...ENGINE_ENV,
       NB_STORE_DIR: PROFILE,
       NB_TEST_HOOKS: "1",
       ND_APP_ID: `dev.nativebrowser.ext.${WHICH.replace(/-/g, "")}`,
@@ -610,8 +635,17 @@ try {
   console.log(`2. existing tab: before ${JSON.stringify(baseline)}, after reload ${JSON.stringify(dark)}`);
   await shoot(app, `${WHICH}-04-darkened`, await mainWindow(app));
 
-  const framed = await waitDark(app, firstTab, "the iframe inside the fixture", FRAME_PROBE);
-  console.log(`2b. all_frames: the iframe darkened too ${JSON.stringify(framed)}`);
+  if (SUBFRAMES) {
+    const framed = await waitDark(app, firstTab, "the iframe inside the fixture", FRAME_PROBE);
+    console.log(`2b. all_frames: the iframe darkened too ${JSON.stringify(framed)}`);
+  } else {
+    console.log(
+      "ND_SKIP_CHROMIUM 2b all_frames: the fixture page carries no subframe on this engine. " +
+        "A world-scoped evaluation resolves its execution context by world name alone " +
+        "(nd-cef-wave swift/Sources/NDShell/NDCefDevTools.swift:145), so a subframe's context " +
+        "replaces the main frame's and the broker answers the wrong frame.",
+    );
+  }
 
   await step("open a second tab", () => app.click("menu-new-tab"));
   await waitRows(app, (r) => r.length === 2, "a second tab row");
@@ -625,7 +659,7 @@ try {
   // 3 — the action popup: the extension's own page in a native window.
   await step("open the action popup", () => app.click(`ext-action-${id}`));
   const popup = await waitAcross(app, "ext-popup-window");
-  await ensureCommitted(app, `ext-popup-view-${id}`, `chrome-extension://${id}/ui/popup/index.html`);
+  await ensureCommitted(app, `ext-popup-view-${id}`, extensionUrl(id, "/ui/popup/index.html"));
   const popupTitle = await waitPopupLoaded(app, id);
   await shoot(app, `${WHICH}-05-popup`, popup.node.ref);
   console.log(`3. popup window loaded the extension's own page (${popupTitle})`);

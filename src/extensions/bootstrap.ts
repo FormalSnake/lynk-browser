@@ -40,8 +40,10 @@ export type ContextKind = "content" | "background" | "popup";
 export interface BootstrapConfig {
   extensionId: string;
   kind: ContextKind;
-  /** `chrome-extension://<id>`, the base every getURL() resolves against. */
+  /** `<scheme>://<id>`, the base every getURL() resolves against. */
   baseUrl: string;
+  /** The scheme half of `baseUrl`, which decides what getURL() passes through. */
+  scheme: string;
   manifest: Record<string, unknown>;
   /** Catalog entries for i18n.getMessage, already collapsed along the locale chain. */
   messages: Record<string, { message: string; placeholders?: Record<string, { content: string }> }>;
@@ -206,7 +208,7 @@ function call(api, args, callback) {
 
 /// The document's \`load\` event is not the moment an extension can answer a
 /// page. Its own startup runs after it: reading chrome.storage and pulling its
-/// packaged config out of chrome-extension://, and a content script that
+/// packaged config out of its own origin, and a content script that
 /// connects inside that window is answered wrongly or not at all: Dark
 /// Reader's connect handler throws while its fixes are still unindexed, and
 /// nothing retries. A background page therefore reports again, once it has run
@@ -523,7 +525,13 @@ function messageText(key, substitutions) {
 
 function url(path) {
   if (!path) return CFG.baseUrl + "/";
-  if (path.indexOf("chrome-extension://") === 0) return path;
+  if (path.indexOf(CFG.scheme + "://") === 0) return path;
+  // An extension that hardcodes Chrome's own origin still has to reach the
+  // scheme this engine serves; the id and the path are the same either way.
+  if (path.indexOf("chrome-extension://") === 0) {
+    var slash = path.indexOf("/", "chrome-extension://".length);
+    return slash < 0 ? CFG.baseUrl + "/" : CFG.baseUrl + path.slice(slash);
+  }
   return CFG.baseUrl + (path.charAt(0) === "/" ? "" : "/") + path;
 }
 

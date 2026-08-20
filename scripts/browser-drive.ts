@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { launchApp, type AppHandle, type JsonNode } from "@nativedesktop/test";
 import {
   SHOTS,
+  ENGINE_ENV,
   fail,
   paletteDriver,
   shoot,
@@ -257,6 +258,7 @@ function launch(storeDir: string): Promise<AppHandle> {
   return launchApp({
     entry: "src/main.tsx",
     env: {
+      ...ENGINE_ENV,
       NB_STORE_DIR: storeDir,
       NB_DOWNLOAD_DIR: DOWNLOADS,
       XDG_DATA_HOME: DATA_HOME,

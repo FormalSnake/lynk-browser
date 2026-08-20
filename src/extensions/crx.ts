@@ -44,7 +44,7 @@ export function idFromPublicKey(publicKey: Uint8Array): string {
 
 /// An unpacked extension has no key, so Chrome derives the id from the absolute
 /// path of the directory it was loaded from. Same input, same id across
-/// restarts, which is what the registry and `chrome-extension://` need.
+/// restarts, which is what the registry and the extension origin need.
 export function idFromPath(path: string): string {
   const digest = createHash("sha256").update(resolve(path)).digest();
   return encodeCrxId(new Uint8Array(digest.subarray(0, 16)));

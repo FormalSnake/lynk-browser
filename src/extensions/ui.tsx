@@ -12,8 +12,9 @@ import {
   useSyncExternalStore,
   type NdNodeRef,
 } from "@nativedesktop/react";
-import { SERVICE_WORKER_PATH, extensionUrl, type ExtensionHost, type ExtensionView, type InstallPrompt } from "./host.ts";
+import { SERVICE_WORKER_PATH, type ExtensionHost, type ExtensionView, type InstallPrompt } from "./host.ts";
 import { hostWarning } from "./permissions.ts";
+import { extensionUrl } from "./scheme.ts";
 
 interface HostProps {
   host: ExtensionHost;

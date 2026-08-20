@@ -6,11 +6,12 @@ import { WEBSTORE_HANDLER, WEBSTORE_SURFACE } from "./webstore.ts";
 const ID_A = "aaaabbbbccccddddeeeeffffgggghhhh";
 const ID_B = "iiiijjjjkkkkllllmmmmnnnnooooppph";
 
-function config(extensionId: string): BootstrapConfig {
+function config(extensionId: string, scheme = "chrome-extension"): BootstrapConfig {
   return {
     extensionId,
     kind: "content",
-    baseUrl: `chrome-extension://${extensionId}`,
+    baseUrl: `${scheme}://${extensionId}`,
+    scheme,
     manifest: { name: "Fixture", version: "1.0.0" },
     messages: {},
     uiLocale: "en",
@@ -52,6 +53,25 @@ describe("the injected shim", () => {
   });
 });
 
+/// getURL is the one place an extension sees which scheme it was served from,
+/// so it has to answer on the engine's own origin whichever that is.
+describe("runtime.getURL", () => {
+  test("resolves a path against the extension's origin on either scheme", () => {
+    for (const scheme of ["chrome-extension", "nbext"]) {
+      const { chrome } = runShim("background", ID_A, scheme);
+      expect(chrome.runtime.getURL("ui/popup.html")).toBe(`${scheme}://${ID_A}/ui/popup.html`);
+      expect(chrome.runtime.getURL("/ui/popup.html")).toBe(`${scheme}://${ID_A}/ui/popup.html`);
+      expect(chrome.runtime.getURL("")).toBe(`${scheme}://${ID_A}/`);
+      expect(chrome.runtime.getURL(`${scheme}://${ID_A}/already.html`)).toBe(`${scheme}://${ID_A}/already.html`);
+    }
+  });
+
+  test("an extension that hardcodes chrome-extension:// still reaches the served origin", () => {
+    const { chrome } = runShim("background", ID_A, "nbext");
+    expect(chrome.runtime.getURL(`chrome-extension://${ID_A}/ui/popup.html`)).toBe(`nbext://${ID_A}/ui/popup.html`);
+  });
+});
+
 interface Envelope {
   k: string;
   id?: string;
@@ -61,7 +81,7 @@ interface Envelope {
 /// Runs the shim against stand-in globals. Everything it reaches for is a
 /// named parameter, so the real global object is never written to and one
 /// run cannot see another's.
-function runShim(kind: BootstrapConfig["kind"], id = ID_A) {
+function runShim(kind: BootstrapConfig["kind"], id = ID_A, scheme = "chrome-extension") {
   const posted: Envelope[] = [];
   const timers: (() => void)[] = [];
   const listeners: Record<string, ((event: unknown) => void)[]> = {};
@@ -76,12 +96,19 @@ function runShim(kind: BootstrapConfig["kind"], id = ID_A) {
   win.top = win;
   win.parent = win;
 
-  const run = new Function("globalThis", "window", "document", "location", "setTimeout", bootstrapSource({ ...config(id), kind }));
+  const run = new Function(
+    "globalThis",
+    "window",
+    "document",
+    "location",
+    "setTimeout",
+    bootstrapSource({ ...config(id, scheme), kind }),
+  );
   run(
     fakeGlobal,
     win,
     { readyState: "loading" },
-    { href: `chrome-extension://${id}/background.html` },
+    { href: `${scheme}://${id}/background.html` },
     (fn: () => void) => timers.push(fn),
   );
 
@@ -94,7 +121,10 @@ function runShim(kind: BootstrapConfig["kind"], id = ID_A) {
   return {
     posted,
     deliver,
-    chrome: fakeGlobal.chrome as { storage: { local: { get: (keys: unknown) => Promise<unknown> } } },
+    chrome: fakeGlobal.chrome as {
+      runtime: { getURL: (path: string) => string };
+      storage: { local: { get: (keys: unknown) => Promise<unknown> } };
+    },
     idles: (): Envelope[] => posted.filter((e) => e.k === "idle"),
     load: () => (listeners.load ?? []).forEach((fn) => fn({})),
     /// Drains one task's worth of timers. That boundary is what the startup

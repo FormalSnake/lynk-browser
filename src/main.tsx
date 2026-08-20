@@ -28,9 +28,9 @@ openFavicons();
 await openHistory();
 const initialHistory = await recentVisits();
 
-// The chrome-extension:// scheme is registered from inside App: the call needs
-// a host connection, which only exists once render() has handshaken, and it
-// must still land before the first <webview> mounts.
+// The extension scheme is registered from inside App: the call needs a host
+// connection, which only exists once render() has handshaken, and it must
+// still land before the first <webview> mounts.
 const extensions = new ExtensionHost();
 await extensions.load();
 

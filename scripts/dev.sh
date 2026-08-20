@@ -12,6 +12,14 @@ cd "$(dirname "$0")/.."
 
 FRAMEWORK="${ND_FRAMEWORK_DIR:-$(cd .. && pwd)/NativeDesktop}"
 
+# Chromium owns chrome-extension:// and blocks it at navigation level, so the
+# app serves extension pages from nbext:// there (src/extensions/scheme.ts). A
+# CEF scheme is only standard, secure and CORS-enabled if it was declared before
+# cef_initialize, in every process, which is what this env var is for.
+if [ "${ND_WEBVIEW_ENGINE:-}" = "chromium" ]; then
+  export ND_CEF_SCHEMES="${ND_CEF_SCHEMES:-nbext}"
+fi
+
 tls_backend_present() {
   local dir so
   local IFS=:

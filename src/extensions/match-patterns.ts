@@ -65,7 +65,7 @@ function isValidHostPattern(host: string): boolean {
 }
 
 /// Splits a URL into the three parts a pattern compares against. Returns null
-/// for URLs no pattern can match (`about:`, `data:`, `chrome-extension:`, …).
+/// for URLs no pattern can match (`about:`, `data:`, an extension origin, …).
 export function splitUrl(url: string): { scheme: string; host: string; path: string } | null {
   let parsed: URL;
   try {

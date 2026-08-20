@@ -22,7 +22,7 @@ import { mkdirSync, rmSync } from "node:fs";
 
 import { launchApp } from "@nativedesktop/test";
 
-import { paletteDriver } from "./drive-lib.ts";
+import { ENGINE_ENV, paletteDriver } from "./drive-lib.ts";
 
 const STORE_DIR = "/tmp/nb-consent-check-store";
 const DATA_HOME = "/tmp/nb-consent-check-data";
@@ -51,6 +51,7 @@ const loads: string[] = [];
 const app = await launchApp({
   entry: "src/main.tsx",
   env: {
+    ...ENGINE_ENV,
     NB_STORE_DIR: STORE_DIR,
     NB_DOWNLOAD_DIR: "/tmp/nb-consent-check-downloads",
     XDG_DATA_HOME: DATA_HOME,

@@ -24,6 +24,7 @@ describe("parseMatchPattern", () => {
       "http://foo.*.bar/baz",
       "http://example.com:8080/*",
       "chrome-extension://abc/*",
+      "nbext://abc/*",
       "",
     ]) {
       expect(parseMatchPattern(bad)).toBeNull();
@@ -57,7 +58,10 @@ describe("scheme matching", () => {
   });
 
   test("no pattern matches a non-web scheme", () => {
+    // Both extension schemes: content scripts never run on an extension page,
+    // whichever origin this engine serves it from.
     expect(accepts("<all_urls>", "chrome-extension://abcdef/popup.html")).toBe(false);
+    expect(accepts("<all_urls>", "nbext://abcdef/popup.html")).toBe(false);
     expect(accepts("<all_urls>", "about:blank")).toBe(false);
     expect(accepts("<all_urls>", "data:text/html,hi")).toBe(false);
   });

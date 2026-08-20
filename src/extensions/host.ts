@@ -29,6 +29,7 @@ import { loadMessages, parseManifest, pickIcon, type ExtensionManifest } from ".
 import { ContextMenuRegistry, parseFrameworkId, type MenuProps } from "./context-menus.ts";
 import { compileMatcher, toWebKitPatterns, type CompiledMatcher } from "./match-patterns.ts";
 import { permissionWarnings } from "./permissions.ts";
+import { extensionOrigin, extensionScheme, extensionUrl } from "./scheme.ts";
 import {
   clearArea,
   deleteKeys,
@@ -189,10 +190,6 @@ export interface ActionState {
   title: string;
   badge: string;
   iconPath: string | null;
-}
-
-export function extensionUrl(id: string, path = "/"): string {
-  return `chrome-extension://${id}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 export class ExtensionHost {
@@ -931,7 +928,8 @@ export class ExtensionHost {
     return bootstrapSource({
       extensionId: ext.id,
       kind,
-      baseUrl: `chrome-extension://${ext.id}`,
+      baseUrl: extensionOrigin(ext.id),
+      scheme: extensionScheme(),
       manifest: ext.manifest.raw,
       messages: catalogFor(ext),
       uiLocale: uiLocale(),
@@ -948,7 +946,8 @@ export class ExtensionHost {
 
   // ------------------------------------------------------------------ scheme
 
-  /// Answers a `chrome-extension://` request. Path traversal is refused before
+  /// Answers a request on the extension scheme (see scheme.ts: the engine
+  /// decides which one). Path traversal is refused before
   /// any read, and a request for an unknown extension fails rather than
   /// falling through to the filesystem.
   serveScheme(node: WebViewRef, request: { id: string; url: string }): void {
@@ -1133,8 +1132,8 @@ export class ExtensionHost {
   }
 
   /// The background page has run out of its own startup work: no chrome.* call
-  /// outstanding and nothing left loading out of its own chrome-extension://
-  /// origin, measured across a task boundary in the page (see the shim).
+  /// outstanding and nothing left loading out of its own extension origin,
+  /// measured across a task boundary in the page (see the shim).
   ///
   /// This, not `loaded`, is what a tab's first navigation waits for. `load`
   /// fires while the extension's startup is still ahead of it: measured on

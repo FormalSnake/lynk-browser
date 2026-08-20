@@ -33,6 +33,7 @@ import { Activity } from "react";
 
 import { bridgeSurface } from "./extensions/bootstrap.ts";
 import { toNdAccelerator, type ExtensionHost } from "./extensions/host.ts";
+import { extensionScheme } from "./extensions/scheme.ts";
 import {
   ExtensionActionButtons,
   ExtensionBackgrounds,
@@ -156,7 +157,7 @@ const NO_FIND: FindState = { open: false, query: "", count: null, found: null };
 
 /// `securityChanged` reports TLS facts; the padlock has to say what they mean
 /// for THIS address. A page that never had a chance to be encrypted (file://,
-/// chrome-extension://, about:) is not "insecure", it is simply not a site.
+/// an extension page, about:) is not "insecure", it is simply not a site.
 function securityOf(url: string, data: unknown): Security {
   const state = (data ?? {}) as { secure?: boolean; insecureContent?: boolean; error?: string };
   if (state.error) return "invalid";
@@ -219,13 +220,15 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   const extensionsReady = extensions.backgroundsReady();
 
   useMountEffect(() => {
+    const scheme = extensionScheme();
     webviewEngine
       // Chrome's extension origins are secure contexts and CORS-enabled: an
       // extension page that uses crypto.subtle or IndexedDB, or fetches its own
       // resources from a content script's world, depends on both. GTK honours
-      // the flags; AppKit has no public API for them (documented asymmetry).
-      .registerScheme("chrome-extension", { corsEnabled: true, secure: true })
-      .catch((error: Error) => console.error(`[nativebrowser] chrome-extension:// unavailable: ${error.message}`))
+      // the flags; AppKit has no public API for them (documented asymmetry);
+      // Chromium takes them from ND_CEF_SCHEMES before it initializes.
+      .registerScheme(scheme, { corsEnabled: true, secure: true })
+      .catch((error: Error) => console.error(`[nativebrowser] ${scheme}:// unavailable: ${error.message}`))
       .finally(() => setSchemeReady(true));
   });
   const [paletteOpen, setPaletteOpen] = useState(false);
