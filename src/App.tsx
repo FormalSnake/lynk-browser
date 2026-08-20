@@ -6,7 +6,6 @@ import {
   onToastButtonClicked,
   onToastDismissed,
   openPath,
-  Platform,
   revealPath,
   sendCommand,
   setContextMenuItems,
@@ -970,21 +969,16 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
       </menubar>
 
       <toastoverlay ref={toast} onToastButtonClicked={onToastButtonClicked} onToastDismissed={onToastDismissed}>
-        <splitview sidebarWidth={0.24} collapsed={compact} testID="split">
-          {/* Taking the tab column away needs a different move per backend.
-              GTK drops the sidebar child, which is what clears its
-              show-sidebar and hands the content the full width; AppKit keeps
-              the NSSplitViewItem whatever React removes and only reacts to
-              `collapsed`. Each backend gets its working half, and the content
+        <splitview sidebarWidth={0.24} testID="split">
+          {/* Compact drops the sidebar child on both backends. The content
               pane stays this splitview's second child either way, so no
-              `<webview>` moves and no page reloads. (framework ask) */}
-          {(!compact || Platform.backend === "appkit") && (
+              `<webview>` moves and no page reloads. */}
+          {!compact && (
             <toolbarview slot="sidebar" testID="sidebar-toolbar">
               <headerbar testID="sidebar-header" title="NativeBrowser" />
               {/* No horizontal padding: a source-list row insets its own
-                  content, and AppKit holds this pane at the framework's 180pt
-                  floor whatever `sidebarWidth` asks for, so every point the
-                  container takes comes straight off the tab title. */}
+                  content, so every point the container takes comes straight
+                  off the tab title. */}
               <box
                 testID="sidebar"
                 orientation="vertical"

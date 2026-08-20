@@ -769,7 +769,9 @@ try {
 
   loadsAt = await settledLoads();
   await step("switch back to the sidebar layout", () => app.click("menu-layout"));
-  await step("the tab column takes its width back", () => waitContentInset(app, (x) => x === insetBefore));
+  // The divider lands on a whole pixel while the recorded inset can carry the
+  // fraction's remainder, so the return trip is near, not equal.
+  await step(`the tab column takes its width back (was ${insetBefore})`, () => waitContentInset(app, (x) => Math.abs(x - insetBefore) <= 2));
   const afterCompact = await waitTabIds(
     app,
     (ids) => ids.length === beforeCompact.length,
