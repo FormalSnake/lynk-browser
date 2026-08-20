@@ -12,6 +12,49 @@ import type { AppHandle, JsonNode } from "@nativedesktop/test";
 /** Where every drive's captures land. The app has one screenshot directory. */
 export const SHOTS = resolve(import.meta.dir, "../screenshots");
 
+/// The framework checkout, same default and same env override the shell
+/// scripts use.
+export const FRAMEWORK = resolve(import.meta.dir, "..", process.env.ND_FRAMEWORK_DIR ?? "../NativeDesktop");
+
+/// The signed capture CLI. The `screenshot` RPC renders offscreen inside the
+/// host, which on macOS 26 paints hosted views (header bars, text fields)
+/// blank; ndshot captures the live composited window over ScreenCaptureKit
+/// instead, so it is the only capture that proves what is on screen.
+export const NDSHOT = `${FRAMEWORK}/tools/ndshot/bin/ndshot`;
+
+export interface NdshotWindow {
+  pid: number;
+  windowID: number;
+  app: string;
+  title: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  onScreen: boolean;
+}
+
+/// Every on-screen window ndshot can see for one process, largest first: the
+/// app's own window comes before the popovers and menus hanging off it.
+export function ndshotWindows(pid: number): NdshotWindow[] {
+  const out = Bun.spawnSync([NDSHOT, "list"]);
+  if (out.exitCode !== 0) fail(`ndshot list failed: ${out.stderr.toString().trim()}`);
+  return out.stdout
+    .toString()
+    .split("\n")
+    .filter((line) => line.trim().startsWith("{"))
+    .map((line) => JSON.parse(line) as NdshotWindow)
+    .filter((w) => w.pid === pid && w.onScreen)
+    .sort((a, b) => b.width * b.height - a.width * a.height);
+}
+
+export function ndshotCapture(windowID: number, name: string): string {
+  const out = `${SHOTS}/${name}.png`;
+  const shot = Bun.spawnSync([NDSHOT, "capture", "--out", out, "--window-id", String(windowID)]);
+  if (shot.exitCode !== 0) fail(`ndshot capture failed for ${windowID}: ${shot.stderr.toString().trim()}`);
+  return out;
+}
+
 export function fail(message: string): never {
   throw new Error(message);
 }

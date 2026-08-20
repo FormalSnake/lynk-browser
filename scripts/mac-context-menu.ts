@@ -12,16 +12,15 @@
 // Needs an UNLOCKED login session (synthetic NSEvents go nowhere on a locked
 // one) and Screen Recording granted to tools/ndshot (see the framework's
 // docs/agents/automation.md). Writes one PNG per candidate window into
-// shots/appkit-context-menu-*.png and prints the window list it captured.
+// screenshots/appkit-context-menu-*.png and prints the window list it captured.
 import { mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { launchApp } from "@nativedesktop/test";
 
-import { SHOTS, fail, paletteDriver, step } from "./drive-lib.ts";
+import { SHOTS, fail, ndshotCapture, ndshotWindows, paletteDriver, step, type NdshotWindow } from "./drive-lib.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const PROFILE = "/tmp/nb-mac-ctxmenu-profile";
-const NDSHOT = `${ROOT}/../nd-browser-wave/tools/ndshot/bin/ndshot`;
 const PATIENCE = Number(process.env.ND_DRIVE_TIMEOUT_MS ?? 60_000);
 
 rmSync(PROFILE, { recursive: true, force: true });
@@ -52,27 +51,6 @@ const server = Bun.serve({
 });
 const base = `http://127.0.0.1:${server.port}`;
 
-interface NdshotWindow {
-  pid: number;
-  windowID: number;
-  app: string;
-  title: string;
-  width: number;
-  height: number;
-  onScreen: boolean;
-}
-
-function listWindows(pid: number): NdshotWindow[] {
-  const out = Bun.spawnSync([NDSHOT, "list"]);
-  if (out.exitCode !== 0) fail(`ndshot list failed: ${out.stderr.toString().trim()}`);
-  return out.stdout
-    .toString()
-    .split("\n")
-    .filter((line) => line.trim().startsWith("{"))
-    .map((line) => JSON.parse(line) as NdshotWindow)
-    .filter((w) => w.pid === pid && w.onScreen);
-}
-
 const { goTo } = paletteDriver({ timeoutMs: PATIENCE });
 
 /// Right-clicks until a menu window actually opens. Headful synthesis is at the
@@ -80,10 +58,10 @@ const { goTo } = paletteDriver({ timeoutMs: PATIENCE });
 /// activates this one instead of opening anything.
 async function openMenu(ref: number, what: string): Promise<NdshotWindow[]> {
   for (let attempt = 1; attempt <= 4; attempt++) {
-    const before = new Set(listWindows(app.pid).map((w) => w.windowID));
+    const before = new Set(ndshotWindows(app.pid).map((w) => w.windowID));
     await app.rightClick({ ref });
     await Bun.sleep(1200);
-    const opened = listWindows(app.pid).filter((w) => !before.has(w.windowID));
+    const opened = ndshotWindows(app.pid).filter((w) => !before.has(w.windowID));
     if (opened.length > 0) return opened;
     console.log(`   ${what}: no menu on attempt ${attempt}, retrying`);
     await app.keys("escape").catch(() => {});
@@ -116,9 +94,7 @@ try {
   console.log(`menu windows: ${JSON.stringify(opened.map((w) => [w.windowID, w.width, w.height]))}`);
 
   for (const window of opened) {
-    const out = `${SHOTS}/appkit-context-menu-${window.windowID}.png`;
-    const shot = Bun.spawnSync([NDSHOT, "capture", "--out", out, "--window-id", String(window.windowID)]);
-    if (shot.exitCode !== 0) fail(`ndshot capture failed for ${window.windowID}: ${shot.stderr.toString().trim()}`);
+    const out = ndshotCapture(window.windowID, `appkit-context-menu-${window.windowID}`);
     console.log(`captured ${out} (${window.width}x${window.height})`);
   }
 
@@ -136,9 +112,7 @@ try {
     await app.keys("up");
     await Bun.sleep(250);
     if (process.env.NB_CTXMENU_DEBUG === "1") {
-      for (const window of opened) {
-        Bun.spawnSync([NDSHOT, "capture", "--out", `${SHOTS}/appkit-context-menu-selected.png`, "--window-id", String(window.windowID)]);
-      }
+      for (const window of opened) ndshotCapture(window.windowID, "appkit-context-menu-selected");
     }
     await app.keys("return");
   });
@@ -171,9 +145,7 @@ try {
   const withExtension = await app.mustFind("page-t1");
   const secondMenus = await step("right-click again", () => openMenu(withExtension.ref, "second right-click"));
   for (const window of secondMenus) {
-    const out = `${SHOTS}/appkit-context-menu-extension-${window.windowID}.png`;
-    const shot = Bun.spawnSync([NDSHOT, "capture", "--out", out, "--window-id", String(window.windowID)]);
-    if (shot.exitCode !== 0) fail(`ndshot capture failed for ${window.windowID}: ${shot.stderr.toString().trim()}`);
+    const out = ndshotCapture(window.windowID, `appkit-context-menu-extension-${window.windowID}`);
     console.log(`captured ${out} (${window.width}x${window.height})`);
   }
   await app.keys("escape");
