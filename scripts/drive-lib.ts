@@ -89,7 +89,12 @@ export async function findAcross(
 ): Promise<{ node: JsonNode; window: number } | null> {
   const { windows } = await app.windows();
   for (const info of windows) {
-    const node = await app.find(testId, { window: info.ref });
+    // A short-lived window (a picker, a prompt) can close between the
+    // enumeration and its own query; a vanished window holds no match.
+    const node = await app.find(testId, { window: info.ref }).catch((e) => {
+      if (String(e).includes("unknown window ref")) return null;
+      throw e;
+    });
     if (node) return { node, window: info.ref };
   }
   return null;
