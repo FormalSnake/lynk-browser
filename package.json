@@ -9,10 +9,10 @@
     "package": "nd package"
   },
   "dependencies": {
-    "@nativedesktop/cli": "file:../nd-browser-wave/packages/nd",
-    "@nativedesktop/data": "file:../nd-browser-wave/packages/data",
-    "@nativedesktop/native": "file:../nd-browser-wave/packages/native",
-    "@nativedesktop/react": "file:../nd-browser-wave/packages/react",
+    "@nativedesktop/cli": "file:../NativeDesktop/packages/nd",
+    "@nativedesktop/data": "file:../NativeDesktop/packages/data",
+    "@nativedesktop/native": "file:../NativeDesktop/packages/native",
+    "@nativedesktop/react": "file:../NativeDesktop/packages/react",
     "fflate": "^0.8.3",
     "react": "19.2.7"
   },
@@ -23,12 +23,12 @@
     "@babel/preset-typescript": "8.0.1",
     "@types/bun": "1.3.13",
     "@types/react": "19.2.17",
-    "babel-plugin-nativedesktop": "file:../nd-browser-wave/packages/babel-plugin-nativedesktop",
+    "babel-plugin-nativedesktop": "file:../NativeDesktop/packages/babel-plugin-nativedesktop",
     "babel-plugin-react-compiler": "1.0.0",
-    "@nativedesktop/test": "file:../nd-browser-wave/packages/test"
+    "@nativedesktop/test": "file:../NativeDesktop/packages/test"
   },
   "overrides": {
-    "@nativedesktop/host": "file:../nd-browser-wave/packages/host",
-    "@nativedesktop/react": "file:../nd-browser-wave/packages/react"
+    "@nativedesktop/host": "file:../NativeDesktop/packages/host",
+    "@nativedesktop/react": "file:../NativeDesktop/packages/react"
   }
 }
