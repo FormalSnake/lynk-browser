@@ -22,3 +22,9 @@ preload = ["babel-plugin-nativedesktop/bun-plugin"]
 # own transitive deps on disk, and the host's Bun child can't resolve them.
 [install]
 linker = "hoisted"
+
+# A packaged bundle under dist/ carries compiled copies of the test files but
+# not the fixtures they serve, so a bare `bun test` after `nd package` reports
+# failures that exist nowhere in the source tree.
+[test]
+root = "src"
