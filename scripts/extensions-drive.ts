@@ -601,7 +601,7 @@ try {
   await shoot(app, `${WHICH}-01-manager-empty`, manager.node.ref);
 
   await step("choose the unpacked extension folder", () => app.click("ext-manager-add-folder"));
-  const prompt = await waitAcross(app, "ext-prompt-window");
+  const prompt = await waitAcross(app, "ext-prompt-name");
   const name = await app.mustFind("ext-prompt-name", { window: prompt.window });
   if (!String(name.text ?? "").includes("Dark Reader")) {
     fail(`the prompt names ${JSON.stringify(name.text)}, want Dark Reader`);
@@ -610,7 +610,7 @@ try {
   for (const wanted of WANT_WARNINGS) {
     if (!warnings.includes(wanted)) fail(`the prompt is missing "${wanted}"; it showed ${JSON.stringify(warnings)}`);
   }
-  await shoot(app, `${WHICH}-02-permission-prompt`, prompt.node.ref);
+  await shoot(app, `${WHICH}-02-permission-prompt`, prompt.window);
   console.log(`1. install flow: folder picker -> permission prompt listing ${JSON.stringify(warnings)}`);
 
   // Nothing of the extension runs until Add.
@@ -653,12 +653,14 @@ try {
   console.log(`2c. a tab opened after install darkened with no reload ${JSON.stringify(fresh)}`);
 
   // 3 — the action popup: the extension's own page in a native window.
+  // The popup is a popover anchored to the extension's toolbar button; its
+  // content node only exists while it is open.
   await step("open the action popup", () => app.click(`ext-action-${id}`));
-  const popup = await waitAcross(app, "ext-popup-window");
+  const popup = await waitAcross(app, `ext-popup-view-${id}`);
   await ensureCommitted(app, `ext-popup-view-${id}`, extensionUrl(id, "/ui/popup/index.html"));
   const popupTitle = await waitPopupLoaded(app, id);
-  await shoot(app, `${WHICH}-05-popup`, popup.node.ref);
-  console.log(`3. popup window loaded the extension's own page (${popupTitle})`);
+  await shoot(app, `${WHICH}-05-popup`, popup.window);
+  console.log(`3. popup loaded the extension's own page (${popupTitle})`);
   await step("close the popup", () => app.click(`ext-action-${id}`));
 
   // 3b — the extension's own keyboard command. The popup's DOM is compiled and
@@ -720,7 +722,7 @@ try {
   await step("open the manager for the second extension", () => app.click("menu-extensions-manage"));
   await waitAcross(app, "ext-manager-add-folder");
   await step("choose the second extension's folder", () => app.click("ext-manager-add-folder"));
-  const pairPrompt = await waitAcross(app, "ext-prompt-window");
+  const pairPrompt = await waitAcross(app, "ext-prompt-name");
   const pairName = await app.mustFind("ext-prompt-name", { window: pairPrompt.window });
   if (!String(pairName.text ?? "").includes("Pair Probe")) {
     fail(`the second prompt names ${JSON.stringify(pairName.text)}, want Pair Probe`);

@@ -38,7 +38,6 @@ import {
   ExtensionActionButtons,
   ExtensionBackgrounds,
   ExtensionPermissionPrompt,
-  ExtensionPopupWindow,
   ExtensionStoreDialog,
   ExtensionsManagerWindow,
   useExtensionState,
@@ -262,6 +261,9 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   /// Last context-menu tree sent to each tab's view, so an unchanged one is
   /// never re-sent.
   const sentMenus = useRef(new Map<string, string>());
+  /// Where the last context menu opened, per tab: Inspect Element needs the
+  /// coordinates, and the item-click payload does not carry them.
+  const lastMenuHit = useRef(new Map<string, { x: number; y: number }>());
   const toast = useRef<NdNodeRef<"toastoverlay">>(null);
   /// Download ids only have to be unique within a run, and a short one keeps
   /// the panel's row testIDs readable.
@@ -464,16 +466,20 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
 
   // ------------------------------------------------------- context menu ---
 
-  /// The engine draws the menu: Back/Forward/Reload, Open Link, Copy Image,
-  /// Look Up and Inspect Element are WebKit's own and always there. These are
-  /// the three things a browser has to add on top, because they act on the
-  /// browser rather than on the page: a tab, this app's downloads, and the
-  /// search engine the user picked.
+  /// The engine draws the menu: Back/Forward/Reload, Open Link and Copy Image
+  /// are its own and always there. These are the things a browser has to add
+  /// on top, because they act on the browser rather than on the page: a tab,
+  /// this app's downloads, the search engine the user picked, and devtools.
+  /// Inspect Element is app-provided because Chromium's default menu carries
+  /// no devtools entry; WebKit shows its own too, so the item is harmlessly
+  /// doubled there.
   function appContextMenuItems(): ContextMenuItem[] {
     return [
       { id: "nb-open-link", label: "Open Link in New Tab", contexts: ["link"] },
       { id: "nb-save-image", label: "Save Image", contexts: ["image"] },
       { id: "nb-search-selection", label: `Search with ${engineOf(prefs.searchEngine).name}`, contexts: ["selection"] },
+      { type: "separator", contexts: ["all"] },
+      { id: "nb-inspect", label: "Inspect Element", contexts: ["all"] },
     ];
   }
 
@@ -506,6 +512,14 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
       case "nb-open-link":
         if (click.linkUrl) openTab(click.linkUrl, true);
         return;
+      case "nb-inspect": {
+        // The click payload carries no coordinates; the contextMenu event
+        // that preceded the menu does, and openDevTools starts inspecting
+        // the element under them.
+        const node = view(tabId);
+        if (node) sendCommand(node, "openDevTools", lastMenuHit.current.get(tabId) ?? {});
+        return;
+      }
       case "nb-save-image":
         if (click.imageUrl) startDownload(click.imageUrl);
         return;
@@ -1016,6 +1030,10 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                     const { nodeId } = e.data as { nodeId: string | null };
                     if (nodeId && tabs.some((t) => t.id === nodeId)) selectTab(nodeId);
                   }}
+                  onMiddleClick={(e) => {
+                    const { nodeId } = e.data as { nodeId: string | null };
+                    if (nodeId && tabs.some((t) => t.id === nodeId)) closeTab(nodeId);
+                  }}
                   onActionClicked={(e) => {
                     const { nodeId, actionId } = e.data as { nodeId: string; actionId: string };
                     if (actionId === "close") closeTab(nodeId);
@@ -1197,8 +1215,6 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
             </headerbar>
 
             <box testID="content" orientation="vertical" style={{ hexpand: true, vexpand: true }}>
-              {activeRt.loading && <progressbar testID="progress" fraction={activeRt.progress} />}
-
               {find.open && (
                 <box
                   testID="find-bar"
@@ -1266,119 +1282,152 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                 onCancel={closePalette}
               />
 
-              {tabs
-                .filter((t) => t.url !== "" && schemeReady)
-                .map((t) => {
-                  const state = rt(t.id);
-                  const shown = t.id === active.id && state.error === null;
-                  // React never attaches refs inside a subtree that mounts
-                  // straight into a hidden Activity, and without the ref a tab's
-                  // content scripts are never registered and its URL is never
-                  // set. A tab opened in this session therefore stays "visible"
-                  // for the one frame it takes to arm — it has no URL yet, so
-                  // the frame is blank. A RESTORED tab is left alone until it is
-                  // selected, which is the lazy session restore every browser
-                  // does anyway.
-                  const arming = !armedTabs[t.id] && opened.current.has(t.id);
-                  return (
-                    <Activity key={t.id} mode={shown || arming ? "visible" : "hidden"}>
-                      <webview
-                        key={state.attempt}
-                        ref={(node) => {
-                          views.current.set(t.id, node as NdNodeRef<"webview"> | null);
-                          if (!node) return;
-                          extensions.armTabView(t.id, node as NdNodeRef<"webview">);
-                          // The view exists now, so its menu can be pushed; the
-                          // render-time sync could only skip it.
-                          syncContextMenus(t.id);
-                          setArmedTabs((a) => (a[t.id] ? a : { ...a, [t.id]: true }));
-                        }}
-                        url={armedTabs[t.id] && extensionsReady ? t.url : ""}
-                        testID={`page-${t.id}`}
-                        style={{ hexpand: true, vexpand: true }}
-                        onScriptMessage={(e) => {
-                          // The handler NAME says who sent this, not the world:
-                          // a name is what both engines route on, and a tab
-                          // with two extensions in it has one per world.
-                          const message = e.data as { name: string; world: string; body: unknown };
-                          const extensionId = bridgeSurface(message.name);
-                          if (!extensionId) return;
-                          extensions.handleScriptMessage({ kind: "content", tabId: t.id, extensionId }, message.body);
-                        }}
-                        onSchemeRequest={(e) => {
-                          const node = view(t.id);
-                          if (node) extensions.serveScheme(node, e.data as { id: string; url: string });
-                        }}
-                        onNavigate={(e) => onNavigated(t.id, e.text)}
-                        onTitleChanged={(e) => onTitled(t.id, e.text)}
-                        onLoadingChanged={(e) => {
-                          patch(t.id, { loading: e.checked });
-                          if (!e.checked) onLoadSettled(t.id);
-                        }}
-                        onLoadProgress={(e) => patch(t.id, { progress: e.value })}
-                        onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
-                        onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
-                        onLoadFailed={(e) => patch(t.id, { error: e.data as { url: string; error: string } })}
-                        onNewWindow={(e) => openTab(e.text, true)}
-                        onJavaScriptResult={onJavaScriptResult}
-                        onFaviconChanged={(e) => onFavicon(t.url, e.data as { dataUrl?: string; iconUrl?: string })}
-                        onSecurityChanged={(e) => patch(t.id, { security: securityOf(t.url, e.data) })}
-                        onFindResult={(e) => {
-                          // Two events per search on GTK: `done` carries the
-                          // outcome, `done: false` carries the total from the
-                          // separate counting pass, which AppKit never sends.
-                          const r = e.data as { matchFound: boolean; matchCount?: number; done: boolean };
-                          setFind((f) =>
-                            r.done ? { ...f, found: r.matchFound } : { ...f, count: r.matchCount ?? null },
-                          );
-                        }}
-                        onContextMenuItemClicked={(e) => onContextMenuItem(t.id, e.data as ContextMenuItemClick)}
-                        onDownloadRequested={(e) => {
-                          const d = e.data as { url: string; suggestedFilename?: string };
-                          startDownload(d.url, d.suggestedFilename);
-                        }}
+              {/* The load bar floats over the page instead of taking a row of
+                  layout: mounting it must not resize the webview. First child
+                  of the overlay is the content; the bar is a floating layer
+                  pinned to the top edge. */}
+              <overlay testID="page-stack" style={{ hexpand: true, vexpand: true }}>
+                <box orientation="vertical" style={{ hexpand: true, vexpand: true }}>
+                  {tabs
+                    .filter((t) => t.url !== "" && schemeReady)
+                    .map((t) => {
+                      const state = rt(t.id);
+                      const shown = t.id === active.id && state.error === null;
+                      // React never attaches refs inside a subtree that mounts
+                      // straight into a hidden Activity, and without the ref a tab's
+                      // content scripts are never registered and its URL is never
+                      // set. A tab opened in this session therefore stays "visible"
+                      // for the one frame it takes to arm — it has no URL yet, so
+                      // the frame is blank. A RESTORED tab is left alone until it is
+                      // selected, which is the lazy session restore every browser
+                      // does anyway.
+                      const arming = !armedTabs[t.id] && opened.current.has(t.id);
+                      return (
+                        <Activity key={t.id} mode={shown || arming ? "visible" : "hidden"}>
+                          <webview
+                            key={state.attempt}
+                            ref={(node) => {
+                              views.current.set(t.id, node as NdNodeRef<"webview"> | null);
+                              if (!node) return;
+                              extensions.armTabView(t.id, node as NdNodeRef<"webview">);
+                              // The view exists now, so its menu can be pushed; the
+                              // render-time sync could only skip it.
+                              syncContextMenus(t.id);
+                              setArmedTabs((a) => (a[t.id] ? a : { ...a, [t.id]: true }));
+                            }}
+                            url={armedTabs[t.id] && extensionsReady ? t.url : ""}
+                            testID={`page-${t.id}`}
+                            style={{ hexpand: true, vexpand: true }}
+                            onScriptMessage={(e) => {
+                              // The handler NAME says who sent this, not the world:
+                              // a name is what both engines route on, and a tab
+                              // with two extensions in it has one per world.
+                              const message = e.data as { name: string; world: string; body: unknown };
+                              const extensionId = bridgeSurface(message.name);
+                              if (!extensionId) return;
+                              extensions.handleScriptMessage({ kind: "content", tabId: t.id, extensionId }, message.body);
+                            }}
+                            onSchemeRequest={(e) => {
+                              const node = view(t.id);
+                              if (node) extensions.serveScheme(node, e.data as { id: string; url: string });
+                            }}
+                            onNavigate={(e) => onNavigated(t.id, e.text)}
+                            onTitleChanged={(e) => onTitled(t.id, e.text)}
+                            onLoadingChanged={(e) => {
+                              patch(t.id, { loading: e.checked });
+                              if (!e.checked) onLoadSettled(t.id);
+                            }}
+                            onLoadProgress={(e) => patch(t.id, { progress: e.value })}
+                            onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
+                            onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
+                            onLoadFailed={(e) => patch(t.id, { error: e.data as { url: string; error: string } })}
+                            onNewWindow={(e) => openTab(e.text, true)}
+                            onJavaScriptResult={onJavaScriptResult}
+                            onFaviconChanged={(e) => onFavicon(t.url, e.data as { dataUrl?: string; iconUrl?: string })}
+                            onSecurityChanged={(e) => patch(t.id, { security: securityOf(t.url, e.data) })}
+                            onFindResult={(e) => {
+                              // Two events per search on GTK: `done` carries the
+                              // outcome, `done: false` carries the total from the
+                              // separate counting pass, which AppKit never sends.
+                              const r = e.data as { matchFound: boolean; matchCount?: number; done: boolean };
+                              setFind((f) =>
+                                r.done ? { ...f, found: r.matchFound } : { ...f, count: r.matchCount ?? null },
+                              );
+                            }}
+                            onContextMenu={(e) => {
+                              const hit = e.data as { x: number; y: number };
+                              lastMenuHit.current.set(t.id, { x: hit.x, y: hit.y });
+                            }}
+                            onContextMenuItemClicked={(e) => onContextMenuItem(t.id, e.data as ContextMenuItemClick)}
+                            onDownloadRequested={(e) => {
+                              const d = e.data as { url: string; suggestedFilename?: string };
+                              startDownload(d.url, d.suggestedFilename);
+                            }}
+                          />
+                        </Activity>
+                      );
+                    })}
+
+                  {activeRt.error !== null && (
+                    <statuspage
+                      testID="error-page"
+                      iconName="network-error-symbolic"
+                      title="Unable to load this page"
+                      description={`${displayUrl(activeRt.error.url)} — ${activeRt.error.error}`}
+                      style={{ vexpand: true }}
+                    >
+                      <button
+                        testID="retry"
+                        label="Try Again"
+                        cssClasses={["suggested-action", "pill"]}
+                        onClick={() => patch(active.id, { error: null, attempt: activeRt.attempt + 1 })}
                       />
-                    </Activity>
-                  );
-                })}
+                    </statuspage>
+                  )}
 
-              {activeRt.error !== null && (
-                <statuspage
-                  testID="error-page"
-                  iconName="network-error-symbolic"
-                  title="Unable to load this page"
-                  description={`${displayUrl(activeRt.error.url)} — ${activeRt.error.error}`}
-                  style={{ vexpand: true }}
-                >
-                  <button
-                    testID="retry"
-                    label="Try Again"
-                    cssClasses={["suggested-action", "pill"]}
-                    onClick={() => patch(active.id, { error: null, attempt: activeRt.attempt + 1 })}
-                  />
-                </statuspage>
-              )}
+                  {active.url === "" && (
+                    <statuspage
+                      testID="new-tab-page"
+                      iconName="web-browser-symbolic"
+                      title="New Tab"
+                      description="Search the web, or open a page you have visited before."
+                      style={{ vexpand: true }}
+                    >
+                      <button
+                        testID="new-tab-search"
+                        label="Search or Enter Address"
+                        cssClasses={["suggested-action", "pill"]}
+                        onClick={() => openPalette("")}
+                      />
+                    </statuspage>
+                  )}
+                </box>
 
-              {active.url === "" && (
-                <statuspage
-                  testID="new-tab-page"
-                  iconName="web-browser-symbolic"
-                  title="New Tab"
-                  description="Search the web, or open a page you have visited before."
-                  style={{ vexpand: true }}
-                >
-                  <button
-                    testID="new-tab-search"
-                    label="Search or Enter Address"
-                    cssClasses={["suggested-action", "pill"]}
-                    onClick={() => openPalette("")}
+                {activeRt.loading && (
+                  <progressbar
+                    testID="progress"
+                    fraction={activeRt.progress}
+                    cssClasses={["osd"]}
+                    style={{ valign: "start", hexpand: true }}
                   />
-                </statuspage>
-              )}
+                )}
+              </overlay>
 
               {/* Background pages live in the main window so Activity can keep
                   them running while they stay invisible. */}
               {schemeReady && <ExtensionBackgrounds host={extensions} />}
+
+              {/* In-window dialogs present on their tree parent's window, so
+                  the install prompts live inside the main window rather than
+                  beside it. They attach as overlay children and take no
+                  layout space in this box. */}
+              <ExtensionPermissionPrompt host={extensions} />
+              <ExtensionStoreDialog
+                host={extensions}
+                open={storeDialogOpen}
+                onClose={() => setStoreDialogOpen(false)}
+                onFailure={reportInstallFailure}
+              />
             </box>
           </toolbarview>
         </splitview>
@@ -1396,15 +1445,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
       />
     )}
 
-    <ExtensionPermissionPrompt host={extensions} />
-    {schemeReady && <ExtensionPopupWindow host={extensions} />}
     <ExtensionsManagerWindow host={extensions} actions={managerActions} />
-    <ExtensionStoreDialog
-      host={extensions}
-      open={storeDialogOpen}
-      onClose={() => setStoreDialogOpen(false)}
-      onFailure={reportInstallFailure}
-    />
     </>
   );
 }

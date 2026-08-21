@@ -146,65 +146,12 @@ export function ExtensionBackgrounds({ host }: HostProps): React.ReactNode {
   );
 }
 
-/// The action popup: its own small window, closed when it loses focus, the way
-/// a browser popup behaves.
-///
-/// Keyed on the surface it shows, so every open starts a fresh
-/// `PopupWindow` — its "has this page loaded yet" state must not survive from
-/// the previous extension's popup.
-export function ExtensionPopupWindow({ host }: HostProps): React.ReactNode {
-  const { popup } = useExtensionState(host);
-  if (!popup) return null;
-  const view = host.views().find((v) => v.id === popup.extensionId);
-  return (
-    <PopupWindow
-      key={`${popup.extensionId}:${popup.url}`}
-      host={host}
-      popup={popup}
-      title={view?.title ?? "Extension"}
-    />
-  );
-}
-
-/// The popup window is built hidden and shown once its page has loaded. A
-/// GtkWindow maps as soon as it is created, so mounting it and the webview in
-/// one commit puts an empty 380x600 window on screen for as long as the
-/// extension's own bundle takes to boot — measured at ~400ms for Dark Reader
-/// on the headless rig, which is what the final review captured as "the popup
-/// paints nothing". The webview still mounts and loads inside the hidden
-/// window, so nothing about the page's timing changes; only the moment the
-/// user sees it does.
-function PopupWindow({
-  host,
-  popup,
-  title,
-}: HostProps & { popup: NonNullable<ReturnType<ExtensionHost["popupState"]>>; title: string }): React.ReactNode {
-  const [armed, setArmed] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-  return (
-    <Activity mode={armed && !loaded ? "hidden" : "visible"}>
-      <window
-        title={title}
-        testID="ext-popup-window"
-        defaultWidth={popup.width}
-        defaultHeight={popup.height}
-        onClosed={() => host.closePopup()}
-      >
-        <box testID="ext-popup" orientation="vertical" style={{ hexpand: true, vexpand: true }}>
-          <ExtensionWebView
-            host={host}
-            kind="popup"
-            extensionId={popup.extensionId}
-            url={popup.url}
-            testID={`ext-popup-view-${popup.extensionId}`}
-            onArmed={() => setArmed(true)}
-            onLoaded={() => setLoaded(true)}
-          />
-        </box>
-      </window>
-    </Activity>
-  );
-}
+/// The action popup, anchored to its extension's toolbar button the way every
+/// browser presents one: a `<popover>` that dismisses on an outside click
+/// (`onClosed` -> `closePopup`). Rendered by `ExtensionActionButtons`, whose
+/// per-button box is the popover's anchor. The content is keyed on the
+/// surface it shows, so every open starts a fresh webview rather than
+/// inheriting the previous popup's page.
 
 /// What `symbolScale="small"` resolves to. The minor permission rows carry no
 /// icon, so this is the indent that keeps them under the same leading edge as
@@ -218,14 +165,6 @@ const WARNING_ICON_PX = 16;
 function broadAccessWarning(host: ExtensionHost, extensionId: string): string | null {
   const manifest = host.extensions.get(extensionId)?.manifest;
   return manifest ? hostWarning(manifest.hostPermissions) : null;
-}
-
-/// `defaultWidth`/`defaultHeight` are create-only and there is no resize
-/// command, so the prompt's height is decided before it mounts. The budget is
-/// the fixed chrome (header bar, padding, identity block, lead-in, buttons)
-/// plus one line per permission sentence.
-function promptHeight(warnings: number): number {
-  return Math.min(640, Math.max(280, 240 + 32 * warnings));
 }
 
 /// A dialog's action row: pinned to the bottom, buttons at the TRAILING edge,
@@ -255,26 +194,26 @@ function ButtonRow({ testID, children }: { testID: string; children: React.React
 
 /// The install prompt. Shown before anything of the extension runs, and the
 /// only thing that can enable it.
+///
+/// An in-window `<dialog>` rather than its own window: a grant is a decision
+/// about the browsing that asked for it, and dismissing it natively (Escape,
+/// a click outside) resolves to a refusal, never a dangling prompt. Must be
+/// mounted inside the main `<window>` subtree, which is what the dialog
+/// presents on.
 export function ExtensionPermissionPrompt({ host }: HostProps): React.ReactNode {
   const { prompt } = useExtensionState(host);
-  if (!prompt) return null;
-  const broad = broadAccessWarning(host, prompt.id);
+  const broad = prompt ? broadAccessWarning(host, prompt.id) : null;
   return (
-    // A grant is a decision ABOUT a window, so it is attached to one: Apple's
-    // framing for sheets is that they ensure "a user never loses track of
-    // which window the dialog belongs to", and a free-floating prompt with
-    // live traffic lights can be minimised away from the page that asked.
-    // GTK has no sheets; the framework maps this to the GNOME equivalent, a
-    // modal window transient for its parent.
-    <window
+    <dialog
+      open={prompt !== null}
       title="Add Extension"
-      testID="ext-prompt-window"
-      presentation="sheet"
-      defaultWidth={460}
-      defaultHeight={promptHeight(prompt.warnings.length)}
+      testID="ext-prompt-dialog"
+      contentWidth={460}
+      onClosed={() => void host.resolvePrompt(false)}
     >
-      <toolbarview testID="ext-prompt-toolbar">
-        <headerbar testID="ext-prompt-header" title="Permissions" showTitleButtons={false} />
+      {prompt === null ? (
+        <box testID="ext-prompt-empty" />
+      ) : (
         <box
           testID="ext-prompt"
           orientation="vertical"
@@ -365,8 +304,8 @@ export function ExtensionPermissionPrompt({ host }: HostProps): React.ReactNode 
             />
           </ButtonRow>
         </box>
-      </toolbarview>
-    </window>
+      )}
+    </dialog>
   );
 }
 
@@ -712,7 +651,8 @@ function RemoveExtensionDialog({
 
 /// Install straight from a Chrome Web Store listing. The address is all the
 /// store's CRX endpoint needs; the download and the permission prompt are the
-/// same flow a local file goes through.
+/// same flow a local file goes through. An in-window `<dialog>`, mounted
+/// inside the main `<window>` subtree like the permission prompt.
 export function ExtensionStoreDialog({
   host,
   open,
@@ -720,7 +660,6 @@ export function ExtensionStoreDialog({
   onFailure,
 }: HostProps & { open: boolean; onClose: () => void; onFailure: (reason: string) => void }): React.ReactNode {
   const [address, setAddress] = useState("");
-  if (!open) return null;
 
   const submit = (): void => {
     onClose();
@@ -729,60 +668,97 @@ export function ExtensionStoreDialog({
   };
 
   return (
-    <window title="Add From the Chrome Web Store" testID="ext-store-window" defaultWidth={520} defaultHeight={200}>
-      <toolbarview testID="ext-store-toolbar">
-        <headerbar testID="ext-store-header" title="Add From the Chrome Web Store" showTitleButtons={false} />
-        <box
-          testID="ext-store"
-          orientation="vertical"
-          spacing={Spacing.md}
-          style={{ padding: Spacing.lg, hexpand: true, vexpand: true }}
-        >
-          <label text="Store Address" style={{ halign: "start" }} />
-          {/* Deliberately uncontrolled: feeding `text` back from onChanged
-              makes GTK's set_text race the entry and blank it (LEDGER). */}
-          <textinput
-            testID="ext-store-input"
-            placeholder="https://chromewebstore.google.com/detail/…"
-            onChanged={(e) => setAddress(e.text)}
-            onActivate={submit}
-          />
-          <ButtonRow testID="ext-store-buttons">
-            <button testID="ext-store-cancel" label="Cancel" onClick={onClose} />
-            <button testID="ext-store-add" label="Continue" cssClasses={["suggested-action"]} onClick={submit} />
-          </ButtonRow>
-        </box>
-      </toolbarview>
-    </window>
+    <dialog
+      open={open}
+      title="Add From the Chrome Web Store"
+      testID="ext-store-dialog"
+      contentWidth={520}
+      onClosed={onClose}
+    >
+      <box
+        testID="ext-store"
+        orientation="vertical"
+        spacing={Spacing.md}
+        style={{ padding: Spacing.lg, hexpand: true, vexpand: true }}
+      >
+        <label text="Store Address" style={{ halign: "start" }} />
+        {/* Deliberately uncontrolled: feeding `text` back from onChanged
+            makes GTK's set_text race the entry and blank it (LEDGER). */}
+        <textinput
+          testID="ext-store-input"
+          placeholder="https://chromewebstore.google.com/detail/…"
+          onChanged={(e) => setAddress(e.text)}
+          onActivate={submit}
+        />
+        <ButtonRow testID="ext-store-buttons">
+          <button testID="ext-store-cancel" label="Cancel" onClick={onClose} />
+          <button testID="ext-store-add" label="Continue" cssClasses={["suggested-action"]} onClick={submit} />
+        </ButtonRow>
+      </box>
+    </dialog>
   );
 }
 
-/// The toolbar buttons, one per enabled extension. GTK buttons take an icon
-/// theme name rather than image bytes, so the extension's own PNG cannot be
-/// the button's icon yet (LEDGER: framework asks); the name carries the
-/// identity instead.
+/// The toolbar buttons, one per enabled extension, each boxed with the
+/// popover its action popup presents in (a popover anchors on its tree
+/// parent, and a header bar's own handle never joins a view hierarchy).
 export function ExtensionActionButtons({ host }: HostProps): React.ReactNode {
-  const { views } = useExtensionState(host);
+  const { views, popup } = useExtensionState(host);
   return (
     <>
       {views
         .filter((view) => view.enabled)
-        .map((view) => (
-          <button
-            key={view.id}
-            slot="end"
-            testID={`ext-action-${view.id}`}
-            // The extension's own icon, which is what every browser shows here
-            // and what makes this read as a control rather than a label.
-            // Initials remain the fallback for an extension that ships none.
-            iconData={view.iconData}
-            label={view.iconData ? "" : shortLabel(view.name)}
-            badge={view.badge || undefined}
-            tooltip={view.title}
-            cssClasses={["flat"]}
-            onClick={() => host.openAction(view.id)}
-          />
-        ))}
+        .map((view) => {
+          const open = popup !== null && popup.extensionId === view.id;
+          // The anchor is NOT `ext-action-…` or `ext-row-…`: the drives read
+          // the installed set by scanning those prefixes and slicing the id
+          // off, so an anchor named under them hands them a fake id.
+          return (
+            <box key={view.id} slot="end" testID={`ext-anchor-${view.id}`} orientation="horizontal">
+              <button
+                testID={`ext-action-${view.id}`}
+                // The extension's own icon, which is what every browser shows
+                // here and what makes this read as a control rather than a
+                // label. Initials remain the fallback for an extension that
+                // ships none.
+                iconData={view.iconData}
+                label={view.iconData ? "" : shortLabel(view.name)}
+                badge={view.badge || undefined}
+                tooltip={view.title}
+                cssClasses={["flat"]}
+                onClick={() => host.openAction(view.id)}
+              />
+              <popover
+                testID={`ext-popup-${view.id}`}
+                open={open}
+                position="bottom"
+                onClosed={() => host.closePopup()}
+              >
+                {open && popup !== null ? (
+                  // The page reports its real size through the popupSize
+                  // reporter; until then the broker's default keeps the
+                  // popover from collapsing around an unloaded webview.
+                  <box
+                    key={`${popup.extensionId}:${popup.url}`}
+                    testID="ext-popup"
+                    orientation="vertical"
+                    style={{ minWidth: popup.width, minHeight: popup.height }}
+                  >
+                    <ExtensionWebView
+                      host={host}
+                      kind="popup"
+                      extensionId={popup.extensionId}
+                      url={popup.url}
+                      testID={`ext-popup-view-${popup.extensionId}`}
+                    />
+                  </box>
+                ) : (
+                  <box testID={`ext-popup-empty-${view.id}`} />
+                )}
+              </popover>
+            </box>
+          );
+        })}
     </>
   );
 }
