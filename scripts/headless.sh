@@ -12,6 +12,27 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Every drive takes a whole display and a fixed set of /tmp scratch paths
+# (`/tmp/nb-drive-data` and friends, wiped at the top of each run), so two runs
+# on one machine quietly eat each other: the second Xvfb refuses :96 and the
+# run attaches to the first one's server, and each drive's wipe pulls the
+# other's user data dir out from under it mid-run. What comes out is a spread
+# of unrelated-looking failures -- a cookie that did not survive a restart, a
+# closed automation socket, a getTree that never answers -- none of which
+# reproduce alone. One machine, one run at a time.
+if [ -z "${NB_HEADLESS_LOCK:-}" ]; then
+  if command -v flock >/dev/null 2>&1; then
+    export NB_HEADLESS_LOCK=1
+    exec 9>"${NB_HEADLESS_LOCK_FILE:-/tmp/nb-headless.lock}"
+    if ! flock -w "${NB_HEADLESS_LOCK_WAIT:-1800}" 9; then
+      echo "ND_ERROR headless.sh: another headless run still holds the lock after ${NB_HEADLESS_LOCK_WAIT:-1800}s" >&2
+      exit 1
+    fi
+  else
+    echo "ND_WARN headless.sh: no flock, a concurrent headless run on this machine will corrupt this one" >&2
+  fi
+fi
+
 FRAMEWORK_SCRIPTS="${ND_FRAMEWORK_DIR:-../NativeDesktop}/scripts"
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$(mktemp -d)}"
@@ -54,6 +75,12 @@ if [ "${ND_WEBVIEW_ENGINE:-}" = "chromium" ]; then
     xwininfo -root >/dev/null 2>&1 && break
     sleep 0.1
   done
+  # Xvfb's own stderr goes nowhere, so a server that never came up used to
+  # surface as the app hanging on its first automation call.
+  if ! xwininfo -root >/dev/null 2>&1; then
+    echo "ND_ERROR headless.sh: no X server on $DISPLAY after 10s" >&2
+    exit 1
+  fi
 else
   export WAYLAND_DISPLAY=nb-headless-0
   export GDK_BACKEND=wayland
@@ -68,4 +95,7 @@ else
   done
 fi
 
-"$@"
+# The lock fd stays open in this shell for the life of the run and is closed
+# for the command, so an orphaned host cannot inherit it and hold the next run
+# out.
+"$@" 9>&-
