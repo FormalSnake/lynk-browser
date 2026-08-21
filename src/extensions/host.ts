@@ -50,7 +50,7 @@ import {
   WEBSTORE_SURFACE,
   chromeUserAgent,
   isWebstoreUrl,
-  parseWebstoreInstall,
+  parseWebstoreMessage,
   webstoreHookSource,
 } from "./webstore.ts";
 import type { Messages } from "./i18n.ts";
@@ -297,6 +297,9 @@ export class ExtensionHost {
   private notify(): void {
     this.revision += 1;
     for (const listener of this.listeners) listener();
+    // Install and uninstall both land here, which is what keeps a store tab's
+    // repainted control honest without its own subscription machinery.
+    this.pushWebstoreState();
   }
 
   /// Whether every enabled extension's background page is up AND has finished
@@ -772,17 +775,39 @@ export class ExtensionHost {
     sendCommand(node, "reload");
   }
 
-  /// A click on the store's install button, arriving from the hook. Everything
-  /// after this is the ordinary install: the same download and the same consent
-  /// prompt the store dialog raises.
+  /// A message arriving from the store hook. Install rides the ordinary path:
+  /// the same download and the same consent prompt the store dialog raises.
+  /// Remove is the same uninstall the extensions manager performs, and the
+  /// query is the hook asking for the installed set it cannot know on its own.
   private onWebstoreMessage(body: unknown): void {
-    const message = parseWebstoreInstall(body);
+    const message = parseWebstoreMessage(body);
     if (!message) return;
+    if (message.k === "webstoreQuery") return this.pushWebstoreState();
+    if (message.k === "webstoreRemove") {
+      if (this.extensions.has(message.id)) void this.uninstall(message.id);
+      return;
+    }
     void this.stageFromWebStore(message.id).catch((error: Error) => {
       console.error(
         `[nativebrowser] ${message.name || message.id} could not be fetched from the store: ${error.message}`,
       );
     });
+  }
+
+  /// Hands every hooked store tab the current installed set. Disabled
+  /// extensions count: the store's question is "is this on the machine", and
+  /// remove must work on an extension the user turned off.
+  private pushWebstoreState(): void {
+    if (this.storeHooked.size === 0) return;
+    const ids = [...this.extensions.keys()];
+    const code = `globalThis.__ndWebstoreState && globalThis.__ndWebstoreState(${JSON.stringify(ids)})`;
+    for (const [tabId, viewId] of this.storeHooked) {
+      const node = this.tabViews.get(tabId);
+      if (!node || node.id !== viewId) continue;
+      void executeJavaScript(node, code, contentWorld(WEBSTORE_SURFACE)).catch(() => {
+        // A tab that navigated off the store mid-push is not an error.
+      });
+    }
   }
 
   // -------------------------------------------------------------- attachments
@@ -1195,6 +1220,11 @@ export class ExtensionHost {
     const surfaces: Surface[] = [];
     if (this.backgroundViews.has(extensionId)) surfaces.push({ kind: "background", extensionId });
     if (this.popupViews.has(extensionId)) surfaces.push({ kind: "popup", extensionId });
+    // Chrome fires storage events in content scripts too; every other event here
+    // stays extension-page only. deliver() no-ops in tabs the extension never touched.
+    if (name.startsWith("storage.")) {
+      for (const tabId of this.tabViews.keys()) surfaces.push({ kind: "content", tabId, extensionId });
+    }
     for (const surface of surfaces) this.deliver(surface, { k: "evt", name, args });
   }
 

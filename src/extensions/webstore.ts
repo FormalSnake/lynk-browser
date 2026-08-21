@@ -147,27 +147,53 @@ export function isInstallControl(element: ControlNode): boolean {
   return scoreInstallControl(installControlSignals(element)) >= INSTALL_SCORE_THRESHOLD;
 }
 
+/// What the install control reads once the listing's extension is installed.
+/// The store never learns it is not Chrome, so its own "Remove from Chrome"
+/// state never renders; this label is the app's replacement for it.
+export const WEBSTORE_REMOVE_LABEL = "Remove from NativeBrowser";
+
 export interface WebstoreInstallMessage {
   k: "webstoreInstall";
   id: string;
   name: string;
 }
 
+export interface WebstoreRemoveMessage {
+  k: "webstoreRemove";
+  id: string;
+  name: string;
+}
+
+/** The hook asking which extensions are installed; the broker answers by
+ * evaluating `__ndWebstoreState` back into the hook's world. */
+export interface WebstoreQueryMessage {
+  k: "webstoreQuery";
+}
+
+export type WebstoreMessage = WebstoreInstallMessage | WebstoreRemoveMessage | WebstoreQueryMessage;
+
 /// Embedded into the hook by source text: no module-scope references.
 export function webstoreInstallMessage(id: string, name: string): WebstoreInstallMessage {
   return { k: "webstoreInstall", id: id, name: name };
 }
 
-/// The same message as the broker must treat it: from a world the app owns, but
-/// read off a page it does not. The id is re-validated rather than trusted,
-/// because everything past this point downloads whatever it is handed.
-export function parseWebstoreInstall(body: unknown): WebstoreInstallMessage | null {
+/// Embedded into the hook by source text: no module-scope references.
+export function webstoreRemoveMessage(id: string, name: string): WebstoreRemoveMessage {
+  return { k: "webstoreRemove", id: id, name: name };
+}
+
+/// The same messages as the broker must treat them: from a world the app owns,
+/// but read off a page it does not. The id is re-validated rather than trusted,
+/// because the install path downloads whatever it is handed and the remove path
+/// deletes whatever it names.
+export function parseWebstoreMessage(body: unknown): WebstoreMessage | null {
   if (!body || typeof body !== "object") return null;
   const env = body as Record<string, unknown>;
-  if (env.k !== "webstoreInstall") return null;
+  if (env.k === "webstoreQuery") return { k: "webstoreQuery" };
+  if (env.k !== "webstoreInstall" && env.k !== "webstoreRemove") return null;
   const id = typeof env.id === "string" ? env.id : "";
   if (!/^[a-p]{32}$/.test(id)) return null;
-  return { k: "webstoreInstall", id, name: typeof env.name === "string" ? env.name : "" };
+  return { k: env.k, id, name: typeof env.name === "string" ? env.name : "" };
 }
 
 /// The hook itself, as source injected into the store origin and nothing else.
@@ -183,11 +209,21 @@ ${webstoreListingId.toString()}
 ${installControlSignals.toString()}
 ${scoreInstallControl.toString()}
 ${webstoreInstallMessage.toString()}
+${webstoreRemoveMessage.toString()}
 var THRESHOLD = ${INSTALL_SCORE_THRESHOLD};
+var REMOVE_LABEL = ${JSON.stringify(WEBSTORE_REMOVE_LABEL)};
+var installed = {};
 
 function bridge() {
   var handlers = window.webkit && window.webkit.messageHandlers;
   return (handlers && handlers[${JSON.stringify(WEBSTORE_HANDLER)}]) || null;
+}
+
+// A repainted control no longer scores: its label is the remove label, which
+// the matcher deliberately refuses. The marker attribute keeps it recognized.
+function isControl(el) {
+  if (el.getAttribute("data-nd-webstore") === "1") return true;
+  return scoreInstallControl(installControlSignals(el)) >= THRESHOLD;
 }
 
 // A click lands on whatever is painted under the pointer, usually a span inside
@@ -195,10 +231,65 @@ function bridge() {
 function controlFor(target) {
   for (var el = target, hops = 0; el && hops < 5; el = el.parentElement, hops++) {
     if (el.nodeType !== 1) continue;
-    if (scoreInstallControl(installControlSignals(el)) >= THRESHOLD) return el;
+    if (isControl(el)) return el;
   }
   return null;
 }
+
+function findControl() {
+  var all = document.querySelectorAll('button,[role="button"]');
+  for (var i = 0; i < all.length; i++) {
+    if (isControl(all[i])) return all[i];
+  }
+  return null;
+}
+
+// The store believes it is talking to a Chrome it never is, so its installed
+// state never flips on its own. The control is repainted in place instead:
+// same element, same position, the app's remove label and action. Restoring
+// from the data- attributes on uninstall keeps the store's own re-renders
+// authoritative for everything else on the page.
+function repaint() {
+  var id = webstoreListingId(location.href);
+  if (!id) return;
+  var el = findControl();
+  if (!el) return;
+  if (installed[id]) {
+    if (el.getAttribute("data-nd-webstore") !== "1") {
+      el.setAttribute("data-nd-webstore", "1");
+      el.setAttribute("data-nd-label", el.textContent || "");
+      el.setAttribute("data-nd-aria", el.getAttribute("aria-label") || "");
+    }
+    if (el.textContent !== REMOVE_LABEL) el.textContent = REMOVE_LABEL;
+    if (el.getAttribute("aria-label") !== REMOVE_LABEL) el.setAttribute("aria-label", REMOVE_LABEL);
+  } else if (el.getAttribute("data-nd-webstore") === "1") {
+    el.textContent = el.getAttribute("data-nd-label") || "";
+    var aria = el.getAttribute("data-nd-aria");
+    if (aria) el.setAttribute("aria-label", aria);
+    else el.removeAttribute("aria-label");
+    el.removeAttribute("data-nd-webstore");
+    el.removeAttribute("data-nd-label");
+    el.removeAttribute("data-nd-aria");
+  }
+}
+
+// One trailing repaint per burst of mutations: the store re-renders in storms,
+// and the repaint itself mutates, so running it synchronously per record loops.
+var queued = false;
+function schedule() {
+  if (queued) return;
+  queued = true;
+  setTimeout(function () {
+    queued = false;
+    repaint();
+  }, 50);
+}
+
+globalThis.__ndWebstoreState = function (ids) {
+  installed = {};
+  for (var i = 0; i < ids.length; i++) installed[ids[i]] = true;
+  schedule();
+};
 
 // Nothing is prevented until the message is certain to be sendable: an
 // unrecognized page, an unrecognized control or a missing bridge all leave the
@@ -211,7 +302,8 @@ function intercept(event) {
   if (!handler) return;
   event.preventDefault();
   event.stopPropagation();
-  handler.postMessage(webstoreInstallMessage(id, (document.title || "").trim()));
+  var title = (document.title || "").trim();
+  handler.postMessage(installed[id] ? webstoreRemoveMessage(id, title) : webstoreInstallMessage(id, title));
 }
 
 // Capture on window runs before any delegated listener the store installs
@@ -221,5 +313,16 @@ window.addEventListener("click", intercept, true);
 window.addEventListener("keydown", function (event) {
   if (event.key === "Enter" || event.key === " ") intercept(event);
 }, true);
+
+function observe() {
+  new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+}
+// document_start usually has <html> parsed already, but not guaranteed on
+// every engine, and observe() on a null root throws the whole hook away.
+if (document.documentElement) observe();
+else document.addEventListener("DOMContentLoaded", observe);
+
+var handler = bridge();
+if (handler) handler.postMessage({ k: "webstoreQuery" });
 })();`;
 }

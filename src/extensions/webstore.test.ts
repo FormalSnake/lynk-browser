@@ -8,11 +8,12 @@ import {
   installControlSignals,
   isInstallControl,
   isWebstoreUrl,
-  parseWebstoreInstall,
+  parseWebstoreMessage,
   scoreInstallControl,
   webstoreHookSource,
   webstoreInstallMessage,
   webstoreListingId,
+  webstoreRemoveMessage,
   type ControlNode,
 } from "./webstore.ts";
 
@@ -225,33 +226,56 @@ describe("scoreInstallControl", () => {
   });
 });
 
-describe("the install message", () => {
-  test("round-trips the shape the broker parses", () => {
+describe("the hook messages", () => {
+  test("install round-trips the shape the broker parses", () => {
     const message = webstoreInstallMessage(DARK_READER, "Dark Reader - Chrome Web Store");
     expect(message).toEqual({ k: "webstoreInstall", id: DARK_READER, name: "Dark Reader - Chrome Web Store" });
-    expect(parseWebstoreInstall(message)).toEqual(message);
+    expect(parseWebstoreMessage(message)).toEqual(message);
+  });
+
+  test("remove round-trips too, under the same id validation", () => {
+    const message = webstoreRemoveMessage(DARK_READER, "Dark Reader - Chrome Web Store");
+    expect(message).toEqual({ k: "webstoreRemove", id: DARK_READER, name: "Dark Reader - Chrome Web Store" });
+    expect(parseWebstoreMessage(message)).toEqual(message);
+    expect(parseWebstoreMessage({ k: "webstoreRemove", id: DARK_READER.toUpperCase() })).toBeNull();
+  });
+
+  test("the state query carries nothing but its kind", () => {
+    expect(parseWebstoreMessage({ k: "webstoreQuery" })).toEqual({ k: "webstoreQuery" });
+    expect(parseWebstoreMessage({ k: "webstoreQuery", id: "ignored" })).toEqual({ k: "webstoreQuery" });
   });
 
   test("a name is optional and arrives empty rather than absent", () => {
-    expect(parseWebstoreInstall({ k: "webstoreInstall", id: DARK_READER })?.name).toBe("");
+    const parsed = parseWebstoreMessage({ k: "webstoreInstall", id: DARK_READER });
+    expect(parsed && "name" in parsed ? parsed.name : null).toBe("");
   });
 
   test("anything the broker cannot act on is refused", () => {
-    expect(parseWebstoreInstall(null)).toBeNull();
-    expect(parseWebstoreInstall("webstoreInstall")).toBeNull();
-    expect(parseWebstoreInstall({ k: "hello", id: DARK_READER })).toBeNull();
-    expect(parseWebstoreInstall({ k: "webstoreInstall", id: "../../etc/passwd" })).toBeNull();
-    expect(parseWebstoreInstall({ k: "webstoreInstall", id: DARK_READER.toUpperCase() })).toBeNull();
+    expect(parseWebstoreMessage(null)).toBeNull();
+    expect(parseWebstoreMessage("webstoreInstall")).toBeNull();
+    expect(parseWebstoreMessage({ k: "hello", id: DARK_READER })).toBeNull();
+    expect(parseWebstoreMessage({ k: "webstoreInstall", id: "../../etc/passwd" })).toBeNull();
+    expect(parseWebstoreMessage({ k: "webstoreInstall", id: DARK_READER.toUpperCase() })).toBeNull();
   });
 });
 
 describe("the injected source", () => {
   test("parses, and still carries the functions it embeds by source text", () => {
     const source = webstoreHookSource();
-    for (const name of ["webstoreListingId", "installControlSignals", "scoreInstallControl", "webstoreInstallMessage"]) {
+    for (const name of [
+      "webstoreListingId",
+      "installControlSignals",
+      "scoreInstallControl",
+      "webstoreInstallMessage",
+      "webstoreRemoveMessage",
+    ]) {
       expect(source).toContain(`function ${name}(`);
     }
     expect(() => new Function(source)).not.toThrow();
+  });
+
+  test("exposes the state receiver the broker evaluates into the world", () => {
+    expect(webstoreHookSource()).toContain("globalThis.__ndWebstoreState = function");
   });
 });
 
