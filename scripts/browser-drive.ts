@@ -67,6 +67,8 @@ const server = Bun.serve({
         const rows = Array.from({ length: 400 }, (_, i) => `<p id="p${i}">row ${i}</p>`).join("");
         return page("long", "Long page", `<h1>Long page</h1>${rows}`);
       }
+      case "/search":
+        return page("search", "Search results", "<h1>Search results</h1>");
       case "/setcookie":
         return new Response(
           '<!doctype html><meta charset="utf-8"><title>Cookie set</title><h1>Cookie set</h1>',
@@ -267,6 +269,9 @@ function launch(storeDir: string): Promise<AppHandle> {
       NB_TEST_JS: "document.getElementById('open').click()",
       // What the Debug menu's "Context: save image" hook downloads.
       NB_TEST_IMAGE: `${base}/image.png`,
+      // Searches land on the fixture: a live engine can answer the search tab
+      // with a captcha and stall the leg on network state.
+      NB_TEST_SEARCH_PREFIX: `${base}/search?q=`,
       // A D-Bus name, so no hyphens: GTK accepts an invalid application id and
       // then degrades silently.
       ND_APP_ID: "dev.nativebrowser.browser",
@@ -695,6 +700,11 @@ try {
   await step("context menu: search the selection", () => app.click("menu-ctx-search-selection"));
   await waitRows(app, (r) => r.length === tabsBefore + 2, "a tab for the searched selection");
   const searchTab = (await tabRows(app))[tabsBefore + 1];
+  // Served by the fixture (NB_TEST_SEARCH_PREFIX), counted server-side like
+  // every other page here.
+  const searched = Date.now() + PATIENCE;
+  while (Date.now() < searched && !loads["search"]) await Bun.sleep(120);
+  if (!loads["search"]) fail("the search tab never reached the fixture's /search");
   console.log(
     `16. page context menu: ${menuLabels.length} app items (${JSON.stringify(menuLabels)}), ` +
       `open-link and search each opened a tab (last is ${JSON.stringify(searchTab?.title ?? "")}), ` +
