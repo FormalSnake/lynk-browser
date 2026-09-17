@@ -241,6 +241,11 @@ async function waitText(app: AppHandle, testId: string, check: (t: string) => bo
   return textMatching(app, testId, check, what, PATIENCE);
 }
 
+// "page-stack" is the overlay holding the webviews, not one of them.
+function isPage(testID: string | null | undefined): testID is string {
+  return !!testID && testID.startsWith("page-") && testID !== "page-stack";
+}
+
 /// The visible tab's webview, by ref. Every tab keeps a live view and only the
 /// active one is shown, so "the page the drive is looking at" is a tree lookup
 /// rather than a name the drive can compose.
@@ -248,7 +253,7 @@ async function shownPageRef(app: AppHandle): Promise<number> {
   const tree = await app.tree();
   let found: number | null = null;
   walk(tree.root, (n) => {
-    if (found === null && n.testID?.startsWith("page-") && n.visible) found = n.ref;
+    if (found === null && isPage(n.testID) && n.visible) found = n.ref;
   });
   if (found === null) fail("no visible webview in the tree");
   return found;
@@ -356,7 +361,7 @@ try {
   const tree = await app.tree();
   const pages: Record<string, boolean> = {};
   walk(tree.root, (n) => {
-    if (n.testID?.startsWith("page-")) pages[n.testID] = n.visible;
+    if (isPage(n.testID)) pages[n.testID] = n.visible;
   });
   const visible = Object.entries(pages).filter(([, v]) => v);
   if (visible.length !== 1) fail(`exactly one live webview should be visible, got ${JSON.stringify(pages)}`);
