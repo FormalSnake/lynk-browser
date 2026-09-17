@@ -1,6 +1,5 @@
 import {
   Spacing,
-  dialog,
   executeJavaScript,
   onJavaScriptResult,
   onToastButtonClicked,
@@ -10,11 +9,9 @@ import {
   sendCommand,
   setContextMenuItems,
   showToast,
-  useMountEffect,
   useRef,
   useState,
   useStoreValue,
-  webviewEngine,
 } from "@nativedesktop/react";
 import type {
   ContextMenuItem,
@@ -31,17 +28,6 @@ import type {
 // not re-export it, hence the direct react import.
 import { Activity } from "react";
 
-import { bridgeSurface } from "./extensions/bootstrap.ts";
-import { toNdAccelerator, type ExtensionHost } from "./extensions/host.ts";
-import { extensionScheme } from "./extensions/scheme.ts";
-import {
-  ExtensionActionButtons,
-  ExtensionBackgrounds,
-  ExtensionPermissionPrompt,
-  ExtensionStoreDialog,
-  ExtensionsManagerWindow,
-  useExtensionState,
-} from "./extensions/ui.tsx";
 import type { DownloadItem } from "./lib/downloads.ts";
 import { downloadDir, runDownload } from "./lib/downloads.ts";
 import { faviconFor, fetchFavicon, rememberFavicon } from "./lib/favicons.ts";
@@ -65,12 +51,6 @@ const DOWNLOADS_SHOWN = 6;
 
 const TEST_HOOKS = process.env.NB_TEST_HOOKS === "1";
 
-/// Menu labels for extension commands. The manifest description is the
-/// extension's own wording; the command name is the fallback when it has none.
-function commandLabel(extensionName: string, command: string, description: string): string {
-  return `${extensionName}: ${description || command}`;
-}
-
 /// The palette's own shape. @nativedesktop/react exports the widget but not
 /// this type, so it is declared structurally here.
 interface PaletteItem {
@@ -93,6 +73,8 @@ const COMMANDS: { id: string; title: string; hint: string; iconName: string }[] 
   { id: "zoom-in", title: "Zoom In", hint: "Ctrl++", iconName: "zoom-in-symbolic" },
   { id: "zoom-out", title: "Zoom Out", hint: "Ctrl+-", iconName: "zoom-out-symbolic" },
   { id: "zoom-reset", title: "Reset Zoom", hint: "Ctrl+0", iconName: "zoom-original-symbolic" },
+  { id: "extensions", title: "Extensions", hint: "chrome://extensions", iconName: "application-x-addon-symbolic" },
+  { id: "webstore", title: "Chrome Web Store", hint: "chromewebstore.google.com", iconName: "web-browser-symbolic" },
 ];
 
 const ZOOM_MIN = 0.5;
@@ -194,42 +176,19 @@ export interface AppProps {
   initialHistory: Visit[];
   initialWidth: number;
   initialHeight: number;
-  extensions: ExtensionHost;
 }
 
-export function App({ initialHistory, initialWidth, initialHeight, extensions }: AppProps): React.ReactNode {
+export function App({ initialHistory, initialWidth, initialHeight }: AppProps): React.ReactNode {
   const state = useStoreValue(session);
   const { tabs, activeId } = state;
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0]!;
 
   const [runtime, setRuntime] = useState<Record<string, Runtime>>({});
-  // A tab's webview is created with no URL and navigates one render later, once
-  // its content scripts are registered: a user script added after a load has
-  // begun never sees document_start.
+  // A tab's webview is created with no URL and navigates one render later: a
+  // background tab mounted straight into a hidden Activity never attaches its
+  // ref, so it "arms" visibly for one frame first (see the arming comment
+  // below).
   const [armedTabs, setArmedTabs] = useState<Record<string, boolean>>({});
-  const [storeDialogOpen, setStoreDialogOpen] = useState(false);
-  // WebKit freezes its scheme handlers the moment the first <webview> exists,
-  // and registering one needs a live host connection, so no webview may mount
-  // until this resolves.
-  const [schemeReady, setSchemeReady] = useState(false);
-  const { views: extensionViews } = useExtensionState(extensions);
-  // A content script that connects before its extension's background page can
-  // answer gets one reply, the wrong one, and never asks again. Chrome starts
-  // the background first by construction; here the tabs wait for it.
-  const extensionsReady = extensions.backgroundsReady();
-
-  useMountEffect(() => {
-    const scheme = extensionScheme();
-    webviewEngine
-      // Chrome's extension origins are secure contexts and CORS-enabled: an
-      // extension page that uses crypto.subtle or IndexedDB, or fetches its own
-      // resources from a content script's world, depends on both. GTK honours
-      // the flags; AppKit has no public API for them (documented asymmetry);
-      // Chromium takes them from ND_CEF_SCHEMES before it initializes.
-      .registerScheme(scheme, { corsEnabled: true, secure: true })
-      .catch((error: Error) => console.error(`[nativebrowser] ${scheme}:// unavailable: ${error.message}`))
-      .finally(() => setSchemeReady(true));
-  });
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Two halves of one field. `paletteSeed` is the controlled `query` prop and
   // only ever changes when the app deliberately seeds or clears it; echoing
@@ -274,25 +233,9 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
     setRuntime((r) => ({ ...r, [id]: { ...(r[id] ?? IDLE), ...part } }));
   const view = (id: string): NdNodeRef<"webview"> | null => views.current.get(id) ?? null;
 
-  // The broker has no view of the React tree, so it gets the tab list and the
-  // four tab operations it can trigger. setTabs only emits when something
-  // actually differs, which is what makes calling it per render safe.
-  extensions.setTabs(tabs.map((t) => ({ id: t.id, url: t.url, title: t.title, active: t.id === active.id })));
-  extensions.appHooks = {
-    openTab: (url, background) => openTab(url, background),
-    closeTab: (id) => closeTab(id),
-    reloadTab: (id) => {
-      const node = view(id);
-      if (node) sendCommand(node, "reload");
-    },
-    updateTab: (id, props) => {
-      if (props.url) navigate(id, props.url);
-      if (props.active) selectTab(id);
-    },
-  };
-  // Same rule, same reason: an extension registering a menu, a tab navigating
-  // or a new search engine all change what a right-click should show, and all
-  // three land as a render. The push is skipped when the tree is unchanged.
+  // A tab navigating or a new search engine both change what a right-click
+  // should show, and both land as a render. The push is skipped when the tree
+  // is unchanged.
   syncContextMenus();
 
   function refreshHistory(): void {
@@ -391,16 +334,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
     committed.current.set(id, url);
     setTabUrl(id, url);
     applyZoom(id, url);
-    extensions.notifyNavigated(id, url);
     void recordVisit(url, "").then(refreshHistory);
-  }
-
-  /// A load that stopped, at whatever address it stopped on. Anything that has
-  /// to re-navigate a tab belongs here rather than in `onNavigated`: that one
-  /// reports the address the engine is still fetching, so acting on it cancels
-  /// the fetch it is reporting.
-  function onLoadSettled(id: string): void {
-    extensions.notifyLoadSettled(id, committed.current.get(id) ?? "");
   }
 
   function onTitled(id: string, title: string): void {
@@ -471,8 +405,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
   /// on top, because they act on the browser rather than on the page: a tab,
   /// this app's downloads, the search engine the user picked, and devtools.
   /// Inspect Element is app-provided because Chromium's default menu carries
-  /// no devtools entry; WebKit shows its own too, so the item is harmlessly
-  /// doubled there.
+  /// no devtools entry.
   function appContextMenuItems(): ContextMenuItem[] {
     return [
       { id: "nb-open-link", label: "Open Link in New Tab", contexts: ["link"] },
@@ -483,16 +416,14 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
     ];
   }
 
-  /// Pushes each tab's menu to its own view: the app's items plus whatever the
-  /// enabled extensions have registered for THAT tab's URL. Sent only when the
-  /// tree actually changes, which is what makes calling it per render safe (the
-  /// `setTabs` idiom above).
+  /// Pushes each tab's menu to its own view. Sent only when the tree actually
+  /// changes, which is what makes calling it per render safe.
   function syncContextMenus(only?: string): void {
     for (const tab of tabs) {
       if (only !== undefined && tab.id !== only) continue;
       const node = views.current.get(tab.id);
       if (!node) continue;
-      const items = [...appContextMenuItems(), ...extensions.contextMenuItemsFor(tab.id)];
+      const items = appContextMenuItems();
       const shape = JSON.stringify(items);
       // Keyed on the widget as well as the tree: a remounted view (Try Again
       // bumps the webview's key) starts with no items of its own.
@@ -504,10 +435,8 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
     }
   }
 
-  /// An item the user chose in a page's context menu. Extension items are the
-  /// broker's; the rest are the three above.
+  /// An item the user chose in a page's context menu: one of the three above.
   function onContextMenuItem(tabId: string, click: ContextMenuItemClick): void {
-    if (extensions.handleContextMenuClick(tabId, click)) return;
     switch (click.id) {
       case "nb-open-link":
         if (click.linkUrl) openTab(click.linkUrl, true);
@@ -524,24 +453,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
         if (click.imageUrl) startDownload(click.imageUrl);
         return;
       case "nb-search-selection":
-        // WebKitGTK's hit test reports THAT there is a selection but never its
-        // text, so on that backend the page is asked for it.
-        if (click.selectionText) {
-          openTab(toUrl(click.selectionText) ?? "", true);
-          return;
-        }
-        {
-          const node = view(tabId);
-          if (!node) return;
-          void executeJavaScript(node, "String(window.getSelection())")
-            .then((raw) => {
-              // The engines serialize the result as JSON; a string comes back
-              // quoted, and an older host may answer it raw.
-              const text = raw.startsWith('"') ? (JSON.parse(raw) as string) : raw;
-              if (text.trim()) openTab(toUrl(text) ?? "", true);
-            })
-            .catch(() => {});
-        }
+        if (click.selectionText) openTab(toUrl(click.selectionText) ?? "", true);
         return;
       default:
         return;
@@ -587,29 +499,6 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
       },
     );
   }
-
-  function reportInstallFailure(reason: string): void {
-    if (toast.current) void showToast(toast.current, { title: `Unable to add the extension: ${reason}` });
-  }
-
-  /// The two "Install from…" entries are the same flow with a different picker;
-  /// only on Add does anything of the extension run.
-  function stageFrom(options: { directories: boolean }): void {
-    void dialog
-      .openFile({
-        title: options.directories ? "Choose an extension folder" : "Choose an extension file",
-        directories: options.directories,
-        filters: options.directories ? undefined : [{ name: "Extensions", extensions: ["crx", "zip"] }],
-      })
-      .then((paths) => (paths[0] ? extensions.stage(paths[0]) : null))
-      .catch((error: Error) => reportInstallFailure(error.message));
-  }
-
-  const managerActions = {
-    installFromFile: () => stageFrom({ directories: false }),
-    installFromFolder: () => stageFrom({ directories: true }),
-    installFromStore: () => setStoreDialogOpen(true),
-  };
 
   function openPalette(seed: string): void {
     setPaletteSeed(seed);
@@ -668,6 +557,12 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
         return setZoom(zoomFor(active.url) - 0.1);
       case "zoom-reset":
         return setZoom(1);
+      case "extensions":
+        openTab("chrome://extensions");
+        return;
+      case "webstore":
+        openTab("https://chromewebstore.google.com");
+        return;
     }
   }
 
@@ -883,11 +778,11 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
               }}
             />
             {/* The menu itself belongs to the engine now, and no automation can
-                open one: GTK4 synthesises no pointer input, and WebKit's
-                `context-menu` signal never fires headlessly. These feed the
-                app's own handler the payload a real click would carry, which
-                is the half the app owns. What the menu CONTAINS is asserted
-                from the ND_APP CTXMENU trace instead. */}
+                open one: GTK4 synthesises no pointer input, and the engine's
+                own context menu never fires headlessly. These feed the app's
+                own handler the payload a real click would carry, which is the
+                half the app owns. What the menu CONTAINS is asserted from the
+                ND_APP CTXMENU trace instead. */}
             <menuitem
               testID="menu-ctx-open-link"
               label="Context: open link in new tab"
@@ -928,46 +823,11 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
         )}
         <menu label="Extensions" testID="menu-extensions">
           <menuitem
-            testID="menu-extensions-manage"
-            label="Manage Extensions"
-            accelerator="primary+shift+e"
-            onSelect={() => extensions.setManagerOpen(true)}
+            testID="menu-extensions-page"
+            label="Extensions"
+            onSelect={() => openTab("chrome://extensions")}
           />
-          <menuitem role="separator" testID="menu-extensions-sep" />
-          {extensionViews
-            .filter((v) => v.enabled)
-            .map((v) => (
-              <menuitem
-                key={v.id}
-                testID={`menu-ext-open-${v.id}`}
-                label={v.title}
-                onSelect={() => extensions.openAction(v.id)}
-              />
-            ))}
-          {/* Manifest commands, bound to the shortcut the extension asked for. */}
-          {extensionViews
-            .filter((v) => v.enabled)
-            .flatMap((v) =>
-              (extensions.extensions.get(v.id)?.manifest.commands ?? [])
-                .filter((c) => c.suggestedKey !== null)
-                .map((c) => (
-                  <menuitem
-                    key={`${v.id}-${c.name}`}
-                    testID={`menu-ext-cmd-${v.id}-${c.name}`}
-                    label={commandLabel(v.name, c.name, c.description)}
-                    accelerator={toNdAccelerator(c.suggestedKey!) ?? undefined}
-                    onSelect={() => extensions.runCommand(v.id, c.name)}
-                  />
-                )),
-            )}
-          {extensions.extensionMenuItems().map((item) => (
-            <menuitem
-              key={`${item.extensionId}-${item.id}`}
-              testID={`menu-ext-menu-${item.extensionId}-${item.id}`}
-              label={item.title}
-              onSelect={() => extensions.clickContextMenuItem(item.extensionId, item.id)}
-            />
-          ))}
+          <menuitem testID="menu-webstore" label="Chrome Web Store" onSelect={() => openTab("https://chromewebstore.google.com")} />
         </menu>
         <menu label="History" testID="menu-history">
           {history.length === 0 ? (
@@ -1210,8 +1070,6 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                   </box>
                 </popover>
               </box>
-
-              <ExtensionActionButtons host={extensions} />
             </headerbar>
 
             <box testID="content" orientation="vertical" style={{ hexpand: true, vexpand: true }}>
@@ -1289,7 +1147,7 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
               <overlay testID="page-stack" style={{ hexpand: true, vexpand: true }}>
                 <box orientation="vertical" style={{ hexpand: true, vexpand: true }}>
                   {tabs
-                    .filter((t) => t.url !== "" && schemeReady)
+                    .filter((t) => t.url !== "")
                     .map((t) => {
                       const state = rt(t.id);
                       const shown = t.id === active.id && state.error === null;
@@ -1309,34 +1167,17 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                             ref={(node) => {
                               views.current.set(t.id, node as NdNodeRef<"webview"> | null);
                               if (!node) return;
-                              extensions.armTabView(t.id, node as NdNodeRef<"webview">);
                               // The view exists now, so its menu can be pushed; the
                               // render-time sync could only skip it.
                               syncContextMenus(t.id);
                               setArmedTabs((a) => (a[t.id] ? a : { ...a, [t.id]: true }));
                             }}
-                            url={armedTabs[t.id] && extensionsReady ? t.url : ""}
+                            url={armedTabs[t.id] ? t.url : ""}
                             testID={`page-${t.id}`}
                             style={{ hexpand: true, vexpand: true }}
-                            onScriptMessage={(e) => {
-                              // The handler NAME says who sent this, not the world:
-                              // a name is what both engines route on, and a tab
-                              // with two extensions in it has one per world.
-                              const message = e.data as { name: string; world: string; body: unknown };
-                              const extensionId = bridgeSurface(message.name);
-                              if (!extensionId) return;
-                              extensions.handleScriptMessage({ kind: "content", tabId: t.id, extensionId }, message.body);
-                            }}
-                            onSchemeRequest={(e) => {
-                              const node = view(t.id);
-                              if (node) extensions.serveScheme(node, e.data as { id: string; url: string });
-                            }}
                             onNavigate={(e) => onNavigated(t.id, e.text)}
                             onTitleChanged={(e) => onTitled(t.id, e.text)}
-                            onLoadingChanged={(e) => {
-                              patch(t.id, { loading: e.checked });
-                              if (!e.checked) onLoadSettled(t.id);
-                            }}
+                            onLoadingChanged={(e) => patch(t.id, { loading: e.checked })}
                             onLoadProgress={(e) => patch(t.id, { progress: e.value })}
                             onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
                             onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
@@ -1413,21 +1254,6 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
                 )}
               </overlay>
 
-              {/* Background pages live in the main window so Activity can keep
-                  them running while they stay invisible. */}
-              {schemeReady && <ExtensionBackgrounds host={extensions} />}
-
-              {/* In-window dialogs present on their tree parent's window, so
-                  the install prompts live inside the main window rather than
-                  beside it. They attach as overlay children and take no
-                  layout space in this box. */}
-              <ExtensionPermissionPrompt host={extensions} />
-              <ExtensionStoreDialog
-                host={extensions}
-                open={storeDialogOpen}
-                onClose={() => setStoreDialogOpen(false)}
-                onFailure={reportInstallFailure}
-              />
             </box>
           </toolbarview>
         </splitview>
@@ -1435,17 +1261,14 @@ export function App({ initialHistory, initialWidth, initialHeight, extensions }:
     </window>
 
     {settingsOpen && <SettingsWindow onClose={() => setSettingsOpen(false)} />}
-    {privateOpen && schemeReady && (
+    {privateOpen && (
       <PrivateWindow
         onClose={() => setPrivateOpen(false)}
         onSettings={() => setSettingsOpen(true)}
-        onExtensions={() => extensions.setManagerOpen(true)}
         onDownloads={() => setDownloadsOpen(true)}
         onDownload={startDownload}
       />
     )}
-
-    <ExtensionsManagerWindow host={extensions} actions={managerActions} />
     </>
   );
 }

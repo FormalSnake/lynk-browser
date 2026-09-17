@@ -3,8 +3,8 @@
 // opens on a real right-click and carries the app's items merged into it.
 //
 // This is the ONLY backend where the menu itself is observable. GTK4 removed
-// app-constructible input events, so no drive can open a WebKitGTK menu; there
-// the proof is the command round trip (`ND_WEBVIEW_TRACE`) plus the unit-tested
+// app-constructible input events, so no drive can open the menu there; the
+// proof is the command round trip (`ND_WEBVIEW_TRACE`) plus the unit-tested
 // matching in the framework's `src/gtk/context_menu.zig`.
 //
 //   bun scripts/mac-context-menu.ts
@@ -67,7 +67,7 @@ async function openMenu(ref: number, what: string): Promise<NdshotWindow[]> {
     await app.keys("escape").catch(() => {});
     await Bun.sleep(600);
   }
-  return fail(`${what}: WebKit never showed a context menu`);
+  return fail(`${what}: the engine never showed a context menu`);
 }
 
 const app = await launchApp({
@@ -75,8 +75,6 @@ const app = await launchApp({
   backend: "appkit",
   cwd: ROOT,
   env: { NB_STORE_DIR: PROFILE, NB_TEST_HOOKS: "1", ND_APP_ID: "dev.nativebrowser.macctxmenu" },
-  // The folder picker answers with the fixture extension, for the second half.
-  dialogScript: { "dialog.openFile": [[`${ROOT}/fixtures/pair-probe`]] },
   readyTimeoutMs: PATIENCE,
   rpcTimeoutMs: PATIENCE,
   onStderr: (line) => {
@@ -89,7 +87,7 @@ try {
   await Bun.sleep(1500);
   const page = await app.mustFind("page-t1");
   // The menu is a tracking loop in the app process: it opens a window of its
-  // own, which is what tells us WebKit answered the click at all.
+  // own, which is what tells us the engine answered the click at all.
   const opened = await step("right-click inside the page", () => openMenu(page.ref, "first right-click"));
   console.log(`menu windows: ${JSON.stringify(opened.map((w) => [w.windowID, w.width, w.height]))}`);
 
@@ -101,7 +99,7 @@ try {
   // Choosing one of the app's items, from the keyboard: NSMenu's tracking loop
   // pulls from the same event queue the automation posts into. The app's items
   // are the LAST two, so arrowing up twice from nothing selected lands on
-  // "Open Link in New Tab" whatever WebKit put above it.
+  // "Open Link in New Tab" whatever the engine put above it.
   const tabsBefore = ((await app.mustFind("tab-list")).rows ?? []).length;
   // The menu's tracking loop needs a beat between posted events: back to back,
   // the first arrow can land before the loop starts pulling from the queue.
@@ -127,28 +125,6 @@ try {
   }
   const titles = ((await app.mustFind("tab-list")).rows ?? []).map((r) => r.title);
   console.log(`the chosen item opened a tab: ${JSON.stringify(titles)}`);
-
-  // Second half: an extension's items in the SAME menu. Pair Probe registers a
-  // parent with two children and a link-only item, so this is where the native
-  // submenu shows up.
-  await step("open the extensions manager", () => app.click("menu-extensions-manage"));
-  await app.waitFor({ testId: "ext-manager-add-folder", state: "present" }, { timeoutMs: PATIENCE });
-  await step("add the fixture extension", () => app.click("ext-manager-add-folder"));
-  await app.waitFor({ testId: "ext-prompt-add", state: "present" }, { timeoutMs: PATIENCE });
-  await step("accept the permissions", () => app.click("ext-prompt-add"));
-  await Bun.sleep(2500);
-  await step("close the manager window", () => app.keys("cmd+w"));
-  await Bun.sleep(1000);
-
-  await step("select the fixture tab", () => app.click("menu-tab-0"));
-  await Bun.sleep(500);
-  const withExtension = await app.mustFind("page-t1");
-  const secondMenus = await step("right-click again", () => openMenu(withExtension.ref, "second right-click"));
-  for (const window of secondMenus) {
-    const out = ndshotCapture(window.windowID, `appkit-context-menu-extension-${window.windowID}`);
-    console.log(`captured ${out} (${window.width}x${window.height})`);
-  }
-  await app.keys("escape");
   console.log("NB_MAC_CTXMENU_OK");
 } catch (e) {
   console.error(`drive failed: ${(e as Error).message}`);

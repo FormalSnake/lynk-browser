@@ -2,8 +2,6 @@ import { mkdirSync } from "node:fs";
 import { openDatabase, type SqliteDatabase } from "@nativedesktop/data";
 import { ensureAppDataDir } from "@nativedesktop/react";
 
-import { CHROMIUM_SCHEME, WEBKIT_SCHEME, extensionScheme } from "../extensions/scheme.ts";
-
 export interface Visit {
   url: string;
   title: string;
@@ -19,17 +17,6 @@ export async function openHistory(): Promise<void> {
   await db.mutate(
     "CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', ts INTEGER NOT NULL)",
   );
-  // An extension page recorded under the other engine's scheme is unloadable
-  // here, and the palette offers history rows to navigate to.
-  const scheme = extensionScheme();
-  for (const other of [WEBKIT_SCHEME, CHROMIUM_SCHEME]) {
-    if (other === scheme) continue;
-    await db.mutate("UPDATE visits SET url = ? || substr(url, ?) WHERE url LIKE ?", [
-      `${scheme}://`,
-      other.length + 4,
-      `${other}://%`,
-    ]);
-  }
 }
 
 export async function recordVisit(url: string, title: string): Promise<void> {

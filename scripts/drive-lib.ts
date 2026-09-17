@@ -9,21 +9,6 @@ import { resolve } from "node:path";
 
 import type { AppHandle, JsonNode } from "@nativedesktop/test";
 
-import { CHROMIUM_SCHEME } from "../src/extensions/scheme.ts";
-
-/// Whether the views under test are Chromium's rather than the system engine's.
-/// The env var the host itself reads, so a drive and the engine can never
-/// disagree about which one is running.
-export const CHROMIUM_ENGINE = process.env.ND_WEBVIEW_ENGINE === "chromium";
-
-/// What the HOST process needs before it initializes, so every CEF child
-/// inherits it. A custom scheme is only standard, secure and CORS-enabled if it
-/// was declared during on_register_custom_schemes, which runs before any app
-/// code; the app's own registerScheme call installs the factory afterwards.
-export const ENGINE_ENV: Record<string, string> = CHROMIUM_ENGINE
-  ? { ND_CEF_SCHEMES: CHROMIUM_SCHEME }
-  : {};
-
 /** Where every drive's captures land. The app has one screenshot directory. */
 export const SHOTS = resolve(import.meta.dir, "../screenshots");
 

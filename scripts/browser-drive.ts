@@ -9,8 +9,6 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { launchApp, type AppHandle, type JsonNode } from "@nativedesktop/test";
 import {
   SHOTS,
-  CHROMIUM_ENGINE,
-  ENGINE_ENV,
   fail,
   paletteDriver,
   shoot,
@@ -87,8 +85,9 @@ const server = Bun.serve({
         );
       }
       case "/popup":
-        // The link is clicked from the app side (see NB_TEST_JS below): WebKit
-        // blocks a gesture-less target=_blank click made by the page itself.
+        // The link is clicked from the app side (see NB_TEST_JS below): the
+        // engine blocks a gesture-less target=_blank click made by the page
+        // itself.
         return page("popup", "Popup page", '<a id="open" href="/c" target="_blank">open c</a>');
       case "/image.png":
         // 1x1 PNG, so "Save Image" has something real to fetch.
@@ -261,7 +260,6 @@ function launch(storeDir: string): Promise<AppHandle> {
   return launchApp({
     entry: "src/main.tsx",
     env: {
-      ...ENGINE_ENV,
       NB_STORE_DIR: storeDir,
       NB_DOWNLOAD_DIR: DOWNLOADS,
       XDG_DATA_HOME: DATA_HOME,
@@ -444,11 +442,11 @@ try {
   await step("the find bar goes away", () => app.waitFor({ testId: "find-bar", state: "gone" }, { timeoutMs: PATIENCE }));
   console.log(`12. find in page: "row 399" -> ${JSON.stringify(counted)}, absent text -> ${JSON.stringify(missing)}`);
 
-  // Acceptance 4 — target=_blank opens a background tab. GTK automation cannot deliver a
-  //    click into page content, and WebKit refuses a gesture-less popup, so the
-  //    click is issued through the app's NB_TEST_HOOKS-only Debug menu, which
-  //    runs it via the webview's executeJavaScript (that path does carry a user
-  //    gesture).
+  // Acceptance 4: target=_blank opens a background tab. GTK automation cannot
+  //    deliver a click into page content, and the engine refuses a
+  //    gesture-less popup, so the click is issued through the app's
+  //    NB_TEST_HOOKS-only Debug menu, which runs it via the webview's
+  //    executeJavaScript (that path does carry a user gesture).
   await goTo(app, `${base}/popup`);
   await waitRows(app, (r) => r[1]!.startsWith("Popup page"), "the popup fixture to load");
   await app.click("menu-run-test-js");
@@ -528,27 +526,16 @@ try {
   if (!echoed.includes(`cookie=${COOKIE_VALUE}`)) {
     fail(`the cookie did not survive the restart: /whoami read ${JSON.stringify(echoed)}`);
   }
-  // That path is WebKitGTK's own layout, so it is only an assertion on the
-  // system engine. WKWebView keeps cookies inside its website data store and
-  // Chromium keeps them in a jar of its own under the cache path, and on both
-  // the /whoami echo above is the whole proof: it is the cookie the engine
-  // actually sent, after a restart, which is what the step is about.
-  const jar = `${DATA_HOME}/nd-webview-profiles/default/cookies.sqlite`;
-  const onDisk = app.backend === "gtk" && !CHROMIUM_ENGINE;
-  if (onDisk && !existsSync(jar)) fail(`no cookie jar at ${jar}`);
-  console.log(
-    `13. the cookie survived a restart (${COOKIE_VALUE})${onDisk ? " and the jar is on disk" : ""}`,
-  );
+  console.log(`13. the cookie survived a restart (${COOKIE_VALUE})`);
   // Put the active tab back where the rest of the drive expects it: the steps
   // below assert against page A, and the round trip above borrowed this tab.
   await goTo(app, `${base}/a`);
   await waitUrl(app, "/a");
 
-  // Acceptance 6 — download. It runs with every tab from the rest of the drive
-  // still live: WebKitGTK's download-started lives on the shared network
-  // session, and the host used to fire it once per view and cancel the same
-  // WebKitDownload once per handler, which segfaulted. Fixed framework-side, so
-  // this is now the regression test for it.
+  // Acceptance 6: download. Runs with every tab from the rest of the drive
+  // still live, since a download used to fire once per live view and cancel
+  // the same handle once per handler, which crashed the host. Fixed
+  // framework-side; this is the regression test for it.
   await goTo(app, `${base}/file.txt`);
 
   const downloaded = `${DOWNLOADS}/fixture.txt`;
@@ -665,7 +652,7 @@ try {
   await shoot(app, "13-settings", (await app.find("settings-window"))?.ref);
   console.log(`15. settings: engine + restore persisted, palette now offers ${JSON.stringify(searchTitle)}`);
 
-  // Stage 6: the page context menu. The menu itself is WebKit's own now
+  // Stage 6: the page context menu. The menu itself is the engine's own
   // (`contextMenuMode` defaults to native), and no drive can open one: GTK4
   // synthesises no pointer input and the engine's menu wants a live
   // right-click. The two halves the app owns are asserted instead: the tree it

@@ -6,14 +6,14 @@
   "scripts": {
     "dev": "bash scripts/dev.sh",
     "compile": "babel src --out-dir dist --config-file ./babel.config.json --extensions .ts,.tsx --keep-file-extension",
-    "package": "nd package"
+    "package": "nd package",
+    "test": "bun test --pass-with-no-tests"
   },
   "dependencies": {
     "@nativedesktop/cli": "^0.4.1",
     "@nativedesktop/data": "^0.4.1",
     "@nativedesktop/native": "^0.4.1",
     "@nativedesktop/react": "^0.4.1",
-    "fflate": "^0.8.3",
     "react": "19.2.7"
   },
   "devDependencies": {

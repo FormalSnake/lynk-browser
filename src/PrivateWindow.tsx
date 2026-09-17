@@ -3,12 +3,11 @@
 // with "private" as a partition that never touches disk, so cookies, cache and
 // storage die with the window.
 //
-// It is deliberately plainer than the main window. Nothing here writes to the
-// session store or the history database, and nothing here mounts an extension
-// surface, because both would defeat the point. That means no command palette
-// (its ranking reads history) and no downloads list; the address field IS the
-// address bar, which is also the only place in the app that exercises
-// `<searchinput>` on GTK.
+// It is deliberately plainer than the main window: nothing here writes to the
+// session store or the history database, which is the whole point. That means
+// no command palette (its ranking reads history) and no downloads list; the
+// address field IS the address bar, which is also the only place in the app
+// that exercises `<searchinput>` on GTK.
 import { Spacing, sendCommand, setContextMenuItems, useRef, useState } from "@nativedesktop/react";
 import type {
   ContextMenuItemClick,
@@ -41,13 +40,12 @@ function blankTab(id: string): PrivateTab {
   return { id, url: "", title: "", canGoBack: false, canGoForward: false, loading: false };
 }
 
-/// What a private window cannot own itself. Settings, the extensions manager
-/// and the downloads list are one per app and live in the main window, so the
-/// private window's menu routes to them rather than growing copies.
+/// What a private window cannot own itself. Settings and the downloads list
+/// are one per app and live in the main window, so the private window's menu
+/// routes to them rather than growing copies.
 export interface PrivateWindowProps {
   onClose: () => void;
   onSettings: () => void;
-  onExtensions: () => void;
   onDownloads: () => void;
   onDownload: (url: string, suggested?: string) => void;
 }
@@ -55,7 +53,6 @@ export interface PrivateWindowProps {
 export function PrivateWindow({
   onClose,
   onSettings,
-  onExtensions,
   onDownloads,
   onDownload,
 }: PrivateWindowProps): React.ReactNode {
@@ -205,15 +202,14 @@ export function PrivateWindow({
             {/* The app's one primary menu button is packed into whichever
                 header bar the framework last registered, so a second window
                 gets none. This is the private window's own: without it
-                Settings, Extensions, Find and Downloads have no route from
-                here. The three that are one per app open in the main window;
+                Settings, Find and Downloads have no route from here. Settings
+                and Downloads are one per app and open in the main window;
                 Find is this window's own. */}
             <menubutton slot="end" testID="private-menu" iconName="open-menu-symbolic">
               <menuitem testID="private-menu-new-tab" label="New Tab" onSelect={() => openTab()} />
               <menuitem testID="private-menu-find" label="Find in Page" onSelect={() => setFindOpen(true)} />
               <menuitem role="separator" testID="private-menu-sep" />
               <menuitem testID="private-menu-downloads" label="Downloads" onSelect={onDownloads} />
-              <menuitem testID="private-menu-extensions" label="Manage Extensions" onSelect={onExtensions} />
               <menuitem testID="private-menu-settings" label="Settings" onSelect={onSettings} />
             </menubutton>
           </headerbar>
@@ -272,8 +268,7 @@ export function PrivateWindow({
                       views.current.set(t.id, node as NdNodeRef<"webview"> | null);
                       if (!node || menuedViews.current.has(node.id)) return;
                       menuedViews.current.add(node.id);
-                      // No extensions run in a private window, so this is the
-                      // whole menu the app adds to the engine's own.
+                      // The whole menu the app adds to the engine's own.
                       setContextMenuItems(node as NdNodeRef<"webview">, [
                         { id: "nb-open-link", label: "Open Link in New Tab", contexts: ["link"] },
                         { id: "nb-save-image", label: "Save Image", contexts: ["image"] },

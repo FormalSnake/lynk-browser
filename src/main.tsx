@@ -1,6 +1,5 @@
 import { render } from "@nativedesktop/react";
 import { App } from "./App.tsx";
-import { ExtensionHost } from "./extensions/host.ts";
 import { openFavicons } from "./lib/favicons.ts";
 import { openHistory, recentVisits } from "./lib/history.ts";
 import { normalize, session } from "./lib/session.ts";
@@ -28,17 +27,10 @@ openFavicons();
 await openHistory();
 const initialHistory = await recentVisits();
 
-// The extension scheme is registered from inside App: the call needs a host
-// connection, which only exists once render() has handshaken, and it must
-// still land before the first <webview> mounts.
-const extensions = new ExtensionHost();
-await extensions.load();
-
 await render(
   <App
     initialHistory={initialHistory}
     initialWidth={restored.windowWidth}
     initialHeight={restored.windowHeight}
-    extensions={extensions}
   />,
 );

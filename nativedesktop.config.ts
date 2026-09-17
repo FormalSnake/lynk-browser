@@ -23,14 +23,9 @@ export default defineConfig({
     },
   },
 
-  // Chromium on both platforms: the extension broker runs on CDP, and
-  // chrome-extension:// is Chromium's own, so extension pages are served from
-  // nbext:// (src/extensions/scheme.ts). A scheme is only standard, secure and
-  // CORS-enabled if every process was told about it before cef_initialize,
-  // which is why it is declared here rather than registered at runtime.
+  // Chromium on both platforms.
   webview: {
     engine: { mac: "chromium", linux: "chromium" },
-    cef: { schemes: ["nbext"] },
   },
 
   // Packaging (`nd package [mac|linux]`). Defaults: entry "src/main.tsx",

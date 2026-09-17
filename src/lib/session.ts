@@ -1,7 +1,5 @@
 import { createStore } from "@nativedesktop/react";
 
-import { retargetExtensionUrl } from "../extensions/scheme.ts";
-
 export interface SessionTab {
   id: string;
   url: string;
@@ -41,13 +39,11 @@ export const session = createStore<SessionState>({
 
 /// A restored session always has at least one tab to show. It also runs as the
 /// store's upgrade step: a session.json written before tabs could be pinned has
-/// no `pinned` field, and every read of it assumes a boolean, and a tab left on
-/// an extension page carries the scheme of the engine that wrote it.
+/// no `pinned` field, and every read of it assumes a boolean.
 export function normalize(state: SessionState): SessionState {
   const tabs = state.tabs.map((t) => ({
     ...t,
     pinned: typeof t.pinned === "boolean" ? t.pinned : false,
-    url: retargetExtensionUrl(t.url),
   }));
   const pinnedFirst = [...tabs.filter((t) => t.pinned), ...tabs.filter((t) => !t.pinned)];
   if (pinnedFirst.length === 0) {

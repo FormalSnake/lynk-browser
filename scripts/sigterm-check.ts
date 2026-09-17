@@ -7,11 +7,9 @@ import { readFileSync } from "node:fs";
 
 import { launchApp } from "@nativedesktop/test";
 
-import { ENGINE_ENV } from "./drive-lib.ts";
-
 const LOG = "/tmp/nb-sigterm-host.log";
 
-const app = await launchApp({ entry: "src/main.tsx", logPath: LOG, env: { ...ENGINE_ENV } });
+const app = await launchApp({ entry: "src/main.tsx", logPath: LOG });
 await app.windows();
 await app.restart();
 await app.windows();

@@ -1,13 +1,12 @@
 # NativeBrowser
 
 A sidebar browser built on [NativeDesktop](https://github.com/FormalSnake/NativeDesktop). Vertical
-tabs, native chrome, one live `<webview>` per tab: WebKitGTK on Linux, WKWebView on macOS. There is
-no HTML in the interface. Every button, row and dialog is a real GTK4 or AppKit widget.
+tabs, native chrome, one live `<webview>` per tab, Chromium on both platforms. There is no HTML in
+the interface: every button, row and dialog is a real GTK4 or AppKit widget.
 
-It also runs Chrome extensions. WebKit has no support for them, so the work happens in the Bun
-process: a broker implements the `chrome.*` surface itself and injects content scripts as WebKit
-user scripts. Dark Reader MV3 installs from a folder, darkens pages, and its settings survive a
-restart.
+Chrome extensions run through Chromium's own extension runtime rather than an app-level
+implementation. The Extensions menu and command palette open `chrome://extensions` and the Chrome
+Web Store as ordinary tabs; the app does not otherwise know an extension exists.
 
 ## Run it
 
@@ -20,17 +19,6 @@ bun run dev
 your platform and starts the app with hot reload. Force a backend with `nd dev --backend gtk` or
 `--backend appkit`.
 
-The wrapper exists for one reason: on Linux, WebKitGTK gets TLS from glib-networking, and without
-that GIO module every `https://` page fails with "TLS support is not enabled" while `http://` keeps
-working. When no backend is installed it re-enters the framework's flake dev shell, which ships one.
-Point `ND_FRAMEWORK_DIR` at the framework checkout if it does not sit beside this one.
-
-Extensions need fixtures, which are not in the repo:
-
-```bash
-bun scripts/fetch-fixtures.ts
-```
-
 ## Test it
 
 Every acceptance test is a drive: a script that launches the real app, talks to it over the
@@ -40,8 +28,6 @@ automation socket, and asserts on the real widget tree.
 |---|---|---|
 | `scripts/headless-smoke.sh` | `NB_STAGE0_OK` | The app boots and answers automation |
 | `scripts/headless.sh bun scripts/browser-drive.ts` | `NB_MVP_OK` | Tabs, palette, downloads, session restore, padlock, find, context menu, private window, settings |
-| `scripts/headless-extensions.sh` | `NB_DARKREADER_MV3_OK` | Install flow, content scripts, messaging, popup, restart, disable |
-| `NB_EXT_FIXTURE=mv2 scripts/headless-extensions.sh` | `NB_DARKREADER_OK` | The same legs against an MV2 build |
 
 `scripts/headless.sh` wraps a command in a headless weston compositor and pins the GTK theme, icon
 theme and fonts. Without that, a screenshot taken from a drive shows the developer's own desktop
@@ -50,6 +36,9 @@ out to be exactly that mistake. On macOS the drives run headful against the AppK
 `ND_BACKEND=appkit`.
 
 `ND_DRIVE_TIMEOUT_MS` scales every wait at once. Raise it when the machine is loaded.
+
+`bun test` runs the unit suite (`src/**/*.test.ts`); there are none checked in right now, so it
+passes trivially.
 
 ## What works
 
@@ -60,25 +49,6 @@ typed first, then open tabs, then history, then app commands.
 Beyond that: downloads, session restore, per-host zoom, find in page with a match count, a native
 page context menu, a TLS padlock, a private window on an ephemeral profile, and a settings window
 whose search engine, homepage and restore-on-launch all take effect.
-
-## Extension support
-
-| Area | State |
-|---|---|
-| MV3 (service worker, `action`, `scripting`) | Works. Dark Reader MV3 is the acceptance gate |
-| MV2 (background page, `browserAction`, `tabs.executeScript`) | Works, except Dark Reader's per-site `addSite` command |
-| Install from an unpacked folder | Works, with a permission prompt before anything runs |
-| Install from a `.crx` or `.zip` | Works, CRX2 and CRX3 |
-| Install from a Chrome Web Store address | Works, through the store's own CRX endpoint |
-| `runtime`, `storage`, `tabs`, `scripting`, `i18n`, `alarms`, `commands`, `contextMenus`, `notifications`, `webNavigation`, `windows`, `permissions` | Implemented |
-| `declarativeNetRequest` | Absent on purpose, so feature detection fails correctly |
-| `content_security_policy` on extension pages | Not enforced. The `chrome.*` shim arrives as an injected user script and WebKitGTK applies the page's CSP to it, so serving the manifest policy switches the runtime off on the pages the policy governs |
-| `web_accessible_resources` | Parsed and used for CORS headers, not enforced as an access boundary |
-
-Extension pages, popups and background pages are all served over a `chrome-extension://` scheme
-registered with the engine, CORS-enabled and marked as a secure context on GTK. WebKit's Cocoa API
-exposes neither flag, so on macOS cross-origin reads work through response headers and a secure
-context is not available at all.
 
 ## Package it
 
@@ -99,7 +69,6 @@ to test the payload there.
 |---|---|
 | `src/App.tsx` | The browser window: sidebar, header bar, tabs, palette, find bar, context menu |
 | `src/PrivateWindow.tsx` | The private window and its ephemeral profile |
-| `src/extensions/` | The broker. `host.ts` is the API dispatch, `bootstrap.ts` is the injected `chrome.*` shim |
 | `src/lib/` | Session, history, downloads, favicons, settings, URL parsing |
 | `scripts/` | The drives and their headless wrappers |
 | `screenshots/` | Drive output. `screenshots/final/` is the reviewed set |
@@ -109,12 +78,6 @@ to test the payload there.
 - The page context menu is a popover anchored to the content pane, not to the click point. Neither
   backend exposes a point-anchored popup menu.
 - The find bar has no Escape binding, because the framework surfaces no key events to the app.
-- The action popup is a top-level window rather than a panel under its toolbar button, and it is
-  sized when it opens rather than following its content.
 - The GTK address display does not stretch across the header bar. AdwHeaderBar packs start
   children into a box that does not expand, so a hexpanding child cannot grow past its natural
   width.
-- The extension restore leg is red on GTK and green on AppKit: after a restart a restored tab
-  sometimes commits before its content scripts are registered, and comes back with an empty
-  isolated world. It reproduces against this repo's previous release too. `LEDGER.md` records
-  what has been ruled out.

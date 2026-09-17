@@ -4,10 +4,4 @@ LEDGER.md
 CLAUDE.md
 screenshots/
 *.png
-# The Dark Reader builds are downloaded (scripts/fetch-fixtures.ts), never
-# committed. The store-listing page and the pair-probe extension are
-# hand-written and have to travel.
-fixtures/*
-!fixtures/webstore-listing/
-!fixtures/pair-probe/
 progress/
