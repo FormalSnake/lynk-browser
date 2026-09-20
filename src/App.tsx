@@ -277,9 +277,6 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// Last context-menu tree sent to each tab's view, so an unchanged one is
   /// never re-sent.
   const sentMenus = useRef(new Map<string, string>());
-  /// Where the last context menu opened, per tab: Inspect Element needs the
-  /// coordinates, and the item-click payload does not carry them.
-  const lastMenuHit = useRef(new Map<string, { x: number; y: number }>());
   const toast = useRef<NdNodeRef<"toastoverlay">>(null);
   /// The find field the app has already put the caret in. An inline ref
   /// callback runs on every render, and focusing on each one would fight the
@@ -618,16 +615,13 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// The engine draws the menu: Back/Forward/Reload, Open Link and Copy Image
   /// are its own and always there. These are the things a browser has to add
   /// on top, because they act on the browser rather than on the page: a tab,
-  /// this app's downloads, the search engine the user picked, and devtools.
-  /// Inspect Element is app-provided because Chromium's default menu carries
-  /// no devtools entry.
+  /// this app's downloads and the search engine the user picked. Inspect is
+  /// Chromium's own item, which opens the docked inspector on the element.
   function appContextMenuItems(): ContextMenuItem[] {
     return [
       { id: "nb-open-link", label: "Open Link in New Tab", contexts: ["link"] },
       { id: "nb-save-image", label: "Save Image", contexts: ["image"] },
       { id: "nb-search-selection", label: `Search with ${engineOf(prefs.searchEngine).name}`, contexts: ["selection"] },
-      { type: "separator", contexts: ["all"] },
-      { id: "nb-inspect", label: "Inspect Element", contexts: ["all"] },
     ];
   }
 
@@ -656,14 +650,6 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
       case "nb-open-link":
         if (click.linkUrl) openTab(click.linkUrl, true);
         return;
-      case "nb-inspect": {
-        // The click payload carries no coordinates; the contextMenu event
-        // that preceded the menu does, and openDevTools starts inspecting
-        // the element under them.
-        const node = view(tabId);
-        if (node) sendCommand(node, "openDevTools", lastMenuHit.current.get(tabId) ?? {});
-        return;
-      }
       case "nb-save-image":
         if (click.imageUrl) startDownload(click.imageUrl);
         return;
@@ -1560,10 +1546,6 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                               setFind((f) =>
                                 r.done ? { ...f, found: r.matchFound } : { ...f, count: r.matchCount ?? null },
                               );
-                            }}
-                            onContextMenu={(e) => {
-                              const hit = e.data as { x: number; y: number };
-                              lastMenuHit.current.set(t.id, { x: hit.x, y: hit.y });
                             }}
                             onContextMenuItemClicked={(e) => onContextMenuItem(t.id, e.data as ContextMenuItemClick)}
                             onDownloadRequested={(e) => {
