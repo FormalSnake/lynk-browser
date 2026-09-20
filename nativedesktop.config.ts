@@ -26,6 +26,7 @@ export default defineConfig({
   // Chromium on both platforms.
   webview: {
     engine: { mac: "chromium", linux: "chromium" },
+    cef: { style: "chrome" },
   },
 
   // Packaging (`nd package [mac|linux]`). Defaults: entry "src/main.tsx",
