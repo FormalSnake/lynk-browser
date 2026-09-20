@@ -1,6 +1,11 @@
 import {
   Spacing,
   executeJavaScript,
+  installExtension,
+  listExtensionActions,
+  listExtensions,
+  onExtensionActions,
+  onExtensionsList,
   onJavaScriptResult,
   onToastButtonClicked,
   onToastDismissed,
@@ -16,6 +21,8 @@ import {
 import type {
   ContextMenuItem,
   ContextMenuItemClick,
+  ExtensionAction,
+  InstalledExtension,
   NdNodeRef,
   SourceTreeAction,
   SourceTreeNode,
@@ -30,6 +37,16 @@ import { Activity } from "react";
 
 import type { DownloadItem } from "./lib/downloads.ts";
 import { downloadDir, runDownload } from "./lib/downloads.ts";
+import {
+  clampPopup,
+  extensionRows,
+  pinnedRows,
+  togglePinned,
+  POPUP_DEFAULT_HEIGHT,
+  POPUP_DEFAULT_WIDTH,
+  POPUP_MIN,
+  type ExtensionRow,
+} from "./lib/extensions.ts";
 import { faviconFor, fetchFavicon, rememberFavicon } from "./lib/favicons.ts";
 import { recentVisits, recordTitle, recordVisit, searchHistory, type Visit } from "./lib/history.ts";
 import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
@@ -86,6 +103,10 @@ const ZOOM_MAX = 3;
 /// keeps enough width to read an address in, the rest keep enough for a
 /// favicon and a word. The close slot is reserved on every pill whether or not
 /// the pointer is on it.
+/// The extensions panel. Wide enough for a name beside its pin toggle, and
+/// fixed so the panel does not resize as extensions come and go.
+const EXTENSIONS_PANEL_WIDTH = 300;
+
 const PILL_ACTIVE_WIDTH = 260;
 const PILL_MIN_WIDTH = 96;
 const CLOSE_SLOT_WIDTH = 24;
@@ -231,6 +252,13 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// The pill the pointer is on, so its close button can appear. One id rather
   /// than a set, because the pointer is in one place.
   const [hoveredTab, setHoveredTab] = useState("");
+  /// The two halves of an extension row, each from its own framework call.
+  const [registry, setRegistry] = useState<InstalledExtension[]>([]);
+  const [extActions, setExtActions] = useState<ExtensionAction[]>([]);
+  const [extensionsOpen, setExtensionsOpen] = useState(false);
+  /// The action whose popup is open, "" for none.
+  const [popupId, setPopupId] = useState("");
+  const [popupSize, setPopupSize] = useState({ width: POPUP_DEFAULT_WIDTH, height: POPUP_DEFAULT_HEIGHT });
   const [privateOpen, setPrivateOpen] = useState(false);
   /// Bumped when a favicon lands. The cache lives outside React, so this is
   /// what tells the sidebar to re-read it.
@@ -260,6 +288,15 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// The compact address field the app has already put the caret in, guarded
   /// the same way and for the same reason as the find field above.
   const addressFocused = useRef(0);
+  /// The hidden `chrome://extensions` view. Chromium exposes its extension
+  /// registry to that page and nowhere else, so every list and every install
+  /// goes through this one rather than through a tab the user can navigate.
+  const extRegistry = useRef<NdNodeRef<"webview">>(null);
+  const registryArmed = useRef(0);
+  /// The open popup's view, and the id of the one whose window.close the app
+  /// has already hooked.
+  const popupView = useRef<NdNodeRef<"webview"> | null>(null);
+  const popupHooked = useRef(0);
   /// Download ids only have to be unique within a run, and a short one keeps
   /// the panel's row testIDs readable.
   const downloadSeq = useRef(0);
@@ -437,6 +474,143 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
     setFind((f) => ({ ...f, open: true, query: text, count: null }));
     if (text) findCommand("findStart", { text });
     else findCommand("findStop");
+  }
+
+  // ------------------------------------------------------ extensions ---
+
+  /// Both halves of the list, from the one view Chromium answers on. Called
+  /// where the registry can have changed: at first attach, when the panel is
+  /// opened, after the app's own install, and on `chromeDialog`, which is what
+  /// a Web Store install and Chrome's own "Remove …?" confirmation arrive as.
+  /// There is no push event for the registry, so those are the triggers.
+  function refreshExtensions(): void {
+    const node = extRegistry.current;
+    if (!node) return;
+    void listExtensions(node).then(setRegistry).catch(() => {});
+    void listExtensionActions(node).then(setExtActions).catch(() => {});
+  }
+
+  function openExtensionsList(): void {
+    refreshExtensions();
+    setExtensionsOpen(true);
+  }
+
+  function pinExtension(id: string): void {
+    settings.update((s) => ({ ...s, pinnedExtensions: togglePinned(s.pinnedExtensions, id) }));
+  }
+
+  /// A second click on the action that is already open closes it, which is
+  /// what Chrome's own toolbar button does.
+  function openExtensionPopup(id: string): void {
+    setExtensionsOpen(false);
+    if (popupId === id) {
+      setPopupId("");
+      return;
+    }
+    setPopupSize({ width: POPUP_DEFAULT_WIDTH, height: POPUP_DEFAULT_HEIGHT });
+    setPopupId(id);
+  }
+
+  function closeExtensionPopup(): void {
+    setPopupId("");
+  }
+
+  /// What the button says it will do. An extension with no popup cannot be
+  /// triggered at all here: there is no Chromium toolbar button for
+  /// `chrome.action.onClicked` to fire on.
+  function popupTooltip(row: ExtensionRow): string {
+    if (!row.enabled) return `${row.name} is turned off`;
+    return row.popupUrl ? row.name : `${row.name} has no popup`;
+  }
+
+  /// A popup page is not sized by its document here and does not close on blur,
+  /// so the app owns both: one eval after the load reads the size Chrome would
+  /// have used and routes the page's own window.close back through the script
+  /// channel registered on the view.
+  function fitPopup(node: NdNodeRef<"webview">, attempt = 0): void {
+    void executeJavaScript(
+      node,
+      // The BODY's own box, not the root's scroll extent: the root fills
+      // whatever view it is in, so measuring it would only ever report the
+      // size the app already chose. A popup that declares no size of its own
+      // reports the view's width and its content height, which is what Chrome
+      // lays one out at too.
+      `(() => {
+         window.close = () => window.webkit.messageHandlers.ndPopup.postMessage(1);
+         const b = document.body;
+         if (!b) return JSON.stringify([0, 0]);
+         const r = b.getBoundingClientRect();
+         const s = getComputedStyle(b);
+         const mx = parseFloat(s.marginLeft) + parseFloat(s.marginRight);
+         const my = parseFloat(s.marginTop) + parseFloat(s.marginBottom);
+         return JSON.stringify([Math.ceil(r.width + mx), Math.ceil(r.height + my)]);
+       })()`,
+    )
+      .then((size) => {
+        if (TEST_HOOKS) console.error(`ND_APP POPUPFIT attempt=${attempt} size=${JSON.stringify(size)}`);
+        const parsed = typeof size === "string" ? (JSON.parse(size) as number[]) : ((size ?? []) as unknown as number[]);
+        const [w, h] = parsed;
+        // A view created at a chrome-extension:// URL answers before its
+        // document exists, and there is no event that says "laid out". The
+        // retry is what turns the default size into the measured one.
+        if (!(Number(w) >= POPUP_MIN) && attempt < 6) {
+          setTimeout(() => fitPopup(node, attempt + 1), 400);
+          return;
+        }
+        setPopupSize(clampPopup(Number(w), Number(h)));
+      })
+      .catch((e: unknown) => {
+        if (TEST_HOOKS) console.error(`ND_APP POPUPFIT attempt=${attempt} failed=${String(e)}`);
+        if (attempt < 6) setTimeout(() => fitPopup(node, attempt + 1), 400);
+      });
+  }
+
+  function extensionPopup(row: ExtensionRow): React.ReactNode {
+    return (
+      <box
+        testID={`ext-popup-body-${row.id}`}
+        orientation="vertical"
+        style={{ minWidth: popupSize.width, minHeight: popupSize.height }}
+      >
+        {/* Created AT the extension URL, never navigated to it: Chromium
+            refuses a renderer-initiated navigation to a chrome-extension://
+            page, so the key remounts the view when another action is opened. */}
+        <webview
+          key={row.popupUrl}
+          ref={(node) => {
+            popupView.current = node as NdNodeRef<"webview"> | null;
+            if (!node || popupHooked.current === node.id) return;
+            popupHooked.current = node.id;
+            sendCommand(node as NdNodeRef<"webview">, "registerScriptMessage", { name: "ndPopup" });
+            fitPopup(node as NdNodeRef<"webview">);
+          }}
+          url={row.popupUrl}
+          testID={`ext-popup-view-${row.id}`}
+          style={{ hexpand: true, vexpand: true }}
+          onLoadingChanged={(e) => {
+            if (e.checked || !popupView.current) return;
+            fitPopup(popupView.current);
+          }}
+          onJavaScriptResult={onJavaScriptResult}
+          onScriptMessage={(e) => {
+            const message = e.data as { name?: string };
+            if (message.name === "ndPopup") closeExtensionPopup();
+          }}
+        />
+      </box>
+    );
+  }
+
+  /// Test-only: `launchApp` passes no argv, so a drive cannot hand the host a
+  /// `--load-extension`, and the Web Store needs the network. The app's own
+  /// install API is the one route left.
+  function installTestExtension(): void {
+    const node = extRegistry.current;
+    const dir = process.env.NB_TEST_EXT;
+    if (!node || !dir) return;
+    void installExtension(node, dir)
+      .then(() => refreshExtensions())
+      .catch(() => {});
   }
 
   // ------------------------------------------------------- context menu ---
@@ -624,6 +798,12 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   const recentDownloads = downloads.slice(0, DOWNLOADS_SHOWN);
   const shownUrl = displayUrl(active.url);
   const pageTitle = tabLabel(active);
+  const rows = extensionRows(registry, extActions);
+  const pinnedActions = pinnedRows(rows, prefs.pinnedExtensions);
+  /// An action opened from the panel rather than from a button of its own has
+  /// nowhere to hang, so its popup rides the puzzle piece.
+  const openAction = rows.find((r) => r.id === popupId) ?? null;
+  const unpinnedPopup = openAction && !prefs.pinnedExtensions.includes(openAction.id) ? openAction : null;
 
   void iconEpoch;
   // One line per tab: favicon and title, nothing else. A second line of host
@@ -1108,6 +1288,124 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                 />
               )}
 
+              {/* Chrome's extensions area: the pinned actions, then the puzzle
+                  piece that lists everything installed. Each pinned action is
+                  boxed with its own popover so the popup opens under the button
+                  that was clicked; an unpinned one opens under the puzzle. */}
+              {pinnedActions.map((row) => (
+                <box slot="end" key={row.id} testID={`ext-pin-${row.id}`} orientation="horizontal">
+                  <button
+                    testID={`ext-action-${row.id}`}
+                    iconData={row.iconData || undefined}
+                    iconName="application-x-addon-symbolic"
+                    tooltip={popupTooltip(row)}
+                    cssClasses={["flat"]}
+                    enabled={row.enabled && row.popupUrl !== ""}
+                    onClick={() => openExtensionPopup(row.id)}
+                  />
+                  <popover
+                    testID={`ext-popup-${row.id}`}
+                    open={popupId === row.id}
+                    position="bottom"
+                    onClosed={closeExtensionPopup}
+                  >
+                    {popupId === row.id ? extensionPopup(row) : <box orientation="horizontal" />}
+                  </popover>
+                </box>
+              ))}
+              <box slot="end" testID="extensions-anchor" orientation="horizontal">
+                <button
+                  testID="extensions-button"
+                  iconName="application-x-addon-symbolic"
+                  tooltip="Extensions"
+                  cssClasses={["flat"]}
+                  onClick={() => (extensionsOpen ? setExtensionsOpen(false) : openExtensionsList())}
+                />
+                <popover
+                  testID="extensions-popover"
+                  open={extensionsOpen}
+                  position="bottom"
+                  onClosed={() => setExtensionsOpen(false)}
+                >
+                  <box
+                    testID="extensions-panel"
+                    orientation="vertical"
+                    spacing={Spacing.sm}
+                    style={{ padding: Spacing.sm, minWidth: EXTENSIONS_PANEL_WIDTH }}
+                  >
+                    <label text="Extensions" cssClasses={["heading"]} style={{ halign: "start" }} />
+                    {rows.length === 0 ? (
+                      <label
+                        testID="extensions-empty"
+                        text="Extensions you install appear here."
+                        cssClasses={["dimmed"]}
+                        style={{ halign: "start" }}
+                      />
+                    ) : (
+                      rows.map((row) => (
+                        <box key={row.id} orientation="horizontal" spacing={Spacing.sm}>
+                          {/* The name IS the button: a row-wide target is
+                              what a pointer aims at, and the icon rides it
+                              rather than sitting beside it as decoration. */}
+                          <button
+                            testID={`ext-row-${row.id}`}
+                            label={row.name}
+                            iconData={row.iconData || undefined}
+                            iconName="application-x-addon-symbolic"
+                            labelAlign="start"
+                            ellipsize
+                            tooltip={popupTooltip(row)}
+                            cssClasses={["flat"]}
+                            enabled={row.enabled && row.popupUrl !== ""}
+                            style={{ hexpand: true }}
+                            onClick={() => openExtensionPopup(row.id)}
+                          />
+                          <togglebutton
+                            testID={`ext-pin-toggle-${row.id}`}
+                            iconName="view-pin-symbolic"
+                            tooltip={prefs.pinnedExtensions.includes(row.id) ? "Unpin from toolbar" : "Pin to toolbar"}
+                            active={prefs.pinnedExtensions.includes(row.id)}
+                            cssClasses={["flat"]}
+                            style={{ valign: "center" }}
+                            onToggled={() => pinExtension(row.id)}
+                          />
+                        </box>
+                      ))
+                    )}
+                    <button
+                      testID="extensions-manage"
+                      label="Manage Extensions"
+                      cssClasses={["flat"]}
+                      onClick={() => {
+                        setExtensionsOpen(false);
+                        openTab("chrome://extensions");
+                      }}
+                    />
+                    {/* Test-only: the drive has no other way in. `nd dev` and
+                        a packaged run both take extensions from the Web Store
+                        or the command line, and launchApp passes no argv. */}
+                    {TEST_HOOKS && (
+                      <button
+                        testID="extensions-install-test"
+                        label="Install the test extension"
+                        cssClasses={["flat"]}
+                        onClick={installTestExtension}
+                      />
+                    )}
+                  </box>
+                </popover>
+                {/* An unpinned action has no button of its own, so its popup
+                    hangs off the puzzle piece it was opened from. */}
+              <popover
+                testID="ext-popup-unpinned"
+                open={unpinnedPopup !== null}
+                position="bottom"
+                onClosed={closeExtensionPopup}
+              >
+                {unpinnedPopup ? extensionPopup(unpinnedPopup) : <box orientation="horizontal" />}
+              </popover>
+              </box>
+
               {/* A popover anchors on its TREE parent on both backends, and a
                   header bar's own handle never joins a view hierarchy, so the
                   button it hangs off has to be boxed. */}
@@ -1251,6 +1549,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                             onLoadFailed={(e) => patch(t.id, { error: e.data as { url: string; error: string } })}
                             onNewWindow={(e) => openTab(e.text, true)}
                             onJavaScriptResult={onJavaScriptResult}
+                            onChromeDialog={() => refreshExtensions()}
                             onFaviconChanged={(e) => onFavicon(t.url, e.data as { dataUrl?: string; iconUrl?: string })}
                             onSecurityChanged={(e) => patch(t.id, { security: securityOf(t.url, e.data) })}
                             onFindResult={(e) => {
@@ -1319,6 +1618,36 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                     style={{ valign: "start", hexpand: true }}
                   />
                 )}
+
+                {/* Chromium answers listExtensions and listExtensionActions on
+                    a view showing chrome://extensions and nowhere else, so the
+                    toolbar keeps one of its own. It is a floating layer of the
+                    overlay rather than a row, so it takes no layout, and it is
+                    where the app's own installs go too. */}
+                <box
+                  testID="extensions-registry"
+                  orientation="horizontal"
+                  style={{ halign: "start", valign: "end", minWidth: 1, minHeight: 1 }}
+                >
+                  <webview
+                    ref={(node) => {
+                      // Guarded by widget id and never reset: an inline ref
+                      // callback runs on every render, and a refresh that
+                      // re-renders would arm itself again for ever.
+                      const view = node as NdNodeRef<"webview"> | null;
+                      extRegistry.current = view;
+                      if (!view || registryArmed.current === view.id) return;
+                      registryArmed.current = view.id;
+                      refreshExtensions();
+                    }}
+                    url="chrome://extensions"
+                    testID="extensions-registry-view"
+                    style={{ minWidth: 1, minHeight: 1 }}
+                    onExtensionsList={onExtensionsList}
+                    onExtensionActions={onExtensionActions}
+                    onChromeDialog={() => refreshExtensions()}
+                  />
+                </box>
 
                 {/* Chrome's find bar: it floats over the top right of the page
                     rather than taking a row of layout, so opening it never

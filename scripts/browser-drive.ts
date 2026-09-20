@@ -6,6 +6,7 @@
 //
 // Run headless: scripts/headless.sh bun scripts/browser-drive.ts
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { resolve } from "node:path";
 import { launchApp, type AppHandle, type JsonNode } from "@nativedesktop/test";
 import {
   SHOTS,
@@ -176,6 +177,22 @@ async function clickRowAction(app: AppHandle, testId: string, action: string): P
   }
 }
 
+/// A click retried until the widget will take it. A popover's content is in
+/// the tree before the popover is up, and neither backend calls it actionable
+/// until it is, so "present" is not enough to act on.
+async function clickWhenReady(app: AppHandle, testId: string): Promise<void> {
+  const deadline = Date.now() + PATIENCE;
+  for (;;) {
+    try {
+      await app.click(testId);
+      return;
+    } catch (e) {
+      if (Date.now() > deadline) throw e;
+      await Bun.sleep(200);
+    }
+  }
+}
+
 /// Tab row testIDs, polled until they satisfy `check`. A row's title is
 /// whatever its page last called itself, and a page that redirects keeps
 /// changing it; the testID is the tab.
@@ -295,6 +312,9 @@ function launch(storeDir: string): Promise<AppHandle> {
       NB_DOWNLOAD_DIR: DOWNLOADS,
       XDG_DATA_HOME: DATA_HOME,
       NB_TEST_HOOKS: "1",
+      // The unpacked extension the drive installs through the app's own
+      // install API: launchApp passes no argv, so --load-extension is out.
+      NB_TEST_EXT: resolve(import.meta.dir, "../fixtures/nd-test-ext"),
       NB_TEST_JS: "document.getElementById('open').click()",
       // What the Debug menu's "Context: save image" hook downloads.
       NB_TEST_IMAGE: `${base}/image.png`,
@@ -831,6 +851,87 @@ try {
   const unpinned = (await tabRows(app)).map((r) => r.testID!);
   if (unpinned.length !== beforePin.length) fail(`unpinning changed the tab count: ${JSON.stringify(unpinned)}`);
   console.log(`17. pin sorts ${toPin.testID} under a Pinned heading and persists; unpin takes the headings away`);
+
+  // Extensions: the toolbar area Chrome has. The registry surface behind it
+  // (chrome://extensions, listExtensions, installExtension) is implemented by
+  // the GTK CEF backend only, so on AppKit the panel has nothing to list and
+  // the legs below have nothing to drive.
+  if (process.platform !== "linux") {
+    console.log("19. extensions: skipped, the framework answers the extension registry on GTK only");
+  } else {
+    // The app installs the fixture through its own install API, which is
+    // also the only route a drive has: launchApp passes no argv.
+    const extTabsBefore = (await tabRows(app)).length;
+    await step("open the extensions panel", () => app.click("extensions-button"));
+    await step("the panel presents", () =>
+      app.waitFor({ testId: "extensions-panel", state: "present" }, { timeoutMs: PATIENCE }),
+    );
+    if (!(await app.find("extensions-empty"))) fail("the panel should start on its empty state");
+
+    await step("install the test extension", () => clickWhenReady(app, "extensions-install-test"));
+    const extId = await step("the installed extension gets a row", async () => {
+      const deadline = Date.now() + PATIENCE;
+      let seen: string[] = [];
+      while (Date.now() < deadline) {
+        seen = [];
+        walk((await app.tree(mainWindow)).root, (n) => {
+          if (n.testID?.startsWith("ext-row-")) seen.push(n.testID.slice("ext-row-".length));
+        });
+        if (seen.length === 1) return seen[0]!;
+        await Bun.sleep(200);
+      }
+      return fail(`the panel lists ${JSON.stringify(seen)} after installing one extension`);
+    });
+    const extRow = await app.mustFind(`ext-row-${extId}`);
+    if (extRow.text !== "NB Test Extension") fail(`the row reads ${JSON.stringify(extRow.text)}`);
+    if (await app.find("extensions-empty")) fail("the panel still shows its empty state with one extension listed");
+
+    await step("pin it to the toolbar", () => clickWhenReady(app, `ext-pin-toggle-${extId}`));
+    await step("a toolbar button appears for it", () =>
+      app.waitFor({ testId: `ext-action-${extId}`, state: "present" }, { timeoutMs: PATIENCE }),
+    );
+    await Bun.sleep(600);
+    const pinnedOnDiskExt =
+      (JSON.parse(readFileSync(`${PROFILE}/settings.json`, "utf8")) as { data?: { pinnedExtensions?: string[] } })
+        .data?.pinnedExtensions ?? [];
+    if (JSON.stringify(pinnedOnDiskExt) !== JSON.stringify([extId])) {
+      fail(`the store holds ${JSON.stringify(pinnedOnDiskExt)} as pinned, want [${extId}]`);
+    }
+
+    await step("open the pinned action's popup", () => app.click(`ext-action-${extId}`));
+    await step("the popup page loads in the app's own view", () =>
+      app.waitFor({ testId: `ext-popup-view-${extId}`, urlContains: "popup.html" }, { timeoutMs: PATIENCE }),
+    );
+    // The popup is not sized by its document here, so the app measures it: the
+    // fixture's body is 260x180, well under the 360x520 it opens at.
+    const popupBox = await step("the popup fits the document", async () => {
+      const deadline = Date.now() + PATIENCE;
+      let box = { w: 0, h: 0 };
+      while (Date.now() < deadline) {
+        const g = (await app.mustFind(`ext-popup-body-${extId}`)).geometry;
+        box = { w: g?.w ?? 0, h: g?.h ?? 0 };
+        if (box.w > 0 && box.w < 360) return box;
+        await Bun.sleep(200);
+      }
+      return fail(`the popup is ${JSON.stringify(box)}, want it fitted under the 360x520 default`);
+    });
+    await step("a second click closes it", () => app.click(`ext-action-${extId}`));
+    await step("the popup view goes", () =>
+      app.waitFor({ testId: `ext-popup-view-${extId}`, state: "gone" }, { timeoutMs: PATIENCE }),
+    );
+
+    await step("open the panel again", () => app.click("extensions-button"));
+    await step("toggle the pin off", () => clickWhenReady(app, `ext-pin-toggle-${extId}`));
+    await step("the toolbar button goes with it", () =>
+      app.waitFor({ testId: `ext-action-${extId}`, state: "gone" }, { timeoutMs: PATIENCE }),
+    );
+    await step("Manage Extensions opens the page", () => clickWhenReady(app, "extensions-manage"));
+    await waitRows(app, (r) => r.length === extTabsBefore + 1, "a tab for chrome://extensions");
+    await waitUrl(app, "extensions");
+    await step("close it", () => app.click("menu-close-tab"));
+    await waitRows(app, (r) => r.length === extTabsBefore, "the tab count back where it started");
+    console.log(`19. extensions: ${extRow.text} installed, pinned, popup ${popupBox.w}x${popupBox.h}, unpinned`);
+  }
 
   // Compact is Safari's single row: the pills in the toolbar ARE the tab list
   // and the address bar, and nothing is drawn below it. The live pages must not

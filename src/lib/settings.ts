@@ -35,6 +35,10 @@ export interface SettingsState {
   homepage: string;
   restoreOnLaunch: boolean;
   layout: Layout;
+  /// Extension ids with a toolbar button of their own, in the order they were
+  /// pinned. An id that is no longer installed stays here: reinstalling the
+  /// extension is meant to bring its button back.
+  pinnedExtensions: string[];
 }
 
 export const DEFAULT_SETTINGS: SettingsState = {
@@ -42,6 +46,7 @@ export const DEFAULT_SETTINGS: SettingsState = {
   homepage: "",
   restoreOnLaunch: true,
   layout: "sidebar",
+  pinnedExtensions: [],
 };
 
 export const settings = createStore<SettingsState>({
@@ -59,5 +64,8 @@ export function normalizeSettings(state: SettingsState): SettingsState {
     ...DEFAULT_SETTINGS,
     ...state,
     layout: LAYOUTS.some((l) => l.id === state.layout) ? state.layout : DEFAULT_SETTINGS.layout,
+    pinnedExtensions: Array.isArray(state.pinnedExtensions)
+      ? [...new Set(state.pinnedExtensions.filter((id) => typeof id === "string" && id !== ""))]
+      : [],
   };
 }

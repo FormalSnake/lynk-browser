@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "NB Test Extension",
+  "version": "1.0",
+  "description": "Fixture for scripts/browser-drive.ts: an action with a popup, an options page and an icon.",
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "NB Test",
+    "default_icon": { "16": "icon16.png" }
+  },
+  "options_page": "options.html",
+  "icons": { "16": "icon16.png" },
+  "permissions": ["storage", "tabs", "contextMenus"],
+  "host_permissions": ["<all_urls>"]
+}
