@@ -196,6 +196,12 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   // `paletteQuery` is what the user actually typed, and only feeds ranking.
   const [paletteSeed, setPaletteSeed] = useState("");
   const [paletteQuery, setPaletteQuery] = useState("");
+  /// The palette widget's key. `query` is applied only when the value the host
+  /// is given changes, and the entry keeps whatever was typed into it after a
+  /// close, so re-seeding a string equal to the last one leaves that text in
+  /// the field. Bumping the key rebuilds the widget, which is the only way an
+  /// unchanged seed can still mean an empty field.
+  const [paletteEpoch, setPaletteEpoch] = useState(0);
   const [historyHits, setHistoryHits] = useState<Visit[]>([]);
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
@@ -501,14 +507,15 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   }
 
   function openPalette(seed: string): void {
+    // Ctrl+T seeds "" over a seed that is already "": nothing changes, nothing
+    // is sent, and the entry still holds the address the last tab was sent to.
+    if (seed === paletteSeed) setPaletteEpoch((n) => n + 1);
     setPaletteSeed(seed);
     setPaletteQuery(seed);
     void searchHistory(seed).then(setHistoryHits);
     setPaletteOpen(true);
   }
 
-  /// Clearing the seed on close is what lets the next open re-seed the same URL:
-  /// an unchanged prop would leave the last query sitting in the field.
   function closePalette(): void {
     setPaletteOpen(false);
     setPaletteSeed("");
@@ -1126,6 +1133,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
 
               {/* Presents over the active window wherever it is mounted. */}
               <commandpalette
+                key={paletteEpoch}
                 testID="palette"
                 open={paletteOpen}
                 placeholder="Search or enter address"

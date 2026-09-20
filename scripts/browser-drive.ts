@@ -396,6 +396,41 @@ try {
   if (loads.b !== baseline.b + 1) fail(`the palette Reload command did not reload page B, loads ${JSON.stringify(loads)}`);
   console.log("4. palette: seeded address row, tab switch and app command all ran");
 
+  // Owner report: a new tab's launcher has to come up EMPTY. `query` is a
+  // controlled prop the host applies only when its value changes, and the
+  // entry keeps whatever was last typed into it, so seeding "" over a seed
+  // that was already "" left the previous tab's address sitting in the field.
+  // getTree reports the palette's rows and never its text, so the field is
+  // read by typing one character into it and reading the result back.
+  const tabsBeforeLauncher = (await tabRows(app)).length;
+  await step("open a tab and send it somewhere by typing the address", async () => {
+    await app.click("menu-new-tab");
+    await waitRows(app, (r) => r.length === tabsBeforeLauncher + 1, "the first extra tab row");
+    await openPalette(app);
+    await typeQuery(app, `${base}/c`);
+    await app.setValue("palette", true);
+  });
+  await waitUrl(app, "/c");
+  await step("open a second tab on top of it", () => app.click("menu-new-tab"));
+  await waitRows(app, (r) => r.length === tabsBeforeLauncher + 2, "the second extra tab row");
+  await step("its launcher presents", () =>
+    app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE }),
+  );
+  const launcher = await step("read the launcher's field back", () => app.type("palette", "z"));
+  if (launcher.text !== "z") {
+    fail(`the new tab's launcher came up holding ${JSON.stringify(launcher.text.slice(0, -1))}`);
+  }
+  await step("clear the launcher", () => app.setValue("palette", ""));
+  await step("submit nothing, which closes it", () => app.setValue("palette", true));
+  await app.mustFind("new-tab-page");
+  await step("close both tabs this leg opened", async () => {
+    await app.click("menu-close-tab");
+    await waitRows(app, (r) => r.length === tabsBeforeLauncher + 1, "one extra tab left");
+    await app.click("menu-close-tab");
+  });
+  await waitRows(app, (r) => r.length === tabsBeforeLauncher, "the tab count back where it started");
+  console.log("4b. a new tab's launcher comes up empty after the last one was typed into");
+
   // Acceptance 2 (continued) — back/forward enable states track real history.
   await app.click("menu-tab-1");
   await waitUrl(app, "/b");
