@@ -81,6 +81,15 @@ const COMMANDS: { id: string; title: string; hint: string; iconName: string }[] 
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
 
+/// Compact tab pills. Every pill expands to an equal share of the row, so
+/// these are the floors below which a share cannot shrink: the active tab
+/// keeps enough width to read an address in, the rest keep enough for a
+/// favicon and a word. The close slot is reserved on every pill whether or not
+/// the pointer is on it.
+const PILL_ACTIVE_WIDTH = 260;
+const PILL_MIN_WIDTH = 96;
+const CLOSE_SLOT_WIDTH = 24;
+
 /// What the padlock says. `none` is not a verdict: it is the new-tab page and
 /// anything else that never had a chance to be encrypted, and warning there
 /// would spend the indicator's credibility on a non-event.
@@ -166,6 +175,12 @@ function downloadStatus(d: DownloadItem): string {
   return host ? `From ${host}` : "Saved";
 }
 
+/// What a tab calls itself wherever it is listed: the title its page reported,
+/// the address until it reports one, and "New Tab" until there is an address.
+function tabLabel(t: { title: string; url: string }): string {
+  return t.title || (t.url ? displayUrl(t.url) : "New Tab");
+}
+
 function findSummary(find: FindState): string {
   if (!find.query) return "";
   if (find.count !== null) return find.count === 1 ? "1 match" : `${find.count} matches`;
@@ -209,6 +224,13 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   const [history, setHistory] = useState<Visit[]>(initialHistory);
   const [find, setFind] = useState<FindState>(NO_FIND);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /// Compact draws the active tab as an editable address field while this is
+  /// set: the pill IS the address bar, so there is no second field to put the
+  /// caret in.
+  const [editingAddress, setEditingAddress] = useState(false);
+  /// The pill the pointer is on, so its close button can appear. One id rather
+  /// than a set, because the pointer is in one place.
+  const [hoveredTab, setHoveredTab] = useState("");
   const [privateOpen, setPrivateOpen] = useState(false);
   /// Bumped when a favicon lands. The cache lives outside React, so this is
   /// what tells the sidebar to re-read it.
@@ -235,6 +257,9 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// callback runs on every render, and focusing on each one would fight the
   /// user for the caret.
   const findFocused = useRef(0);
+  /// The compact address field the app has already put the caret in, guarded
+  /// the same way and for the same reason as the find field above.
+  const addressFocused = useRef(0);
   /// Download ids only have to be unique within a run, and a short one keeps
   /// the panel's row testIDs readable.
   const downloadSeq = useRef(0);
@@ -271,6 +296,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   }
 
   function closeTab(id: string): void {
+    setEditingAddress(false);
     const gone = tabs.find((t) => t.id === id);
     if (gone) closed.current.push({ url: gone.url, title: gone.title });
     views.current.delete(id);
@@ -312,6 +338,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   }
 
   function selectTab(id: string): void {
+    setEditingAddress(false);
     session.update((s) => (s.activeId === id ? s : { ...s, activeId: id }));
     applyZoom(id, tabs.find((t) => t.id === id)?.url ?? "");
   }
@@ -382,6 +409,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// leaves every tab's `<webview>` at the same place in the tree, so the live
   /// pages survive the switch instead of remounting.
   function setLayout(next: Layout): void {
+    setEditingAddress(false);
     settings.update((s) => (s.layout === next ? s : { ...s, layout: next }));
   }
 
@@ -533,10 +561,21 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// so one keystroke gets you from "new tab" to "typing an address".
   function newTab(): void {
     openTab("");
-    openPalette("");
+    // Compact has no palette to open over the page: its own pill becomes the
+    // field, which is where a new tab starts in Safari.
+    if (compact) setEditingAddress(true);
+    else openPalette("");
+  }
+
+  /// What Ctrl+L, the padlock and the new tab page all mean by "let me type an
+  /// address", which is a different widget in each layout.
+  function openAddress(): void {
+    if (compact) setEditingAddress(true);
+    else openPalette(active.url);
   }
 
   function commitQuery(raw: string): void {
+    setEditingAddress(false);
     closePalette();
     navigate(active.id, raw);
   }
@@ -584,7 +623,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   const compact = prefs.layout === "compact";
   const recentDownloads = downloads.slice(0, DOWNLOADS_SHOWN);
   const shownUrl = displayUrl(active.url);
-  const pageTitle = active.title || (active.url ? displayUrl(active.url) : "New Tab");
+  const pageTitle = tabLabel(active);
 
   void iconEpoch;
   // One line per tab: favicon and title, nothing else. A second line of host
@@ -593,7 +632,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   function tabNode(t: (typeof tabs)[number]): SourceTreeNode {
     return {
       id: t.id,
-      title: t.title || (t.url ? displayUrl(t.url) : "New Tab"),
+      title: tabLabel(t),
       // The site's own icon when it has been seen, the generic page glyph
       // until then. iconData wins over iconName when both are set.
       iconData: faviconFor(t.url),
@@ -688,7 +727,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
             testID="menu-address"
             label="Open Address Bar"
             accelerator="primary+l"
-            onSelect={() => openPalette(active.url)}
+            onSelect={openAddress}
           />
           <menuitem testID="menu-close-tab" label="Close Tab" accelerator="primary+w" onSelect={() => closeTab(active.id)} />
           <menuitem
@@ -757,7 +796,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
             <menuitem
               key={t.id}
               testID={`menu-tab-${i}`}
-              label={t.title || (t.url ? displayUrl(t.url) : "New Tab")}
+              label={tabLabel(t)}
               onSelect={() => selectTab(t.id)}
             />
           ))}
@@ -958,7 +997,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                 iconName={SECURITY_ICON[activeRt.security]}
                 tooltip={SECURITY_TOOLTIP[activeRt.security]}
                 cssClasses={["flat"]}
-                onClick={() => openPalette(active.url)}
+                onClick={openAddress}
               />
               {/* One address widget on both backends. The private window
                   proved a `<searchinput>` takes the header bar's whole free
@@ -971,28 +1010,92 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                   has no leading-icon prop on either backend, so putting the
                   security state inside the field would need a framework arm
                   (LEDGER). */}
-              <searchinput
-                slot="start"
-                testID="omnibox"
-                text={shownUrl}
-                placeholder="Search or Enter Address"
-                style={{ hexpand: true }}
-                onActivate={(e) => commitQuery(e.text)}
-              />
+              {!compact && (
+                <searchinput
+                  slot="start"
+                  testID="omnibox"
+                  text={shownUrl}
+                  placeholder="Search or Enter Address"
+                  style={{ hexpand: true }}
+                  onActivate={(e) => commitQuery(e.text)}
+                />
+              )}
 
-              {/* Compact has no sidebar, so the two things the column carried
-                  move here: the tab list and the way to add one. */}
+              {/* Compact is Safari's: one toolbar row, and the tabs in it ARE
+                  the address bar. Every pill takes an equal share of what is
+                  left after the buttons, the active one carries more of it,
+                  and clicking the active pill (or Ctrl+L) swaps it for the
+                  field. Nothing is drawn below this row. */}
               {compact && (
-                <menubutton slot="end" testID="tabs-menu" iconName="view-list-symbolic" tooltip="Tabs">
-                  {tabs.map((t, i) => (
-                    <menuitem
-                      key={t.id}
-                      testID={`tabs-menu-${i}`}
-                      label={t.title || (t.url ? displayUrl(t.url) : "New Tab")}
-                      onSelect={() => selectTab(t.id)}
-                    />
-                  ))}
-                </menubutton>
+                <box
+                  slot="start"
+                  testID="tab-strip"
+                  orientation="horizontal"
+                  spacing={Spacing.xs}
+                  style={{ hexpand: true }}
+                >
+                  {tabs.map((t) =>
+                    t.id === active.id && editingAddress ? (
+                      <searchinput
+                        key={t.id}
+                        ref={(node) => {
+                          if (!node) {
+                            addressFocused.current = 0;
+                            return;
+                          }
+                          if (addressFocused.current === node.id) return;
+                          addressFocused.current = node.id;
+                          sendCommand(node as NdNodeRef<"searchinput">, "focus");
+                        }}
+                        testID="omnibox"
+                        text={shownUrl}
+                        placeholder="Search or Enter Address"
+                        style={{ hexpand: true, minWidth: PILL_ACTIVE_WIDTH }}
+                        onActivate={(e) => commitQuery(e.text)}
+                      />
+                    ) : (
+                      <box
+                        key={t.id}
+                        testID={`tab-slot-${t.id}`}
+                        orientation="horizontal"
+                        style={{ hexpand: true }}
+                        onHoverChanged={(e) => setHoveredTab(e.checked ? t.id : "")}
+                      >
+                        <button
+                          testID={`tab-pill-${t.id}`}
+                          label={tabLabel(t)}
+                          iconData={faviconFor(t.url)}
+                          iconName="web-browser-symbolic"
+                          ellipsize
+                          tooltip={displayUrl(t.url) || "New Tab"}
+                          cssClasses={t.id === active.id ? ["pill", "raised"] : ["pill", "flat"]}
+                          style={{
+                            hexpand: true,
+                            minWidth: t.id === active.id ? PILL_ACTIVE_WIDTH : PILL_MIN_WIDTH,
+                          }}
+                          onClick={() => (t.id === active.id ? setEditingAddress(true) : selectTab(t.id))}
+                        />
+                        {/* The close button appears under the pointer, as it
+                            does in Safari. The slot it takes is reserved
+                            either way, so the row does not resize as the
+                            pointer crosses it. */}
+                        {hoveredTab === t.id ? (
+                          <button
+                            testID={`tab-close-${t.id}`}
+                            iconName="window-close-symbolic"
+                            tooltip={`Close ${tabLabel(t)}`}
+                            cssClasses={["flat", "circular"]}
+                            size="small"
+                            style={{ minWidth: CLOSE_SLOT_WIDTH, valign: "center" }}
+                            onClick={() => closeTab(t.id)}
+                          />
+                        ) : (
+                          <box orientation="horizontal" style={{ minWidth: CLOSE_SLOT_WIDTH }} />
+                        )}
+                      </box>
+                    ),
+                  )}
+                </box>
               )}
               {compact && (
                 <button
@@ -1202,7 +1305,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                         testID="new-tab-search"
                         label="Search or Enter Address"
                         cssClasses={["suggested-action", "pill"]}
-                        onClick={() => openPalette("")}
+                        onClick={openAddress}
                       />
                     </statuspage>
                   )}

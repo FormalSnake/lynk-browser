@@ -829,60 +829,65 @@ try {
   if (unpinned.length !== beforePin.length) fail(`unpinning changed the tab count: ${JSON.stringify(unpinned)}`);
   console.log(`17. pin sorts ${toPin.testID} under a Pinned heading and persists; unpin takes the headings away`);
 
-  // Compact drops the whole tab column and moves its two jobs into the one
-  // toolbar row. The live pages must not notice: the server's load counters are
-  // the proof that no `<webview>` was rebuilt on the way through, so they
-  // bracket each switch on its own.
+  // Compact is Safari's single row: the pills in the toolbar ARE the tab list
+  // and the address bar, and nothing is drawn below it. The live pages must not
+  // notice the switch, so the server's load counters bracket each one.
   const beforeCompact = (await tabRows(app)).map((r) => r.testID!);
+  const activeTabId = String((await app.mustFind("tab-list")).value ?? "");
+  const otherTabId = beforeCompact.map((id) => id.slice(4)).find((id) => id !== activeTabId)!;
   const activeBeforeCompact = await shownUrl(app);
   let loadsAt = await settledLoads();
   const insetBefore = await contentInset(app);
   if (insetBefore <= 0) fail(`the sidebar layout should inset the content, it starts at x=${insetBefore}`);
   await step("switch to the compact layout", () => app.click("menu-layout"));
   await step("the content reclaims the tab column's width", () => waitContentInset(app, (x) => x === 0));
-  await app.mustFind("tabs-menu");
+  await app.mustFind("tab-strip");
   await app.mustFind("header-new-tab");
-  await waitUrl(app, activeBeforeCompact);
+  if (await app.find("omnibox")) fail("compact draws no address bar of its own until a pill is clicked");
   const afterDrop = await settledLoads();
   if (loadsAt !== afterDrop) fail(`dropping the sidebar reloaded a page: ${loadsAt} -> ${afterDrop}`);
   await shoot(app, "18-compact", mainWindow);
 
-  // Owner report: the compact layout's tab list goes stale. It is the only tab
-  // UI this layout has, so everything the session does has to reach it.
-  const strip = async (check: (s: string[]) => boolean, what: string): Promise<string[]> => {
+  // Owner report: the compact tab list went stale. The strip is the only tab UI
+  // this layout has, so everything the session does has to reach it.
+  const pills = async (check: (p: string[]) => boolean, what: string): Promise<string[]> => {
     const deadline = Date.now() + PATIENCE;
     let seen: string[] = [];
     while (Date.now() < deadline) {
-      seen = await textsUnder(app, "tabs-menu-", mainWindow);
+      seen = await textsUnder(app, "tab-pill-", mainWindow);
       if (check(seen)) return seen;
       await Bun.sleep(150);
     }
-    return fail(`timed out waiting for ${what}; the compact tab list read ${JSON.stringify(seen)}`);
+    return fail(`timed out waiting for ${what}; the strip read ${JSON.stringify(seen)}`);
   };
-  await strip((s) => s.length === beforeCompact.length, "one compact row per open tab");
-  await step("open a tab from the compact layout", () => app.click("header-new-tab"));
-  // The row has to be there before the address is typed: the palette's submit
-  // handler carries the tab that was active when the app last rendered, and
-  // driving it before the new tab lands navigates the old one.
-  await strip((s) => s.length === beforeCompact.length + 1, "a compact row for the new tab");
-  await step("send the new tab to page C", async () => {
-    await openPalette(app);
-    await typeQuery(app, `${base}/c`);
-    await app.setValue("palette", true);
+  await pills((p) => p.length === beforeCompact.length, "one pill per open tab");
+
+  // The active pill IS the address field. Its value is the proof: the field
+  // cannot be submitted from a drive on GTK (the backend refuses key
+  // synthesis, -32003), so what it comes up holding is what can be asserted.
+  await step("click the active pill", () => app.click(`tab-pill-${activeTabId}`));
+  // "present", not "visible": a SearchInput packed into a header bar is not
+  // actionable by the tree's rule on either backend, and the assertion here is
+  // that the field exists at all, which it does not until the pill is clicked.
+  await step("it becomes the address field", () =>
+    app.waitFor({ testId: "omnibox", state: "present" }, { timeoutMs: PATIENCE }),
+  );
+  const field = await app.mustFind("omnibox");
+  const held = String(field.value ?? field.text ?? "");
+  if (held !== activeBeforeCompact) {
+    fail(`the address field came up holding ${JSON.stringify(held)}, want ${JSON.stringify(activeBeforeCompact)}`);
+  }
+  await step("switch to another pill", () => app.click(`tab-pill-${otherTabId}`));
+  await step("the field goes back to being a pill", async () => {
+    const deadline = Date.now() + PATIENCE;
+    while (Date.now() < deadline) {
+      if (!(await app.find("omnibox"))) return;
+      await Bun.sleep(150);
+    }
+    return fail("the address field is still in the strip after switching tabs");
   });
-  await waitUrl(app, "/c");
-  await strip(
-    (s) => (s[s.length - 1] ?? "").startsWith("Page C"),
-    "the new tab's compact row to carry the title its page reported",
-  );
-  await step("close it again", () => app.click("menu-close-tab"));
-  const stripAfterClose = await strip(
-    (s) => s.length === beforeCompact.length,
-    "the closed tab's compact row to go",
-  );
-  await step("switch tabs from the compact list", () => app.click("tabs-menu-0"));
-  await step("the window follows the tab the compact list picked", async () => {
-    const wanted = stripAfterClose[0]!;
+  await step("the window follows the tab the strip picked", async () => {
+    const wanted = (await app.mustFind(`tab-pill-${otherTabId}`)).text ?? "";
     const deadline = Date.now() + PATIENCE;
     let title = "";
     while (Date.now() < deadline) {
@@ -892,12 +897,21 @@ try {
     }
     return fail(`the window still says ${JSON.stringify(title)}, want ${JSON.stringify(wanted)}`);
   });
-  console.log(`18b. the compact tab list tracks open, retitle, close and switch (${stripAfterClose.length} rows)`);
 
-  // The address bar still drives the same tab, which is the whole point of a
-  // layout that has nothing else.
-  await goTo(app, `${base}/c`);
-  await waitUrl(app, "/c");
+  // Opened and retitled: a tab opened from the History menu loads a real page,
+  // so its pill starts on the address and has to end on the page's own title.
+  await step("open a tab from the History menu", () => app.click("menu-history-0"));
+  await pills((p) => p.length === beforeCompact.length + 1, "a pill for the tab history opened");
+  await pills(
+    (p) => !(p[p.length - 1] ?? "127.0.0.1").includes("127.0.0.1"),
+    "the new pill to carry the title its page reported",
+  );
+  // Closed: the pill's own close button only exists under the pointer, and GTK
+  // synthesises no pointer input, so this closes the tab the way a keyboard
+  // does.
+  await step("close it again", () => app.click("menu-close-tab"));
+  const stripAfterClose = await pills((p) => p.length === beforeCompact.length, "the closed tab's pill to go");
+  console.log(`18b. the compact strip tracks open, retitle, close and switch (${stripAfterClose.length} pills)`);
 
   loadsAt = await settledLoads();
   await step("switch back to the sidebar layout", () => app.click("menu-layout"));
@@ -911,11 +925,11 @@ try {
   );
   const afterRestore = await settledLoads();
   if (loadsAt !== afterRestore) fail(`restoring the sidebar reloaded a page: ${loadsAt} -> ${afterRestore}`);
-  // The same tabs in the same order, and the one the compact omnibox drove is
-  // still showing the page it was sent to.
+  // The same tabs in the same order, and the address bar drives them again.
   if (JSON.stringify(afterCompact) !== JSON.stringify(beforeCompact)) {
     fail(`the round trip through compact changed the tab list: ${JSON.stringify(beforeCompact)} -> ${JSON.stringify(afterCompact)}`);
   }
+  await goTo(app, `${base}/c`);
   await waitUrl(app, "/c");
   await shoot(app, "19-sidebar-again", mainWindow);
   console.log(`18. compact drops the sidebar and still navigates; the round trip kept ${afterCompact.length} live tabs`);
