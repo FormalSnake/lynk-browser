@@ -499,7 +499,10 @@ try {
   // measurement: an inline bar takes a row off the top of it.
   const pageBeforeFind = await settledPageBox(app);
   await step("open the find bar", () => app.click("menu-find"));
-  await step("the find bar presents", () => app.waitFor({ testId: "find-bar", state: "visible" }, { timeoutMs: PATIENCE }));
+  // "present", not "visible": the bar lives in a popover now, and neither
+  // backend's tree calls a popover's content actionable. Its existence is the
+  // assertion, and the steps below drive the field it holds.
+  await step("the find bar presents", () => app.waitFor({ testId: "find-bar", state: "present" }, { timeoutMs: PATIENCE }));
   const pageWithFind = await shownPageBox(app);
   if (pageWithFind !== pageBeforeFind) {
     fail(`the find bar pushed the page about: ${pageBeforeFind} -> ${pageWithFind}`);
