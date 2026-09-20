@@ -6,19 +6,35 @@ app. UI/UX polish comes later.
 
 To resume, tell Claude: "read RESUME.md and continue".
 
-## Where things are
+## Where things are (updated 2026-09-20)
 
 | Repo / tree | Branch | State |
 |---|---|---|
-| `~/Developer/nativebrowser` | `main` (pushed, bd9acb4) | Simple Chromium-only app. Extension broker and WebKit paths deleted. `NB_MVP_OK` drive green on macOS. |
-| `~/Developer/NativeDesktop` | `main` (pushed, b76d344) | Chrome style on both platforms, see below. |
-| `~/Developer/nd-chrome-accept` | `chrome-accept`, 11 commits, NOT merged | Linux resize fix, keyboard routing, DevTools toggle, tab move between windows, real-app gate. Breaks the engine gate's menu pass, so unmerged. |
-| `~/Developer/nd-chrome-style-mac` | `chrome-style-mac`, 3 commits, NOT merged | Edit-menu chords reach the page (26311f3), native NSMenu context menu (d0749e4), plus one `wip:` commit of gate edits. None verified by the orchestrator. |
+| `~/Developer/nativebrowser` | `main` (3b0c774, not pushed) | On `@nativedesktop/*` 0.4.3 with `webview.cef.style: "chrome"` in the config. |
+| `~/Developer/NativeDesktop` | `main` (pushed, v0.4.3 published) | `chrome-accept` and `chrome-style-mac` are both merged. |
+| g815 | `~/Developer/nd-main` (framework main build), `~/Developer/nativebrowser-run` | `run-on-desktop.sh` starts the app on the Hyprland session. NixOS cannot run the prebuilt host, so it uses the host built in `nd-main`. |
 
-Still to do in the app: add `webview: { cef: { style: "chrome" } }` to
-`nativedesktop.config.ts` once a framework release carries the key (installed
-npm packages are 0.4.1 and do not know it). Until then run with
-`ND_CEF_STYLE=chrome` and `ND_HOST_BINARY=<locally built host>`.
+Linux gates need the flake shell on g815: `nix develop --command bash scripts/...`.
+Gate state at merge: Linux engine gate green; Linux real-app gate 3 red on x11
+(`<select>` dropdown x2, tab out of the page) and 5 red on XWayland (four
+`focusRouting*.toField`, tab out of the page). Mac engine and reparent gates
+green; mac real-app gate 36 of 38 (tab into the page, intermittent extension
+context-menu item) plus the quit after DevTools.
+
+Findings that replace the notes below:
+- The Linux engine gate menu pass was not red after a rebase; item 1 is closed.
+- XWayland typing: X hands the key to CEF's child window because the pointer is
+  in it and focus sits on its ancestor toplevel; GTK sees zero key events. A
+  focus proxy window and the InputOnly cover both fail because XI2 does not
+  propagate a key up to the ancestor GDK selected on (`src/cef/engine.zig`).
+  The lever left is handing the key back from `on_pre_key_event` into GTK4.
+- Mac quit after DevTools: `closeDevTools` parks the inspector's BrowserView in
+  `devToolsClosing`, `teardown` invalidates the timer that would retire it, so
+  `cef_window_t::close` never completes. Retiring the view lets the close run
+  and Chromium then segfaults in window destruction; the CEF-side ordering is
+  the open question.
+- Mac: a `pointer` RPC click within about a second of a reload never reaches
+  the page.
 
 ## What is on NativeDesktop main
 
