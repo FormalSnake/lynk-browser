@@ -17,6 +17,7 @@ import type {
 } from "@nativedesktop/react";
 import { Activity } from "react";
 
+import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
 import { displayUrl, toUrl } from "./lib/url.ts";
 
 const TAB_ACTIONS: SourceTreeAction[] = [
@@ -107,6 +108,8 @@ export function PrivateWindow({
   function closeFind(): void {
     findCommand("findStop");
     setFindOpen(false);
+    const node = views.current.get(active.id);
+    if (node) sendCommand(node, "focus");
   }
 
   function navigate(raw: string): void {
@@ -221,94 +224,115 @@ export function PrivateWindow({
                 the fact and the status page below carries the detail. */}
             <banner testID="private-banner" title="Private browsing. This window keeps no history." revealed />
 
-            {findOpen && (
-              <box
-                testID="private-find-bar"
-                orientation="horizontal"
-                spacing={Spacing.sm}
-                style={{ padding: Spacing.sm, hexpand: true }}
-              >
-                <searchinput
-                  testID="private-find-query"
-                  placeholder="Find in Page"
-                  style={{ hexpand: true }}
-                  onChanged={(e) => (e.text ? findCommand("findStart", { text: e.text }) : findCommand("findStop"))}
-                  onActivate={() => findCommand("findNext")}
-                />
-                <button
-                  testID="private-find-previous"
-                  iconName="go-up-symbolic"
-                  tooltip="Previous match"
-                  cssClasses={["flat"]}
-                  onClick={() => findCommand("findPrevious")}
-                />
-                <button
-                  testID="private-find-next"
-                  iconName="go-down-symbolic"
-                  tooltip="Next match"
-                  cssClasses={["flat"]}
-                  onClick={() => findCommand("findNext")}
-                />
-                <button
-                  testID="private-find-close"
-                  iconName="window-close-symbolic"
-                  tooltip="Close"
-                  cssClasses={["flat"]}
-                  onClick={closeFind}
-                />
-              </box>
-            )}
+            {/* The find bar floats over the page here for the same reason it
+                does in the main window: see the comment on the main window's
+                find anchor for why it has to be a popover on Linux. */}
+            <overlay testID="private-page-stack" style={{ hexpand: true, vexpand: true }}>
+              <box orientation="vertical" style={{ hexpand: true, vexpand: true }}>
+                {tabs
+                  .filter((t) => t.url !== "")
+                  .map((t) => (
+                    <Activity key={t.id} mode={t.id === active.id ? "visible" : "hidden"}>
+                      <webview
+                        ref={(node) => {
+                          views.current.set(t.id, node as NdNodeRef<"webview"> | null);
+                          if (!node || menuedViews.current.has(node.id)) return;
+                          menuedViews.current.add(node.id);
+                          // The whole menu the app adds to the engine's own.
+                          setContextMenuItems(node as NdNodeRef<"webview">, [
+                            { id: "nb-open-link", label: "Open Link in New Tab", contexts: ["link"] },
+                            { id: "nb-save-image", label: "Save Image", contexts: ["image"] },
+                          ]);
+                        }}
+                        url={t.url}
+                        profile={PRIVATE_PROFILE}
+                        testID={`private-page-${t.id}`}
+                        style={{ hexpand: true, vexpand: true }}
+                        onNavigate={(e) => patch(t.id, { url: e.text })}
+                        onTitleChanged={(e) => patch(t.id, { title: e.text })}
+                        onLoadingChanged={(e) => patch(t.id, { loading: e.checked })}
+                        onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
+                        onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
+                        onNewWindow={(e) => openTab(e.text)}
+                        onContextMenuItemClicked={(e) => {
+                          const click = e.data as ContextMenuItemClick;
+                          if (click.id === "nb-open-link" && click.linkUrl) openTab(click.linkUrl);
+                          if (click.id === "nb-save-image" && click.imageUrl) onDownload(click.imageUrl);
+                        }}
+                        onDownloadRequested={(e) => {
+                          // Private browsing hides the trail, it does not refuse
+                          // the file: what you download is still saved, and it
+                          // lands in the one downloads list the app has.
+                          const d = e.data as { url: string; suggestedFilename?: string };
+                          onDownload(d.url, d.suggestedFilename);
+                        }}
+                      />
+                    </Activity>
+                  ))}
 
-            {tabs
-              .filter((t) => t.url !== "")
-              .map((t) => (
-                <Activity key={t.id} mode={t.id === active.id ? "visible" : "hidden"}>
-                  <webview
-                    ref={(node) => {
-                      views.current.set(t.id, node as NdNodeRef<"webview"> | null);
-                      if (!node || menuedViews.current.has(node.id)) return;
-                      menuedViews.current.add(node.id);
-                      // The whole menu the app adds to the engine's own.
-                      setContextMenuItems(node as NdNodeRef<"webview">, [
-                        { id: "nb-open-link", label: "Open Link in New Tab", contexts: ["link"] },
-                        { id: "nb-save-image", label: "Save Image", contexts: ["image"] },
-                      ]);
-                    }}
-                    url={t.url}
-                    profile={PRIVATE_PROFILE}
-                    testID={`private-page-${t.id}`}
-                    style={{ hexpand: true, vexpand: true }}
-                    onNavigate={(e) => patch(t.id, { url: e.text })}
-                    onTitleChanged={(e) => patch(t.id, { title: e.text })}
-                    onLoadingChanged={(e) => patch(t.id, { loading: e.checked })}
-                    onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
-                    onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
-                    onNewWindow={(e) => openTab(e.text)}
-                    onContextMenuItemClicked={(e) => {
-                      const click = e.data as ContextMenuItemClick;
-                      if (click.id === "nb-open-link" && click.linkUrl) openTab(click.linkUrl);
-                      if (click.id === "nb-save-image" && click.imageUrl) onDownload(click.imageUrl);
-                    }}
-                    onDownloadRequested={(e) => {
-                      // Private browsing hides the trail, it does not refuse
-                      // the file: what you download is still saved, and it
-                      // lands in the one downloads list the app has.
-                      const d = e.data as { url: string; suggestedFilename?: string };
-                      onDownload(d.url, d.suggestedFilename);
-                    }}
+                {active.url === "" && (
+                  <statuspage
+                    testID="private-new-tab-page"
+                    iconName="view-conceal-symbolic"
+                    title="Private Browsing"
+                    description="Cookies, cache and history are discarded when you close this window. Anything you download is still saved."
+                    style={{ vexpand: true }}
                   />
-                </Activity>
-              ))}
+                )}
+              </box>
 
-            {active.url === "" && (
-              <statuspage
-                testID="private-new-tab-page"
-                iconName="view-conceal-symbolic"
-                title="Private Browsing"
-                description="Cookies, cache and history are discarded when you close this window. Anything you download is still saved."
-                style={{ vexpand: true }}
-              />
-            )}
+              <box
+                testID="private-find-anchor"
+                orientation="horizontal"
+                style={{
+                  halign: "end",
+                  valign: "start",
+                  minWidth: FIND_BAR_WIDTH,
+                  minHeight: 1,
+                  margin: { top: Spacing.sm, right: Spacing.md },
+                }}
+              >
+                {findOpen && (
+                  <popover testID="private-find-popover" open position="bottom" onClosed={closeFind}>
+                    <box
+                      testID="private-find-bar"
+                      orientation="horizontal"
+                      spacing={Spacing.sm}
+                      style={{ padding: Spacing.sm, minWidth: FIND_BAR_WIDTH }}
+                    >
+                      <searchinput
+                        testID="private-find-query"
+                        placeholder="Find in Page"
+                        style={{ hexpand: true }}
+                        onChanged={(e) => (e.text ? findCommand("findStart", { text: e.text }) : findCommand("findStop"))}
+                        onActivate={() => findCommand("findNext")}
+                      />
+                      <button
+                        testID="private-find-previous"
+                        iconName="go-up-symbolic"
+                        tooltip="Previous match"
+                        cssClasses={["flat"]}
+                        onClick={() => findCommand("findPrevious")}
+                      />
+                      <button
+                        testID="private-find-next"
+                        iconName="go-down-symbolic"
+                        tooltip="Next match"
+                        cssClasses={["flat"]}
+                        onClick={() => findCommand("findNext")}
+                      />
+                      <button
+                        testID="private-find-close"
+                        iconName="window-close-symbolic"
+                        tooltip="Close"
+                        cssClasses={["flat"]}
+                        onClick={closeFind}
+                      />
+                    </box>
+                  </popover>
+                )}
+              </box>
+            </overlay>
           </box>
         </toolbarview>
       </splitview>

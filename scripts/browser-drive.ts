@@ -250,13 +250,39 @@ function isPage(testID: string | null | undefined): testID is string {
 /// active one is shown, so "the page the drive is looking at" is a tree lookup
 /// rather than a name the drive can compose.
 async function shownPageRef(app: AppHandle): Promise<number> {
+  return (await shownPage(app)).ref;
+}
+
+async function shownPage(app: AppHandle): Promise<JsonNode> {
   const tree = await app.tree();
-  let found: number | null = null;
+  let found: JsonNode | null = null;
   walk(tree.root, (n) => {
-    if (found === null && isPage(n.testID) && n.visible) found = n.ref;
+    if (found === null && isPage(n.testID) && n.visible) found = n;
   });
-  if (found === null) fail("no visible webview in the tree");
-  return found;
+  return found ?? fail("no visible webview in the tree");
+}
+
+/// The rectangle the page occupies, as the string a comparison can print.
+async function shownPageBox(app: AppHandle): Promise<string> {
+  return JSON.stringify((await shownPage(app)).geometry ?? null);
+}
+
+/// The same rectangle, once it has a size and has stopped changing. A view
+/// that has just been shown reports 0x0 for a frame or two, and a baseline
+/// read there would compare a placeholder against a real allocation.
+async function settledPageBox(app: AppHandle): Promise<string> {
+  const deadline = Date.now() + PATIENCE;
+  let last = "";
+  let stable = 0;
+  while (Date.now() < deadline) {
+    const now = await shownPageBox(app);
+    const sized = !now.includes('"w":0') && !now.includes('"h":0');
+    stable = sized && now === last ? stable + 1 : 0;
+    last = now;
+    if (stable >= 3) return now;
+    await Bun.sleep(150);
+  }
+  return fail(`the page never settled on a size, last ${last}`);
 }
 
 // ------------------------------------------------------------------ drive ---
@@ -468,8 +494,16 @@ try {
   // Stage 5 — find in page, on the 400-row fixture. "row 399" occurs once.
   await app.click("menu-tab-1");
   await waitRows(app, (r) => r[1]!.startsWith("Long page"), "the long page before searching it");
+  // The bar floats over the page the way Chrome's does, so opening it must not
+  // move or resize the view underneath it. The page's own rectangle is the
+  // measurement: an inline bar takes a row off the top of it.
+  const pageBeforeFind = await settledPageBox(app);
   await step("open the find bar", () => app.click("menu-find"));
   await step("the find bar presents", () => app.waitFor({ testId: "find-bar", state: "visible" }, { timeoutMs: PATIENCE }));
+  const pageWithFind = await shownPageBox(app);
+  if (pageWithFind !== pageBeforeFind) {
+    fail(`the find bar pushed the page about: ${pageBeforeFind} -> ${pageWithFind}`);
+  }
   await step("type a query with exactly one match", () => app.type("find-query", "row 399"));
   // GTK counts matches; AppKit's WKFindResult only reports match/no-match, so
   // either answer is a pass for "the bar reported what the engine found".
@@ -480,7 +514,13 @@ try {
   await shoot(app, "11-find-bar");
   await step("close the find bar", () => app.click("find-close"));
   await step("the find bar goes away", () => app.waitFor({ testId: "find-bar", state: "gone" }, { timeoutMs: PATIENCE }));
-  console.log(`12. find in page: "row 399" -> ${JSON.stringify(counted)}, absent text -> ${JSON.stringify(missing)}`);
+  const pageAfterFind = await shownPageBox(app);
+  if (pageAfterFind !== pageBeforeFind) {
+    fail(`closing the find bar left the page at ${pageAfterFind}, it started at ${pageBeforeFind}`);
+  }
+  console.log(
+    `12. find in page: "row 399" -> ${JSON.stringify(counted)}, absent text -> ${JSON.stringify(missing)}; the page stayed at ${pageBeforeFind}`,
+  );
 
   // Acceptance 4: target=_blank opens a background tab. GTK automation cannot
   //    deliver a click into page content, and the engine refuses a

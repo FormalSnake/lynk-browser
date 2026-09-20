@@ -32,6 +32,7 @@ import type { DownloadItem } from "./lib/downloads.ts";
 import { downloadDir, runDownload } from "./lib/downloads.ts";
 import { faviconFor, fetchFavicon, rememberFavicon } from "./lib/favicons.ts";
 import { recentVisits, recordTitle, recordVisit, searchHistory, type Visit } from "./lib/history.ts";
+import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
 import { session } from "./lib/session.ts";
 import { LAYOUTS, SEARCH_ENGINES, engineOf, settings, type Layout } from "./lib/settings.ts";
 import { displayUrl, fileNameFromUrl, hostOf, isSearch, toUrl } from "./lib/url.ts";
@@ -230,6 +231,10 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// coordinates, and the item-click payload does not carry them.
   const lastMenuHit = useRef(new Map<string, { x: number; y: number }>());
   const toast = useRef<NdNodeRef<"toastoverlay">>(null);
+  /// The find field the app has already put the caret in. An inline ref
+  /// callback runs on every render, and focusing on each one would fight the
+  /// user for the caret.
+  const findFocused = useRef(0);
   /// Download ids only have to be unique within a run, and a short one keeps
   /// the panel's row testIDs readable.
   const downloadSeq = useRef(0);
@@ -396,6 +401,8 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   function closeFind(): void {
     findCommand("findStop");
     setFind(NO_FIND);
+    const node = view(active.id);
+    if (node) sendCommand(node, "focus");
   }
 
   function runFind(text: string): void {
@@ -1080,57 +1087,6 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
             </headerbar>
 
             <box testID="content" orientation="vertical" style={{ hexpand: true, vexpand: true }}>
-              {find.open && (
-                <box
-                  testID="find-bar"
-                  orientation="horizontal"
-                  spacing={Spacing.sm}
-                  style={{ padding: Spacing.sm, hexpand: true }}
-                >
-                  {/* Adwaita's `.error` on the entry is what a search that
-                      found nothing looks like in GNOME; the count label alone
-                      leaves the field claiming everything is fine. Empty
-                      rather than absent, so the class comes back off. */}
-                  <searchinput
-                    testID="find-query"
-                    placeholder="Find in Page"
-                    cssClasses={findFailed(find) ? ["error"] : []}
-                    style={{ hexpand: true }}
-                    onChanged={(e) => runFind(e.text)}
-                    onActivate={() => findCommand("findNext")}
-                  />
-                  <label
-                    key={`${find.query}:${find.count}:${find.found}`}
-                    testID="find-count"
-                    text={findSummary(find)}
-                  />
-                  <button
-                    testID="find-previous"
-                    iconName="go-up-symbolic"
-                    tooltip="Previous match"
-                    cssClasses={["flat"]}
-                    onClick={() => findCommand("findPrevious")}
-                  />
-                  <button
-                    testID="find-next"
-                    iconName="go-down-symbolic"
-                    tooltip="Next match"
-                    cssClasses={["flat"]}
-                    onClick={() => findCommand("findNext")}
-                  />
-                  {/* No Escape binding: the framework surfaces no key events to
-                      the app, and a bare `Escape` menu accelerator would be
-                      global. Filed as a framework ask. */}
-                  <button
-                    testID="find-close"
-                    iconName="window-close-symbolic"
-                    tooltip="Close"
-                    cssClasses={["flat"]}
-                    onClick={closeFind}
-                  />
-                </box>
-              )}
-
               {/* Presents over the active window wherever it is mounted. */}
               <commandpalette
                 key={paletteEpoch}
@@ -1260,6 +1216,90 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                     style={{ valign: "start", hexpand: true }}
                   />
                 )}
+
+                {/* Chrome's find bar: it floats over the top right of the page
+                    rather than taking a row of layout, so opening it never
+                    moves the page. A GTK widget laid over the webview cannot
+                    be seen on Linux, because the Chrome-style engine lives in
+                    an X11 child window of the toplevel and X composites a
+                    child above everything its parent draws. A popover has a
+                    surface of its own, which is the route the page's own
+                    context menu already takes. The anchor draws nothing; it
+                    exists to put the popover's corner where Chrome's is. */}
+                <box
+                  testID="find-anchor"
+                  orientation="horizontal"
+                  style={{
+                    halign: "end",
+                    valign: "start",
+                    minWidth: FIND_BAR_WIDTH,
+                    minHeight: 1,
+                    margin: { top: Spacing.sm, right: Spacing.md },
+                  }}
+                >
+                  {find.open && (
+                    <popover testID="find-popover" open position="bottom" onClosed={closeFind}>
+                      <box
+                        testID="find-bar"
+                        orientation="horizontal"
+                        spacing={Spacing.sm}
+                        style={{ padding: Spacing.sm, minWidth: FIND_BAR_WIDTH }}
+                      >
+                        {/* Adwaita's `.error` on the entry is what a search that
+                            found nothing looks like in GNOME; the count label alone
+                            leaves the field claiming everything is fine. Empty
+                            rather than absent, so the class comes back off. */}
+                        <searchinput
+                          ref={(node) => {
+                            if (!node) {
+                              findFocused.current = 0;
+                              return;
+                            }
+                            if (findFocused.current === node.id) return;
+                            findFocused.current = node.id;
+                            sendCommand(node as NdNodeRef<"searchinput">, "focus");
+                          }}
+                          testID="find-query"
+                          placeholder="Find in Page"
+                          cssClasses={findFailed(find) ? ["error"] : []}
+                          style={{ hexpand: true }}
+                          onChanged={(e) => runFind(e.text)}
+                          onActivate={() => findCommand("findNext")}
+                        />
+                        <label
+                          key={`${find.query}:${find.count}:${find.found}`}
+                          testID="find-count"
+                          text={findSummary(find)}
+                          cssClasses={["dimmed", "numeric"]}
+                        />
+                        <button
+                          testID="find-previous"
+                          iconName="go-up-symbolic"
+                          tooltip="Previous match"
+                          cssClasses={["flat"]}
+                          onClick={() => findCommand("findPrevious")}
+                        />
+                        <button
+                          testID="find-next"
+                          iconName="go-down-symbolic"
+                          tooltip="Next match"
+                          cssClasses={["flat"]}
+                          onClick={() => findCommand("findNext")}
+                        />
+                        {/* Escape closes the popover, which is what fires
+                            onClosed; the button is the same exit for a
+                            pointer. */}
+                        <button
+                          testID="find-close"
+                          iconName="window-close-symbolic"
+                          tooltip="Close"
+                          cssClasses={["flat"]}
+                          onClick={closeFind}
+                        />
+                      </box>
+                    </popover>
+                  )}
+                </box>
               </overlay>
 
             </box>
