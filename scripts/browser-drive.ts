@@ -847,6 +847,53 @@ try {
   if (loadsAt !== afterDrop) fail(`dropping the sidebar reloaded a page: ${loadsAt} -> ${afterDrop}`);
   await shoot(app, "18-compact", mainWindow);
 
+  // Owner report: the compact layout's tab list goes stale. It is the only tab
+  // UI this layout has, so everything the session does has to reach it.
+  const strip = async (check: (s: string[]) => boolean, what: string): Promise<string[]> => {
+    const deadline = Date.now() + PATIENCE;
+    let seen: string[] = [];
+    while (Date.now() < deadline) {
+      seen = await textsUnder(app, "tabs-menu-", mainWindow);
+      if (check(seen)) return seen;
+      await Bun.sleep(150);
+    }
+    return fail(`timed out waiting for ${what}; the compact tab list read ${JSON.stringify(seen)}`);
+  };
+  await strip((s) => s.length === beforeCompact.length, "one compact row per open tab");
+  await step("open a tab from the compact layout", () => app.click("header-new-tab"));
+  // The row has to be there before the address is typed: the palette's submit
+  // handler carries the tab that was active when the app last rendered, and
+  // driving it before the new tab lands navigates the old one.
+  await strip((s) => s.length === beforeCompact.length + 1, "a compact row for the new tab");
+  await step("send the new tab to page C", async () => {
+    await openPalette(app);
+    await typeQuery(app, `${base}/c`);
+    await app.setValue("palette", true);
+  });
+  await waitUrl(app, "/c");
+  await strip(
+    (s) => (s[s.length - 1] ?? "").startsWith("Page C"),
+    "the new tab's compact row to carry the title its page reported",
+  );
+  await step("close it again", () => app.click("menu-close-tab"));
+  const stripAfterClose = await strip(
+    (s) => s.length === beforeCompact.length,
+    "the closed tab's compact row to go",
+  );
+  await step("switch tabs from the compact list", () => app.click("tabs-menu-0"));
+  await step("the window follows the tab the compact list picked", async () => {
+    const wanted = stripAfterClose[0]!;
+    const deadline = Date.now() + PATIENCE;
+    let title = "";
+    while (Date.now() < deadline) {
+      title = (await app.windows()).windows[0]!.title ?? "";
+      if (title === wanted) return;
+      await Bun.sleep(150);
+    }
+    return fail(`the window still says ${JSON.stringify(title)}, want ${JSON.stringify(wanted)}`);
+  });
+  console.log(`18b. the compact tab list tracks open, retitle, close and switch (${stripAfterClose.length} rows)`);
+
   // The address bar still drives the same tab, which is the whole point of a
   // layout that has nothing else.
   await goTo(app, `${base}/c`);
