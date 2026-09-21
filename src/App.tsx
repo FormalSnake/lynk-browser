@@ -1804,11 +1804,13 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                     a view showing chrome://extensions and nowhere else, so the
                     toolbar keeps one of its own. It is a floating layer of the
                     overlay rather than a row, so it takes no layout, and it is
-                    where the app's own installs go too. */}
+                    where the app's own installs go too. 2px, not 1: the engine
+                    holds a browser back while its view is 1px or less on a
+                    side, and only gives up waiting after 20 s. */}
                 <box
                   testID="extensions-registry"
                   orientation="horizontal"
-                  style={{ halign: "start", valign: "end", minWidth: 1, minHeight: 1 }}
+                  style={{ halign: "start", valign: "end", minWidth: 2, minHeight: 2 }}
                 >
                   <webview
                     ref={(node) => {
@@ -1832,7 +1834,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                     }}
                     url="chrome://extensions"
                     testID="extensions-registry-view"
-                    style={{ minWidth: 1, minHeight: 1 }}
+                    style={{ minWidth: 2, minHeight: 2 }}
                     onExtensionsList={onExtensionsList}
                     onExtensionActions={onExtensionActions}
                     onExtensionsChanged={onExtensionsChanged}
