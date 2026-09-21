@@ -214,6 +214,14 @@ function downloadStatus(d: DownloadItem): string {
   return host ? `From ${host}` : "Saved";
 }
 
+/// Addresses a view has to be CREATED at. Chromium refuses a
+/// renderer-initiated navigation from about:blank to any of these, so the
+/// arming dance (create empty, set the URL one render later) leaves the tab on
+/// about:blank instead, and a restored chrome:// tab comes back blank.
+function createAtUrl(url: string): boolean {
+  return /^(chrome|chrome-extension|devtools|view-source):/.test(url);
+}
+
 /// What a tab calls itself wherever it is listed: the title its page reported,
 /// the address until it reports one, and "New Tab" until there is an address.
 function tabLabel(t: { title: string; url: string }): string {
@@ -315,6 +323,13 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// goes through this one rather than through a tab the user can navigate.
   const extRegistry = useRef<NdNodeRef<"webview">>(null);
   const registryArmed = useRef(0);
+  /// Set once the engine probe has an answer, so no retry outlives it.
+  const engineProbed = useRef(false);
+  /// Which engine actually drew a page, read off the first one this app put
+  /// up. Not the config and not the platform: `ND_WEBVIEW_ENGINE=chromium`
+  /// against a host that cannot start CEF falls back to the system engine and
+  /// says so only on stderr, and everything chrome:// is a dead end there.
+  const [engine, setEngine] = useState<"unknown" | "chromium" | "system">("unknown");
   /// The open popup's view, and the id of the one whose window.close the app
   /// has already hooked.
   const popupView = useRef<NdNodeRef<"webview"> | null>(null);
@@ -339,6 +354,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
 
   /// Returns the new tab's id: chrome.tabs.create has to answer with a tab.
   function openTab(url: string, background = false): string {
+    if (url !== "" && !reachable(url)) return "";
     let created = "";
     session.update((s) => {
       const id = `t${s.nextTabId}`;
@@ -427,7 +443,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
 
   function navigate(id: string, raw: string): void {
     const target = toUrl(raw);
-    if (!target) return;
+    if (!target || !reachable(target)) return;
     patch(id, { error: null });
     // Entering the address you are already on reloads, like every browser. The
     // url prop alone cannot express that: it is unchanged, so nothing commits.
@@ -437,9 +453,29 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
       return;
     }
     setTabUrl(id, target);
+    // A view already showing a page cannot walk to one of these (see
+    // createAtUrl), so the address bar builds the view again at the address
+    // instead of sending the existing one to it. `attempt` is the webview's
+    // key, which is what remounts it.
+    if (createAtUrl(target)) patch(id, { attempt: rt(id).attempt + 1 });
+  }
+
+  /// chrome:// and chrome-extension:// exist only under Chromium. The system
+  /// engine hands an address it does not know to the OS, which is where the
+  /// macOS "no application set to open the URL" dialog came from.
+  function reachable(url: string): boolean {
+    if (!createAtUrl(url)) return true;
+    if (chromium) return true;
+    if (toast.current) void showToast(toast.current, { title: "This address needs the Chromium engine" });
+    return false;
   }
 
   function onNavigated(id: string, url: string): void {
+    // A view the engine refused to move, or one still holding the blank page
+    // it was created with, reports about:blank. That is the engine saying
+    // nothing happened, not the user going somewhere, and writing it into the
+    // tab would put about:blank in the restored session.
+    if (url === "about:blank" && (tabs.find((t) => t.id === id)?.url ?? "") !== "") return;
     // A page that navigated away is not waiting for its own answer any more,
     // and the id would otherwise stay in the queue for ever.
     denyPromptsFor(id);
@@ -451,6 +487,11 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
 
   function onTitled(id: string, title: string): void {
     const url = tabs.find((t) => t.id === id)?.url ?? "";
+    // A restored tab that has not been looked at yet still shows the blank
+    // page its view was created with, and the engine reports that page's title
+    // for it. Taking it would relabel a real tab "about:blank" in the row and
+    // in the restored session, which is what the owner saw.
+    if (title === "about:blank" && url !== "") return;
     session.update((s) => ({ ...s, tabs: s.tabs.map((t) => (t.id === id ? { ...t, title } : t)) }));
     void recordTitle(url, title).then(refreshHistory);
   }
@@ -581,6 +622,38 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   }
 
   // ------------------------------------------------------ extensions ---
+
+  /// Chromium's user agent is the one runtime fact that separates the engines
+  /// without asking for a page either of them would refuse. WebKitGTK and
+  /// WKWebView both report AppleWebKit and Safari and neither reports Chrome.
+  function probeEngine(node: NdNodeRef<"webview">, attempt = 0): void {
+    // One chain, and none once the answer is in. A retry that outlived the
+    // answer would keep evaluating against a view the `key` has already
+    // rebuilt, and an executeJavaScript aimed at a widget that is gone stops
+    // the host answering anything at all.
+    if (engineProbed.current || extRegistry.current !== node) return;
+    if (attempt > 0 && TEST_HOOKS) console.error(`ND_APP ENGINE retry=${attempt}`);
+    void executeJavaScript(node, "navigator.userAgent")
+      .then((ua) => {
+        if (engineProbed.current) return;
+        const agent = String(ua ?? "");
+        // A view that has not committed a document yet answers with nothing,
+        // which is not an answer about the engine.
+        if (!agent) {
+          if (attempt < 20) setTimeout(() => probeEngine(node, attempt + 1), 400);
+          return;
+        }
+        const found = /Chrome\//.test(agent) ? "chromium" : "system";
+        engineProbed.current = true;
+        if (TEST_HOOKS) console.error(`ND_APP ENGINE ${found}`);
+        setEngine(found);
+      })
+      .catch((e: unknown) => {
+        if (engineProbed.current) return;
+        if (TEST_HOOKS) console.error(`ND_APP ENGINE failed=${String(e)}`);
+        if (attempt < 20) setTimeout(() => probeEngine(node, attempt + 1), 400);
+      });
+  }
 
   /// Both halves of the list, from the one view Chromium answers on. The
   /// registry reports its own changes now (`watchExtensions`), so this runs on
@@ -887,6 +960,15 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
 
   const activeRt = rt(active.id);
   const compact = prefs.layout === "compact";
+  /// Extensions are Chromium's. On the system engine there is no registry to
+  /// list, no popup to open and no chrome:// page to reach, so the toolbar
+  /// does not offer any of it rather than offering a dead button.
+  const chromium = engine === "chromium";
+  /// A second view on chrome://extensions wedges the GTK host (getTree stops
+  /// answering), so the hidden registry view stands down while a TAB is
+  /// showing that page. The tab is the one the user asked for; the registry
+  /// comes back when it closes.
+  const registryYields = tabs.some((t) => t.url.startsWith("chrome://extensions"));
   const recentDownloads = downloads.slice(0, DOWNLOADS_SHOWN);
   const shownUrl = displayUrl(active.url);
   const pageTitle = tabLabel(active);
@@ -974,6 +1056,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
     });
   }
   for (const c of COMMANDS) {
+    if (!chromium && (c.id === "extensions" || c.id === "webstore")) continue;
     if (lowered && !c.title.toLowerCase().includes(lowered)) continue;
     paletteItems.push({ id: `cmd:${c.id}`, title: c.title, subtitle: c.hint, iconName: c.iconName });
   }
@@ -1150,14 +1233,20 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
             />
           </menu>
         )}
-        <menu label="Extensions" testID="menu-extensions">
-          <menuitem
-            testID="menu-extensions-page"
-            label="Extensions"
-            onSelect={() => openTab("chrome://extensions")}
-          />
-          <menuitem testID="menu-webstore" label="Chrome Web Store" onSelect={() => openTab("https://chromewebstore.google.com")} />
-        </menu>
+        {chromium && (
+          <menu label="Extensions" testID="menu-extensions">
+            <menuitem
+              testID="menu-extensions-page"
+              label="Extensions"
+              onSelect={() => openTab("chrome://extensions")}
+            />
+            <menuitem
+              testID="menu-webstore"
+              label="Chrome Web Store"
+              onSelect={() => openTab("https://chromewebstore.google.com")}
+            />
+          </menu>
+        )}
         <menu label="History" testID="menu-history">
           {history.length === 0 ? (
             <menuitem testID="menu-history-empty" label="No History Yet" enabled={false} />
@@ -1473,7 +1562,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                   piece that lists everything installed. Each pinned action is
                   boxed with its own popover so the popup opens under the button
                   that was clicked; an unpinned one opens under the puzzle. */}
-              {pinnedActions.map((row) => (
+              {chromium && pinnedActions.map((row) => (
                 <box slot="end" key={row.id} testID={`ext-pin-${row.id}`} orientation="horizontal">
                   <button
                     testID={`ext-action-${row.id}`}
@@ -1494,6 +1583,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                   </popover>
                 </box>
               ))}
+              {chromium && (
               <box slot="end" testID="extensions-anchor" orientation="horizontal">
                 <button
                   testID="extensions-button"
@@ -1718,11 +1808,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                               syncContextMenus(t.id);
                               setArmedTabs((a) => (a[t.id] ? a : { ...a, [t.id]: true }));
                             }}
-                            // A chrome-extension:// page has to be there at
-                            // create time: Chromium refuses a
-                            // renderer-initiated navigation to one, so the
-                            // arming dance would leave the tab blank.
-                            url={armedTabs[t.id] || t.url.startsWith("chrome-extension://") ? t.url : ""}
+                            url={armedTabs[t.id] || createAtUrl(t.url) ? t.url : ""}
                             testID={`page-${t.id}`}
                             style={{ hexpand: true, vexpand: true }}
                             onNavigate={(e) => onNavigated(t.id, e.text)}
@@ -1806,13 +1892,22 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                     overlay rather than a row, so it takes no layout, and it is
                     where the app's own installs go too. 2px, not 1: the engine
                     holds a browser back while its view is 1px or less on a
-                    side, and only gives up waiting after 20 s. */}
+                    side, and only gives up waiting after 20 s.
+
+                    It starts on about:blank and only becomes the registry once
+                    the page it is showing has said which engine drew it. A
+                    host that fell back to WebKit hands chrome:// to the OS,
+                    which puts up "There is no application set to open the URL
+                    chrome://extensions" on macOS. `key` is what rebuilds the
+                    view at the registry address: Chromium refuses to walk
+                    there from about:blank. */}
                 <box
                   testID="extensions-registry"
                   orientation="horizontal"
                   style={{ halign: "start", valign: "end", minWidth: 2, minHeight: 2 }}
                 >
                   <webview
+                    key={`${engine}:${registryYields}`}
                     ref={(node) => {
                       // Guarded by widget id and never reset: an inline ref
                       // callback runs on every render, and a refresh that
@@ -1821,6 +1916,11 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                       extRegistry.current = view;
                       if (!view || registryArmed.current === view.id) return;
                       registryArmed.current = view.id;
+                      if (engine === "unknown") {
+                        probeEngine(view);
+                        return;
+                      }
+                      if (!chromium || registryYields) return;
                       refreshExtensions();
                       // An empty answer means the watcher attached to nothing,
                       // and a Web Store install would then never show up until
@@ -1832,9 +1932,13 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                         })
                         .catch((e: unknown) => console.error(`ND_APP EXTWATCH failed ${String(e)}`));
                     }}
-                    url="chrome://extensions"
+                    url={chromium && !registryYields ? "chrome://extensions" : "about:blank"}
                     testID="extensions-registry-view"
                     style={{ minWidth: 2, minHeight: 2 }}
+                    // Without this the engine's answer has nowhere to land and
+                    // every executeJavaScript on this view hangs, which is how
+                    // the engine probe below came back with nothing.
+                    onJavaScriptResult={onJavaScriptResult}
                     onExtensionsList={onExtensionsList}
                     onExtensionActions={onExtensionActions}
                     onExtensionsChanged={onExtensionsChanged}
