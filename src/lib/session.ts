@@ -41,10 +41,15 @@ export const session = createStore<SessionState>({
 /// store's upgrade step: a session.json written before tabs could be pinned has
 /// no `pinned` field, and every read of it assumes a boolean.
 export function normalize(state: SessionState): SessionState {
-  const tabs = state.tabs.map((t) => ({
-    ...t,
-    pinned: typeof t.pinned === "boolean" ? t.pinned : false,
-  }));
+  // A new tab is stored with an empty URL, so a stored about:blank is never
+  // one the user opened: it is a page-opened tab whose destination never
+  // arrived, and restoring it restores a dead row.
+  const tabs = state.tabs
+    .filter((t) => t.url !== "about:blank")
+    .map((t) => ({
+      ...t,
+      pinned: typeof t.pinned === "boolean" ? t.pinned : false,
+    }));
   const pinnedFirst = [...tabs.filter((t) => t.pinned), ...tabs.filter((t) => !t.pinned)];
   if (pinnedFirst.length === 0) {
     const id = `t${state.nextTabId}`;
