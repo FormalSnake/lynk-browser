@@ -8,7 +8,7 @@
 // no command palette (its ranking reads history) and no downloads list; the
 // address field IS the address bar, which is also the only place in the app
 // that exercises `<searchinput>` on GTK.
-import { Spacing, sendCommand, setContextMenuItems, useRef, useState } from "@nativedesktop/react";
+import { Spacing, sendCommand, setContextMenuItems, useRef, useState, useStoreValue } from "@nativedesktop/react";
 import type {
   ContextMenuItemClick,
   NdNodeRef,
@@ -17,9 +17,14 @@ import type {
 } from "@nativedesktop/react";
 import { Activity } from "react";
 
+import { ADDRESS_MIN_WIDTH, CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
 import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
 import { permissionSentence, splitTypes, type PermissionPrompt } from "./lib/permissions.ts";
+import { settings } from "./lib/settings.ts";
 import { displayUrl, hostOf, toUrl } from "./lib/url.ts";
+
+const WINDOW_WIDTH = 1100;
+const WINDOW_HEIGHT = 720;
 
 const TAB_ACTIONS: SourceTreeAction[] = [
   { id: "close", iconName: "window-close-symbolic", tooltip: "Close Tab" },
@@ -58,6 +63,8 @@ export function PrivateWindow({
   onDownloads,
   onDownload,
 }: PrivateWindowProps): React.ReactNode {
+  const prefs = useStoreValue(settings);
+  const compact = prefs.layout === "compact";
   const [tabs, setTabs] = useState<PrivateTab[]>([blankTab("p1")]);
   const [activeId, setActiveId] = useState("p1");
   const [findOpen, setFindOpen] = useState(false);
@@ -69,12 +76,20 @@ export function PrivateWindow({
   const pending = useRef<PermissionPrompt[]>([]);
   const next = useRef(2);
   const views = useRef(new Map<string, NdNodeRef<"webview"> | null>());
+  /// The header's address field, so the menu's Open Address Bar can put the
+  /// caret in it. Grab-focus selects the contents on both backends.
+  const omnibox = useRef<NdNodeRef<"searchinput"> | null>(null);
   /// Views whose context-menu items have been pushed. An inline ref callback
   /// runs on every render, and the items here never change.
   const menuedViews = useRef(new Set<number>());
 
+  const [width, setWidth] = useState(WINDOW_WIDTH);
+
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0]!;
   const activePrompt = prompts.find((p) => p.tabId === active.id) ?? null;
+  /// A private tab is never pinned: nothing about this window outlives it, so
+  /// there is nothing for a pin to keep.
+  const runTabs = tabs.map((t) => ({ id: t.id, url: t.url, title: t.title, pinned: false }));
 
   function patch(id: string, part: Partial<PrivateTab>): void {
     setTabs((list) => list.map((t) => (t.id === id ? { ...t, ...part } : t)));
@@ -178,51 +193,57 @@ export function PrivateWindow({
     <window
       title="Private Browsing"
       testID="private-window"
-      defaultWidth={1100}
-      defaultHeight={720}
+      defaultWidth={WINDOW_WIDTH}
+      defaultHeight={WINDOW_HEIGHT}
       onClosed={onClose}
+      onSizeChanged={(e) => setWidth((e.data as { width: number }).width)}
     >
       <splitview sidebarWidth={0.24} testID="private-split">
-        <toolbarview slot="sidebar" testID="private-sidebar-toolbar">
-          <headerbar testID="private-sidebar-header" title="Private" />
-          {/* Same metrics as the main window's column: see the comments there
-              for why the row inset rides a box around the New Tab button and
-              why the tree indents by nothing. */}
-          <box
-            testID="private-sidebar"
-            orientation="vertical"
-            spacing={Spacing.xs}
-            style={{ vexpand: true, padding: { top: Spacing.sm, bottom: Spacing.sm } }}
-          >
-            <box orientation="horizontal" style={{ hexpand: true, padding: { left: Spacing.md } }}>
-              <button
-                testID="private-new-tab"
-                label="New Tab"
-                iconName="tab-new-symbolic"
-                labelAlign="start"
-                cssClasses={["flat"]}
-                style={{ hexpand: true }}
-                onClick={() => openTab()}
+        {/* Compact drops this pane here for the same reason the main window
+            does: the content pane stays the splitview's second child, so no
+            webview moves and no page reloads. */}
+        {!compact && (
+          <toolbarview slot="sidebar" testID="private-sidebar-toolbar">
+            <headerbar testID="private-sidebar-header" title="Private" />
+            {/* Same metrics as the main window's column: see the comments there
+                for why the row inset rides a box around the New Tab button and
+                why the tree indents by nothing. */}
+            <box
+              testID="private-sidebar"
+              orientation="vertical"
+              spacing={Spacing.xs}
+              style={{ vexpand: true, padding: { top: Spacing.sm, bottom: Spacing.sm } }}
+            >
+              <box orientation="horizontal" style={{ hexpand: true, padding: { left: Spacing.md } }}>
+                <button
+                  testID="private-new-tab"
+                  label="New Tab"
+                  iconName="tab-new-symbolic"
+                  labelAlign="start"
+                  cssClasses={["flat"]}
+                  style={{ hexpand: true }}
+                  onClick={() => openTab()}
+                />
+              </box>
+              <sourcetree
+                testID="private-tab-list"
+                nodes={nodes}
+                actions={TAB_ACTIONS}
+                selectedId={active.id}
+                indentationPerLevel={0}
+                style={{ vexpand: true }}
+                onSelectionChanged={(e) => {
+                  const { nodeId } = e.data as { nodeId: string | null };
+                  if (nodeId) setActiveId(nodeId);
+                }}
+                onActionClicked={(e) => {
+                  const { nodeId, actionId } = e.data as { nodeId: string; actionId: string };
+                  if (actionId === "close") closeTab(nodeId);
+                }}
               />
             </box>
-            <sourcetree
-              testID="private-tab-list"
-              nodes={nodes}
-              actions={TAB_ACTIONS}
-              selectedId={active.id}
-              indentationPerLevel={0}
-              style={{ vexpand: true }}
-              onSelectionChanged={(e) => {
-                const { nodeId } = e.data as { nodeId: string | null };
-                if (nodeId) setActiveId(nodeId);
-              }}
-              onActionClicked={(e) => {
-                const { nodeId, actionId } = e.data as { nodeId: string; actionId: string };
-                if (actionId === "close") closeTab(nodeId);
-              }}
-            />
-          </box>
-        </toolbarview>
+          </toolbarview>
+        )}
 
         <toolbarview slot="content" testID="private-content-toolbar">
           <headerbar
@@ -233,10 +254,47 @@ export function PrivateWindow({
             onBack={() => command("goBack")}
             onForward={() => command("goForward")}
           >
+            <button
+              slot="start"
+              testID="private-reload"
+              iconName="view-refresh-symbolic"
+              tooltip="Reload"
+              cssClasses={["flat"]}
+              onClick={() => command("reload")}
+            />
+
+            {/* The same compact row the main window draws: tabs in the toolbar
+                between reload and the address field, nothing below it. */}
+            {compact && (
+              <CompactTabs
+                tabs={runTabs}
+                activeId={active.id}
+                metrics={tabRunMetrics(width, runTabs, 0)}
+                prefix="private-"
+                // A private window shows no favicons: the cache is on disk and
+                // this window writes nothing there.
+                iconFor={() => undefined}
+                labelFor={(t) => t.title || (t.url ? displayUrl(t.url) : "New Tab")}
+                addressFor={(t) => displayUrl(t.url) || "New Tab"}
+                onSelect={setActiveId}
+                onClose={closeTab}
+              />
+            )}
+            {compact && (
+              <button
+                slot="start"
+                testID="private-header-new-tab"
+                iconName="list-add-symbolic"
+                tooltip="New Tab"
+                cssClasses={["flat"]}
+                onClick={() => openTab()}
+              />
+            )}
+
             {/* The private window's site-info button: it answers permission
                 requests and says what this window will not do, which is
                 remember any of them. */}
-            <box slot="start" testID="private-site-info-anchor" orientation="horizontal">
+            <box testID="private-site-info-anchor" orientation="horizontal">
               <button
                 testID="private-site-info"
                 iconName="web-browser-symbolic"
@@ -297,20 +355,18 @@ export function PrivateWindow({
                 </box>
               </popover>
             </box>
-            <button
-              slot="start"
-              testID="private-reload"
-              iconName="view-refresh-symbolic"
-              tooltip="Reload"
-              cssClasses={["flat"]}
-              onClick={() => command("reload")}
-            />
+            {/* Packed straight into the header bar, not boxed: the host
+                promotes a search entry there to the title widget with
+                hexpand, which is what gives it the row's whole free run. */}
             <searchinput
               slot="start"
+              ref={(node) => {
+                omnibox.current = node as NdNodeRef<"searchinput"> | null;
+              }}
               testID="private-omnibox"
               text={displayUrl(active.url)}
-              placeholder="Search or Enter Address"
-              style={{ hexpand: true }}
+              placeholder="Search or enter address"
+              style={{ hexpand: true, minWidth: compact ? tabRunMetrics(width, runTabs, 0).addressWidth : ADDRESS_MIN_WIDTH }}
               onActivate={(e) => navigate(e.text)}
             />
             {/* The app's one primary menu button is packed into whichever
@@ -321,6 +377,14 @@ export function PrivateWindow({
                 Find is this window's own. */}
             <menubutton slot="end" testID="private-menu" iconName="open-menu-symbolic">
               <menuitem testID="private-menu-new-tab" label="New Tab" onSelect={() => openTab()} />
+              <menuitem
+                testID="private-menu-address"
+                label="Open Address Bar"
+                onSelect={() => {
+                  const node = omnibox.current;
+                  if (node) sendCommand(node, "focus");
+                }}
+              />
               <menuitem testID="private-menu-find" label="Find in Page" onSelect={() => setFindOpen(true)} />
               <menuitem role="separator" testID="private-menu-sep" />
               <menuitem testID="private-menu-downloads" label="Downloads" onSelect={onDownloads} />

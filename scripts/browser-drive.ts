@@ -325,6 +325,66 @@ async function settledPageBox(app: AppHandle): Promise<string> {
   return fail(`the page never settled on a size, last ${last}`);
 }
 
+/// Whatever the window's focus is on, as a printable name. Used to wait for
+/// the engine to stop taking the focus for itself: a Chrome-style webview
+/// grabs the GTK focus as its page commits, hidden ones included, so an app
+/// that asks for the address field while a page is still settling loses the
+/// caret to the page a frame later.
+async function focusName(app: AppHandle): Promise<string> {
+  const tree = await app.tree();
+  const hits: string[] = [];
+  walk(tree.root, (n) => {
+    if (n.focused) hits.push(`${n.type}/${n.testID ?? "-"}`);
+  });
+  return hits.join(",") || "none";
+}
+
+async function focusSettled(app: AppHandle): Promise<string> {
+  const deadline = Date.now() + PATIENCE;
+  let last = "";
+  let stable = 0;
+  while (Date.now() < deadline) {
+    const now = await focusName(app);
+    stable = now === last ? stable + 1 : 0;
+    last = now;
+    if (stable >= 6) return last;
+    await Bun.sleep(200);
+  }
+  return last;
+}
+
+/// How much the pixels in one rectangle of the REAL X screen vary, 0 for a
+/// flat fill. The `screenshot` RPC renders the GTK widget tree offscreen, and
+/// a Chrome-style webview is an X11 child window that ladder never draws, so
+/// the app's own capture cannot tell a painted page from an empty one. This
+/// can. Returns null where there is no X screen to read (macOS), which is the
+/// leg saying it did not run rather than that it passed.
+async function pageInk(app: AppHandle, box: { x: number; y: number; w: number; h: number }, name: string): Promise<number | null> {
+  if (!process.env.DISPLAY) return null;
+  const title = (await app.windows()).windows[0]!.title ?? "";
+  const info = Bun.spawnSync(["xwininfo", "-name", title]);
+  if (info.exitCode !== 0) return null;
+  const at = (key: string): number => Number(/(-?\d+)/.exec(info.stdout.toString().split(key)[1] ?? "")?.[1] ?? NaN);
+  const winX = at("Absolute upper-left X:");
+  const winY = at("Absolute upper-left Y:");
+  if (!Number.isFinite(winX) || !Number.isFinite(winY)) return null;
+  const shot = `${SHOTS}/${name}.png`;
+  if (Bun.spawnSync(["import", "-window", "root", "-silent", shot]).exitCode !== 0) return null;
+  const stats = Bun.spawnSync([
+    "convert",
+    shot,
+    "-crop",
+    `${box.w}x${box.h}+${winX + box.x}+${winY + box.y}`,
+    "+repage",
+    "-format",
+    "%[fx:standard_deviation]",
+    "info:",
+  ]);
+  if (stats.exitCode !== 0) return null;
+  const sd = Number(stats.stdout.toString().trim());
+  return Number.isFinite(sd) ? sd : null;
+}
+
 // ------------------------------------------------------------------ drive ---
 
 function launch(storeDir: string): Promise<AppHandle> {
@@ -397,6 +457,27 @@ try {
     fail(`session should start with one New Tab row, got ${JSON.stringify(first)}`);
   }
   console.log("1. launch: window + sidebar + omnibox, session has one New Tab");
+
+  // Which engine actually drew a page. The app reads it off its own first view
+  // rather than off the config, because `ND_WEBVIEW_ENGINE=chromium` against a
+  // host that cannot start CEF falls back to the system engine and says so
+  // only on stderr. Everything chrome:// below branches on this, so a probe
+  // that never answered has to be a failure rather than a quiet skip.
+  const engineReported = await step("the app reports which engine drew its first page", async () => {
+    const deadline = Date.now() + PATIENCE;
+    while (Date.now() < deadline) {
+      const seen = /ND_APP ENGINE (\w+)/.exec(app.stderrTail(4000));
+      if (seen) return seen[1]!;
+      await Bun.sleep(250);
+    }
+    return fail("the app never reported an engine; the probe view answered nothing");
+  });
+  const wanted = process.env.ND_WEBVIEW_ENGINE === "chromium" ? "chromium" : "system";
+  if (engineReported !== wanted) {
+    fail(`the app is running on the ${engineReported} engine, the run asked for ${wanted}`);
+  }
+  const onChromium = engineReported === "chromium";
+  console.log(`1b. the app is on the ${engineReported} engine`);
   await shoot(app, "01-new-tab");
 
   // Acceptance 2 — omnibox navigation: title lands in the sidebar row and the window title.
@@ -442,17 +523,54 @@ try {
   await shoot(app, "03-two-tabs");
 
 
-  // Owner requirement — the address bar is an Arc-style command palette.
-  // primary+l seeds it with the current URL; rows are ranked address, open
-  // tabs, history, then app commands.
-  await step("open the seeded palette (Ctrl+L path)", () => app.click("menu-address"));
+  // The command palette has its own shortcut (Ctrl+K) and ranks address, open
+  // tabs, history, then app commands. Ctrl+L is the address field's, and is
+  // asserted on its own below.
+  await step("open the command palette (Ctrl+K path)", () => app.click("menu-palette"));
   await step("palette presents", () => app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE }));
   await shoot(app, "04-palette");
-  await step("activate the seeded address row", () => app.setValue("palette", 0));
+  await typeQuery(app, `${base}/a`);
+  const sameRow = await paletteRow(app, (id) => id === "url", "the address row for the page already open");
+  await step("activate the address row", () => app.setValue("palette", sameRow));
   const reloadedA = Date.now() + 10_000;
   while (Date.now() < reloadedA && loads.a === baseline.a) await Bun.sleep(120);
-  if (loads.a !== baseline.a + 1) fail(`the seeded palette row should have reloaded page A, loads ${JSON.stringify(loads)}`);
+  if (loads.a !== baseline.a + 1) fail(`entering the address already open should have reloaded page A, loads ${JSON.stringify(loads)}`);
   await waitUrl(app, "/a");
+
+  // Ctrl+L belongs to the address field: it asks for the caret and it does not
+  // open the command palette.
+  //
+  // Where the caret ENDS UP is not the app's to assert on this engine. With a
+  // Chrome-style webview in the window, a grab-focus on any GTK widget is
+  // answered ok and then undone: the focus lands in a browser instead (the
+  // hidden chrome://extensions view, or the active page). Measured on g815,
+  // Xvfb, CEF 151.3.23: `focus` on the omnibox returns {"ok":true} and the
+  // tree then reports WebView/page-t1 focused. The find field is taken the
+  // same way. So this leg covers the app's half (it asked, and it asked for
+  // the right widget) and says so rather than passing on a caret that is not
+  // there.
+  await settledLoads();
+  const holder = await focusSettled(app);
+  await step("Ctrl+L asks for the address field", () => app.click("menu-address"));
+  await step("the app asked for the caret", async () => {
+    const deadline = Date.now() + PATIENCE;
+    while (Date.now() < deadline) {
+      if (app.stderrTail(400).includes("ND_APP FOCUS target=omnibox")) return;
+      await Bun.sleep(150);
+    }
+    return fail("the app never issued a focus command for the address field");
+  });
+  const ctrlLField = await app.mustFind("omnibox");
+  if (String(ctrlLField.text ?? "") !== (await shownUrl(app))) {
+    fail(`the address field holds ${JSON.stringify(ctrlLField.text)}, want the page's own address`);
+  }
+  if (await app.find("palette").then((n) => n?.visible)) fail("Ctrl+L opened the command palette instead of focusing the field");
+  const caretLanded = (await app.mustFind("omnibox")).focused;
+  console.log(
+    caretLanded
+      ? `4a. Ctrl+L put the caret in the address field (focus had been on ${holder})`
+      : `4a. Ctrl+L asked for the address field; the engine kept the focus on ${await focusName(app)} (engine gap, see the comment)`,
+  );
 
   await openPalette(app);
   await typeQuery(app, "Page B");
@@ -467,7 +585,7 @@ try {
   const reloadedB = Date.now() + 15_000;
   while (Date.now() < reloadedB && loads.b === baseline.b) await Bun.sleep(120);
   if (loads.b !== baseline.b + 1) fail(`the palette Reload command did not reload page B, loads ${JSON.stringify(loads)}`);
-  console.log("4. palette: seeded address row, tab switch and app command all ran");
+  console.log("4. palette: address row, tab switch and app command all ran");
 
   // Owner report: a new tab's launcher has to come up EMPTY. `query` is a
   // controlled prop the host applies only when its value changes, and the
@@ -486,23 +604,33 @@ try {
   await waitUrl(app, "/c");
   await step("open a second tab on top of it", () => app.click("menu-new-tab"));
   await waitRows(app, (r) => r.length === tabsBeforeLauncher + 2, "the second extra tab row");
-  await step("its launcher presents", () =>
-    app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE }),
+  await step("the new tab page presents its own field", () =>
+    app.waitFor({ testId: "new-tab-search", state: "present" }, { timeoutMs: PATIENCE }),
   );
-  const launcher = await step("read the launcher's field back", () => app.type("palette", "z"));
-  if (launcher.text !== "z") {
-    fail(`the new tab's launcher came up holding ${JSON.stringify(launcher.text.slice(0, -1))}`);
+  const fresh = await app.mustFind("new-tab-search");
+  // `value` is the live entry text; `text` in the tree is the prop the app
+  // last set, which a typed or programmatic edit never touches.
+  const held = String(fresh.value ?? "");
+  if (held !== "") fail(`the new tab's field came up holding ${JSON.stringify(held)}`);
+  const engineLine = await app.mustFind("new-tab-engine");
+  if (!String(engineLine.text ?? "").startsWith("Search with ")) {
+    fail(`the new tab page names no search engine, it says ${JSON.stringify(engineLine.text)}`);
   }
-  await step("clear the launcher", () => app.setValue("palette", ""));
-  await step("submit nothing, which closes it", () => app.setValue("palette", true));
-  await app.mustFind("new-tab-page");
+  if (await app.find("palette").then((n) => n?.visible)) fail("a new tab opened the command palette over the page");
+  // Same engine gap as 4a: the field asks for the caret as it mounts, and a
+  // browser in the window takes it back. At launch, before any page exists,
+  // it holds (screenshot 01-new-tab.png).
+  const newTabCaret = fresh.focused;
+  await shoot(app, "04b-new-tab-page");
   await step("close both tabs this leg opened", async () => {
     await app.click("menu-close-tab");
     await waitRows(app, (r) => r.length === tabsBeforeLauncher + 1, "one extra tab left");
     await app.click("menu-close-tab");
   });
   await waitRows(app, (r) => r.length === tabsBeforeLauncher, "the tab count back where it started");
-  console.log("4b. a new tab's launcher comes up empty after the last one was typed into");
+  console.log(
+    `4b. a new tab lands on its own centred field, empty (${engineLine.text})${newTabCaret ? ", caret in it" : "; the engine kept the caret"}`,
+  );
 
   // Acceptance 2 (continued) — back/forward enable states track real history.
   await app.click("menu-tab-1");
@@ -678,7 +806,9 @@ try {
   // Downloads live in the content header now, not the sidebar: a toolbar
   // button opens a popover listing the recent ones. A transfer opens it by
   // itself, which is what makes it findable here without a click.
-  const mainWindow = (await app.windows()).windows[0]!.ref;
+  // Not a const: a restart destroys the window and builds a new one, and a
+  // screenshot against the old ref answers "window closed" (-32004).
+  let mainWindow = (await app.windows()).windows[0]!.ref;
   let downloadRows: string[] = [];
   const listed = Date.now() + 15_000;
   while (Date.now() < listed) {
@@ -728,6 +858,76 @@ try {
   await shoot(app, "10-download");
   console.log(`10. download landed at ${downloaded} with ${(await tabRows(app)).length} tabs live; toast in tree=${toasted}`);
 
+  // Ordering: this leg restarts the app, so it runs AFTER the download leg (a
+  // restart immediately before it leaves the download never landing) and
+  // BEFORE the settings leg, which turns reopen-on-launch off and would leave
+  // this leg's tab with nothing to restore.
+  //
+  // Owner report: a restored chrome:// tab came back as about:blank and the
+  // session then stored about:blank as its address. Chromium refuses a
+  // renderer-initiated navigation to chrome://, so such a tab's view has to be
+  // CREATED at the address rather than armed one render later.
+  //
+  // chrome:// exists only under Chromium; on the system engine the app refuses
+  // the address, which is its own leg below.
+  if (!onChromium) {
+    await step("the app refuses a chrome:// address on the system engine", async () => {
+      const before = (await tabRows(app)).length;
+      await goTo(app, "chrome://version");
+      await Bun.sleep(1500);
+      const seen = await shownUrl(app);
+      if (seen.includes("version")) fail(`the system engine was sent to ${JSON.stringify(seen)}`);
+      const after = (await tabRows(app)).length;
+      if (after !== before) fail(`refusing a chrome:// address changed the tab count: ${before} -> ${after}`);
+    });
+    await goTo(app, `${base}/a`);
+    await waitUrl(app, "/a");
+    console.log("13b. the system engine is never sent to a chrome:// address");
+  } else {
+    const beforeChrome = (await tabRows(app)).length;
+    await step("open a tab and send it to chrome://version", async () => {
+      await app.click("menu-new-tab");
+      await waitRows(app, (r) => r.length === beforeChrome + 1, "the extra tab row");
+      await goTo(app, "chrome://version");
+    });
+    await waitUrl(app, "version");
+    await step("leave it in the background", () => app.click("menu-prev-tab"));
+    await app.restart();
+    await app.waitForPresent("tab-list", { timeoutMs: PATIENCE });
+    mainWindow = (await app.windows()).windows[0]!.ref;
+    const restoredChrome = await waitTabIds(app, (ids) => ids.length === beforeChrome + 1, "the restored tab rows");
+    await step("activate the restored chrome:// tab", () => app.click(`menu-tab-${restoredChrome.length - 1}`));
+    const chromeShown = await step("it loads the page it was stored on", async () => {
+      const deadline = Date.now() + PATIENCE;
+      let seen = "";
+      while (Date.now() < deadline) {
+        seen = await shownUrl(app);
+        if (seen.includes("version")) return seen;
+        if (seen.includes("blank")) fail(`the restored chrome:// tab came back on ${JSON.stringify(seen)}`);
+        await Bun.sleep(150);
+      }
+      return fail(`the restored chrome:// tab reads ${JSON.stringify(seen)}`);
+    });
+    await step("close it again", () => app.click("menu-close-tab"));
+    await waitRows(app, (r) => r.length === beforeChrome, "the chrome:// tab to go");
+    // Index-free: earlier legs open and close tabs of their own, so "the tab
+    // the rest of the drive works in" is whichever one is active once this
+    // leg's is gone, sent back to page A. Retried: the palette opened in the
+    // same beat as a tab closing has taken a typed query and come up empty,
+    // and re-typing it is what a person would do.
+    await step("back to page A", async () => {
+      const deadline = Date.now() + PATIENCE;
+      while (Date.now() < deadline) {
+        await goTo(app, `${base}/a`);
+        const seen = await shownUrl(app).catch(() => "");
+        if (seen.endsWith("/a")) return;
+        await Bun.sleep(500);
+      }
+      return fail("the palette would not take the address back to page A");
+    });
+    console.log(`13b. a chrome:// tab is reachable from the address bar and survives a restart (${chromeShown})`);
+  }
+
   // Stage 5 — a private window is a real second window on an ephemeral profile,
   // and nothing it does reaches the session store. The store on disk is the
   // assertion: opening private tabs must not change what a restart would bring
@@ -736,7 +936,22 @@ try {
     const raw = JSON.parse(readFileSync(`${PROFILE}/session.json`, "utf8")) as { data?: { tabs?: unknown[] } };
     return raw.data?.tabs?.length ?? 0;
   };
-  const persistedBefore = storedTabs();
+  // The store is written on a debounce, and the leg before this one closes a
+  // tab, so the baseline is taken once the file has stopped moving. Reading it
+  // too early compares a count from before that close against one from after.
+  const persistedBefore = await step("the session store settles", async () => {
+    const deadline = Date.now() + PATIENCE;
+    let last = -1;
+    let stable = 0;
+    while (Date.now() < deadline) {
+      const now = storedTabs();
+      stable = now === last ? stable + 1 : 0;
+      last = now;
+      if (stable >= 5) return now;
+      await Bun.sleep(200);
+    }
+    return last;
+  });
   await step("open a private window", () => app.click("menu-private-window"));
   await step("the private window presents", () =>
     app.waitFor({ testId: "private-window", state: "present" }, { timeoutMs: PATIENCE }),
@@ -880,11 +1095,18 @@ try {
   console.log(`17. pin sorts ${toPin.testID} under a Pinned heading and persists; unpin takes the headings away`);
 
   // Extensions: the toolbar area Chrome has. The registry surface behind it
-  // (chrome://extensions, listExtensions, installExtension) is implemented by
-  // the GTK CEF backend only, so on AppKit the panel has nothing to list and
-  // the legs below have nothing to drive.
-  if (process.platform !== "linux") {
-    console.log("19. extensions: skipped, the framework answers the extension registry on GTK only");
+  // (chrome://extensions, listExtensions, installExtension) is Chromium's, and
+  // the GTK CEF backend is the only one that answers it, so a run on the
+  // system engine or on AppKit has nothing to list and nothing to drive. The
+  // app hides the whole area there rather than offering a dead button, which
+  // is the first thing asserted.
+  if (!onChromium || process.platform !== "linux") {
+    if (await app.find("extensions-button")) {
+      fail("the extensions button is on show on an engine with no extension registry");
+    }
+    console.log(
+      `19. extensions: skipped and the toolbar area is hidden (engine ${onChromium ? "chromium" : "system"}, ${process.platform})`,
+    );
   } else {
     // The app installs the fixture through its own install API, which is
     // also the only route a drive has: launchApp passes no argv.
@@ -996,11 +1218,10 @@ try {
   /// user did not click and the only way to tell the app's own memory from a
   /// setting Chromium answered by itself.
   const lastAnswer = (): string => permissionTraces[permissionTraces.length - 1] ?? "";
-  const askFor = async (path: string): Promise<void> => {
-    await openPalette(app);
-    await typeQuery(app, `${base}${path}`);
-    await app.setValue("palette", true);
-  };
+  // Through the address field like every other navigation in this drive: the
+  // permission fixtures ask as soon as their page runs, so a navigation that
+  // quietly did not happen reads here as a request that never arrived.
+  const askFor = (path: string): Promise<void> => goTo(app, `${base}${path}`);
 
   await step("open a tab for the permission fixtures", () => app.click("menu-new-tab"));
   await waitRows(app, (r) => r.length === permTabs + 1, "a tab for the permission page");
@@ -1072,9 +1293,10 @@ try {
   await waitRows(app, (r) => r.length === permTabs, "the tab count back where it started");
   console.log(`20. permissions: allow, remembered, reset, block and a tab closed under a prompt: ${JSON.stringify(asked)}`);
 
-  // Compact is Safari's single row: the pills in the toolbar ARE the tab list
-  // and the address bar, and nothing is drawn below it. The live pages must not
-  // notice the switch, so the server's load counters bracket each one.
+  // Compact is the owner's reference row: back, forward, reload, the tabs, a
+  // new-tab button, then the address field taking everything left. Nothing is
+  // drawn below it, and the live pages must not notice the switch, so the
+  // server's load counters bracket each one.
   const beforeCompact = (await tabRows(app)).map((r) => r.testID!);
   const activeTabId = String((await app.mustFind("tab-list")).value ?? "");
   const otherTabId = beforeCompact.map((id) => id.slice(4)).find((id) => id !== activeTabId)!;
@@ -1086,51 +1308,75 @@ try {
   await step("the content reclaims the tab column's width", () => waitContentInset(app, (x) => x === 0));
   await app.mustFind("tab-strip");
   await app.mustFind("header-new-tab");
-  if (await app.find("omnibox")) fail("compact draws no address bar of its own until a pill is clicked");
   const afterDrop = await settledLoads();
   if (loadsAt !== afterDrop) fail(`dropping the sidebar reloaded a page: ${loadsAt} -> ${afterDrop}`);
+
+  // The address field is the point of the redraw: always there, always the
+  // active tab's address, and wider than any one tab.
+  const compactField = await app.mustFind("omnibox");
+  if (String(compactField.text ?? "") !== activeBeforeCompact) {
+    fail(`the compact address field reads ${JSON.stringify(compactField.text)}, want ${JSON.stringify(activeBeforeCompact)}`);
+  }
+  const fieldBox = compactField.geometry!;
+  const activeSlot = (await app.mustFind(`tab-slot-${activeTabId}`)).geometry!;
+  if (fieldBox.w < 240) fail(`the address field is only ${fieldBox.w} wide; its floor is 240`);
+  if (fieldBox.x < activeSlot.x) fail(`the address field (x=${fieldBox.x}) should sit after the tabs (x=${activeSlot.x})`);
+  if (activeSlot.w > 200) fail(`a compact tab is ${activeSlot.w} wide; the reference draws them near 156`);
   await shoot(app, "18-compact", mainWindow);
 
-  // Owner report: the compact tab list went stale. The strip is the only tab UI
+  // Owner report: the compact tab list went stale. The row is the only tab UI
   // this layout has, so everything the session does has to reach it.
-  const pills = async (check: (p: string[]) => boolean, what: string): Promise<string[]> => {
+  // Titles, for the legs that assert on what a tab says. A tab narrowed to
+  // its favicon carries no label at all, so this reads short once the row is
+  // crowded; `tabIds` is what counts tabs.
+  const items = async (check: (p: string[]) => boolean, what: string): Promise<string[]> => {
     const deadline = Date.now() + PATIENCE;
     let seen: string[] = [];
     while (Date.now() < deadline) {
-      seen = await textsUnder(app, "tab-pill-", mainWindow);
+      seen = await textsUnder(app, "tab-item-", mainWindow);
       if (check(seen)) return seen;
       await Bun.sleep(150);
     }
-    return fail(`timed out waiting for ${what}; the strip read ${JSON.stringify(seen)}`);
+    return fail(`timed out waiting for ${what}; the row read ${JSON.stringify(seen)}`);
   };
-  await pills((p) => p.length === beforeCompact.length, "one pill per open tab");
 
-  // The active pill IS the address field. Its value is the proof: the field
-  // cannot be submitted from a drive on GTK (the backend refuses key
-  // synthesis, -32003), so what it comes up holding is what can be asserted.
-  await step("click the active pill", () => app.click(`tab-pill-${activeTabId}`));
-  // "present", not "visible": a SearchInput packed into a header bar is not
-  // actionable by the tree's rule on either backend, and the assertion here is
-  // that the field exists at all, which it does not until the pill is clicked.
-  await step("it becomes the address field", () =>
-    app.waitFor({ testId: "omnibox", state: "present" }, { timeoutMs: PATIENCE }),
-  );
-  const field = await app.mustFind("omnibox");
-  const held = String(field.value ?? field.text ?? "");
-  if (held !== activeBeforeCompact) {
-    fail(`the address field came up holding ${JSON.stringify(held)}, want ${JSON.stringify(activeBeforeCompact)}`);
-  }
-  await step("switch to another pill", () => app.click(`tab-pill-${otherTabId}`));
-  await step("the field goes back to being a pill", async () => {
+  /// Every tab in the row by testID, which is there whether or not the tab is
+  /// wide enough to show a title.
+  const tabIds = async (check: (ids: string[]) => boolean, what: string): Promise<string[]> => {
     const deadline = Date.now() + PATIENCE;
+    let seen: string[] = [];
     while (Date.now() < deadline) {
-      if (!(await app.find("omnibox"))) return;
+      const tree = await app.tree(mainWindow);
+      seen = [];
+      walk(tree.root, (n) => {
+        if (n.testID?.startsWith("tab-item-")) seen.push(n.testID);
+      });
+      if (check(seen)) return seen;
       await Bun.sleep(150);
     }
-    return fail("the address field is still in the strip after switching tabs");
+    return fail(`timed out waiting for ${what}; the row held ${JSON.stringify(seen)}`);
+  };
+  await tabIds((ids) => ids.length === beforeCompact.length, "one tab in the row per open tab");
+
+  // Only the active tab carries a close button; the rest grow one under the
+  // pointer, and GTK synthesises no pointer input, so what is asserted is the
+  // half that does not need one.
+  await app.mustFind(`tab-close-${activeTabId}`);
+  if (await app.find(`tab-close-${otherTabId}`)) {
+    fail("an unselected tab draws a close button before the pointer reaches it");
+  }
+
+  await step("switch to another tab from the row", () => app.click(`tab-item-${otherTabId}`));
+  await step("the close button follows the selection", async () => {
+    const deadline = Date.now() + PATIENCE;
+    while (Date.now() < deadline) {
+      if (await app.find(`tab-close-${otherTabId}`)) return;
+      await Bun.sleep(150);
+    }
+    return fail("the newly selected tab never grew its close button");
   });
-  await step("the window follows the tab the strip picked", async () => {
-    const wanted = (await app.mustFind(`tab-pill-${otherTabId}`)).text ?? "";
+  await step("the window follows the tab the row picked", async () => {
+    const wanted = (await app.mustFind(`tab-item-${otherTabId}`)).text ?? "";
     const deadline = Date.now() + PATIENCE;
     let title = "";
     while (Date.now() < deadline) {
@@ -1141,20 +1387,61 @@ try {
     return fail(`the window still says ${JSON.stringify(title)}, want ${JSON.stringify(wanted)}`);
   });
 
+  // The page under the row: a switch in this layout must leave the active
+  // tab's view filling the content area, not unmounted, hidden or zero-sized.
+  // The owner's report was a solid dark content area under a loaded page.
+  await step("the active page fills the content area in compact", async () => {
+    const box = JSON.parse(await settledPageBox(app)) as { x: number; y: number; w: number; h: number };
+    const content = (await app.mustFind("content")).geometry!;
+    // 8, not 0: the overlay around the page also holds the load bar, the find
+    // anchor and the 2px registry view, and those cost the page a few points
+    // at one edge. What this leg is for is the owner's report of a content
+    // area with nothing in it, which is a whole-area difference.
+    if (Math.abs(box.w - content.w) > 8 || Math.abs(box.h - content.h) > 8) {
+      fail(`the page is ${box.w}x${box.h} inside a ${content.w}x${content.h} content area`);
+    }
+  });
+  const pageBox = JSON.parse(await settledPageBox(app)) as { x: number; y: number; w: number; h: number };
+  // Reported, not asserted. The crop is taken off the X ROOT at the main
+  // window's coordinates, and by this point the drive has left the settings
+  // and private windows up; under Xvfb with no compositor they stack over the
+  // main window, so those pixels are theirs, not the page's. The hard check on
+  // "the content area has nothing in it" is the geometry one above, which
+  // catches a view that is unmounted, hidden or zero-sized. Capturing the
+  // window by id instead would need the obscured-window contents X does not
+  // promise without a compositor.
+  const ink = await pageInk(app, pageBox, "18a-compact-page");
+  if (ink === null) console.log("  18a. no X screen to read, the ink reading did not run");
+  else console.log(`  18a. ink over the page rect: ${ink.toFixed(2)} (root crop, other windows may stack over it)`);
+
+  // Typing an address into the compact field. Enter is a keystroke and GTK
+  // synthesises none (-32003), so the drive fills the field and runs the
+  // handler Enter runs; what is NOT covered here is the key binding itself.
+  await step("type an address into the compact field", () => app.setValue("omnibox", `${base}/c`));
+  await step("commit it", () => app.click("menu-commit-address"));
+  await waitUrl(app, "/c");
+  await items((p) => p.some((t) => t.startsWith("Page C")), "the row to carry the page it landed on");
+  console.log("18c. the compact address field takes a URL and the tab lands on it");
+
   // Opened and retitled: a tab opened from the History menu loads a real page,
-  // so its pill starts on the address and has to end on the page's own title.
+  // so it starts on the address and has to end on the page's own title.
   await step("open a tab from the History menu", () => app.click("menu-history-0"));
-  await pills((p) => p.length === beforeCompact.length + 1, "a pill for the tab history opened");
-  await pills(
-    (p) => !(p[p.length - 1] ?? "127.0.0.1").includes("127.0.0.1"),
-    "the new pill to carry the title its page reported",
-  );
-  // Closed: the pill's own close button only exists under the pointer, and GTK
-  // synthesises no pointer input, so this closes the tab the way a keyboard
-  // does.
+  await tabIds((ids) => ids.length === beforeCompact.length + 1, "a row entry for the tab history opened");
+  // What the tab calls itself, read off the window rather than off the row: a
+  // sixth tab at this width is narrowed to its favicon and carries no label.
+  await step("the new tab reports its page's own title", async () => {
+    const deadline = Date.now() + PATIENCE;
+    let title = "";
+    while (Date.now() < deadline) {
+      title = (await app.windows()).windows[0]!.title ?? "";
+      if (title && !title.includes("127.0.0.1")) return;
+      await Bun.sleep(150);
+    }
+    return fail(`the window still says ${JSON.stringify(title)}`);
+  });
   await step("close it again", () => app.click("menu-close-tab"));
-  const stripAfterClose = await pills((p) => p.length === beforeCompact.length, "the closed tab's pill to go");
-  console.log(`18b. the compact strip tracks open, retitle, close and switch (${stripAfterClose.length} pills)`);
+  const rowAfterClose = await tabIds((ids) => ids.length === beforeCompact.length, "the closed tab to go");
+  console.log(`18b. the compact row tracks open, retitle, close and switch (${rowAfterClose.length} tabs)`);
 
   loadsAt = await settledLoads();
   await step("switch back to the sidebar layout", () => app.click("menu-layout"));

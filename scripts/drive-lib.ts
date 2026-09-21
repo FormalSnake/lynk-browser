@@ -145,24 +145,38 @@ export async function waitText(
   return fail(`timed out waiting for ${what}; ${testId} read ${JSON.stringify(seen)}`);
 }
 
-/// The app's address bar IS its command palette, and both drives drive it the
-/// same way on both backends. Bound to one drive's patience and nothing else.
+/// The command palette, which is also how a drive navigates: neither backend
+/// can submit the header's address field (GTK synthesises no key input), and
+/// the palette takes its query and its submit over the automation socket.
+/// Bound to one drive's patience and nothing else.
 export function paletteDriver(config: { timeoutMs: number }) {
-  /// Open it, unless something already did (New tab does). The palette
-  /// presents asynchronously and is not actionable until it does, so every
-  /// open waits for it.
-  ///
-  /// The omnibox is a `<searchinput>` on both backends now, and a field has no
-  /// click handler, so the palette opens the way a person opens it: the
-  /// Address item in the File menu, which both backends bind to Ctrl+L.
+  /// Opens it and waits for it to be ACTIONABLE, not merely visible: the
+  /// widget is mounted for the life of the window and a dismissed dialog
+  /// still reads as visible for a frame or two, so an open that trusted
+  /// `visible` would hand the next setValue a palette on its way out.
+  /// Ctrl+K is its own shortcut; Ctrl+L belongs to the address field.
+  /// Opening one that is already open is a no-op in the app, so this never
+  /// needs to know which state it found.
   async function openPalette(app: AppHandle): Promise<void> {
-    const node = await app.find("palette");
-    if (node?.visible) return;
-    const opener = "menu-address";
+    const opener = "menu-palette";
     await step(`click ${opener}`, () => app.click(opener));
     await step("wait for the palette to present", () =>
       app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: config.timeoutMs }),
     );
+  }
+
+  /// An action retried until the widget will take it, the pattern a popover's
+  /// content needs too: present is not actionable.
+  async function whenReady<T>(what: string, run: () => Promise<T>): Promise<T> {
+    const deadline = Date.now() + config.timeoutMs;
+    for (;;) {
+      try {
+        return await run();
+      } catch (e) {
+        if (Date.now() > deadline) throw new Error(`${what}: ${(e as Error).message}`);
+        await Bun.sleep(200);
+      }
+    }
   }
 
   /// setValue(palette, "<string>") replaces the entry text but leaves the
@@ -170,14 +184,38 @@ export function paletteDriver(config: { timeoutMs: number }) {
   /// and the blank intermediate wins), so the ranked item list would not match
   /// what the drive typed. Clearing and inserting keeps both sides in step.
   async function typeQuery(app: AppHandle, text: string): Promise<void> {
-    await step("clear the palette query", () => app.setValue("palette", ""));
-    await step(`type ${JSON.stringify(text)} into the palette`, () => app.type("palette", text));
+    await whenReady("clear the palette query", () => app.setValue("palette", ""));
+    await whenReady(`type ${JSON.stringify(text)} into the palette`, () => app.type("palette", text));
   }
 
+  /// Navigation goes through the ADDRESS FIELD, not the palette: that is
+  /// where a person types an address, and it is deterministic where the
+  /// palette is not (a palette opened in the same beat as a tab closing has
+  /// come up holding nothing). Enter is a keystroke and GTK synthesises none
+  /// (-32003), so the drive fills the field and then runs the handler Enter
+  /// runs, through a test-only menu item; the key binding itself stays
+  /// uncovered.
+  /// The address field is the route on GTK. On AppKit a SearchInput packed
+  /// into a header bar is not actionable by the tree's rule (-32001), so the
+  /// drive cannot fill it there and the palette is the only field it can both
+  /// fill and submit. Framework gap; the app draws the same field on both.
   async function goTo(app: AppHandle, url: string): Promise<void> {
-    await openPalette(app);
-    await typeQuery(app, url);
-    await step("submit the palette query", () => app.setValue("palette", true));
+    if (process.platform === "darwin") {
+      await openPalette(app);
+      await typeQuery(app, url);
+      await whenReady("submit the palette query", () => app.setValue("palette", true));
+      return;
+    }
+    // Read back before committing. `text` on the field is the address the app
+    // last set, so a navigation that lands between the fill and the commit
+    // rewrites the field under the drive, and the commit would then re-enter
+    // the address the tab was already on. A person retyping is the same fix.
+    await whenReady(`type ${JSON.stringify(url)} into the address field`, async () => {
+      await app.setValue("omnibox", url);
+      const held = String((await app.mustFind("omnibox")).value ?? "");
+      if (held !== url) throw new Error(`the field holds ${JSON.stringify(held)} after being set to ${JSON.stringify(url)}`);
+    });
+    await whenReady("commit the address field", () => app.click("menu-commit-address"));
   }
 
   return { openPalette, typeQuery, goTo };

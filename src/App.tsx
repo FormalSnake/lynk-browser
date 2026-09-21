@@ -37,6 +37,7 @@ import type {
 // not re-export it, hence the direct react import.
 import { Activity } from "react";
 
+import { ADDRESS_MIN_WIDTH, CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
 import type { DownloadItem } from "./lib/downloads.ts";
 import { downloadDir, runDownload } from "./lib/downloads.ts";
 import {
@@ -112,11 +113,6 @@ const COMMANDS: { id: string; title: string; hint: string; iconName: string }[] 
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
 
-/// Compact tab pills. Every pill expands to an equal share of the row, so
-/// these are the floors below which a share cannot shrink: the active tab
-/// keeps enough width to read an address in, the rest keep enough for a
-/// favicon and a word. The close slot is reserved on every pill whether or not
-/// the pointer is on it.
 /// The extensions panel. Wide enough for a name beside its pin toggle, and
 /// fixed so the panel does not resize as extensions come and go.
 const EXTENSIONS_PANEL_WIDTH = 300;
@@ -125,9 +121,9 @@ const EXTENSIONS_PANEL_WIDTH = 300;
 /// shortest thing it ever holds.
 const SITE_PANEL_WIDTH = 320;
 
-const PILL_ACTIVE_WIDTH = 260;
-const PILL_MIN_WIDTH = 96;
-const CLOSE_SLOT_WIDTH = 24;
+/// The new tab page's field. Wide enough to read a long address back in,
+/// narrow enough to stay a field rather than a banner across the window.
+const NEW_TAB_FIELD_WIDTH = 480;
 
 /// What the padlock says. `none` is not a verdict: it is the new-tab page and
 /// anything else that never had a chance to be encrypted, and warning there
@@ -259,11 +255,8 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   // `paletteQuery` is what the user actually typed, and only feeds ranking.
   const [paletteSeed, setPaletteSeed] = useState("");
   const [paletteQuery, setPaletteQuery] = useState("");
-  /// The palette widget's key. `query` is applied only when the value the host
-  /// is given changes, and the entry keeps whatever was typed into it after a
-  /// close, so re-seeding a string equal to the last one leaves that text in
-  /// the field. Bumping the key rebuilds the widget, which is the only way an
-  /// unchanged seed can still mean an empty field.
+  /// The palette widget's key; see openPalette for why an unchanged seed has
+  /// to rebuild the widget rather than re-apply a prop.
   const [paletteEpoch, setPaletteEpoch] = useState(0);
   const [historyHits, setHistoryHits] = useState<Visit[]>([]);
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
@@ -271,13 +264,6 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   const [history, setHistory] = useState<Visit[]>(initialHistory);
   const [find, setFind] = useState<FindState>(NO_FIND);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  /// Compact draws the active tab as an editable address field while this is
-  /// set: the pill IS the address bar, so there is no second field to put the
-  /// caret in.
-  const [editingAddress, setEditingAddress] = useState(false);
-  /// The pill the pointer is on, so its close button can appear. One id rather
-  /// than a set, because the pointer is in one place.
-  const [hoveredTab, setHoveredTab] = useState("");
   /// Permission requests waiting for an answer, oldest first. A request is
   /// per tab and per id: concurrent ones queue, and a background tab's waits
   /// until that tab is active.
@@ -315,9 +301,16 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// callback runs on every render, and focusing on each one would fight the
   /// user for the caret.
   const findFocused = useRef(0);
-  /// The compact address field the app has already put the caret in, guarded
-  /// the same way and for the same reason as the find field above.
-  const addressFocused = useRef(0);
+  /// The header's address field, so Ctrl+L can put the caret in it without a
+  /// render-time focus that would fight the user for it every frame. Both
+  /// backends select the contents on grab-focus, which is what Ctrl+L means.
+  const omnibox = useRef<NdNodeRef<"searchinput"> | null>(null);
+  /// What is in the address field right now. Only a test hook reads it: a
+  /// person presses Enter, which carries the text with it.
+  const typedAddress = useRef("");
+  /// The new tab page's own field, guarded by widget id so the caret is placed
+  /// once per field rather than on every render.
+  const newTabFocused = useRef(0);
   /// The hidden `chrome://extensions` view. Chromium exposes its extension
   /// registry to that page and nowhere else, so every list and every install
   /// goes through this one rather than through a tab the user can navigate.
@@ -381,7 +374,6 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   }
 
   function closeTab(id: string): void {
-    setEditingAddress(false);
     denyPromptsFor(id);
     const gone = tabs.find((t) => t.id === id);
     if (gone) closed.current.push({ url: gone.url, title: gone.title });
@@ -424,7 +416,6 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   }
 
   function selectTab(id: string): void {
-    setEditingAddress(false);
     setSiteInfoOpen(false);
     session.update((s) => (s.activeId === id ? s : { ...s, activeId: id }));
     applyZoom(id, tabs.find((t) => t.id === id)?.url ?? "");
@@ -524,7 +515,6 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// leaves every tab's `<webview>` at the same place in the tree, so the live
   /// pages survive the switch instead of remounting.
   function setLayout(next: Layout): void {
-    setEditingAddress(false);
     settings.update((s) => (s.layout === next ? s : { ...s, layout: next }));
   }
 
@@ -881,8 +871,13 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   }
 
   function openPalette(seed: string): void {
-    // Ctrl+T seeds "" over a seed that is already "": nothing changes, nothing
-    // is sent, and the entry still holds the address the last tab was sent to.
+    // Seeding "" over a seed that is already "" changes nothing, and the entry
+    // keeps whatever was last typed into it, so the palette would come up
+    // holding the last query. Bumping the key rebuilds the widget, which is
+    // the only way an unchanged seed can still mean an empty field. It is
+    // also what makes the palette present on AppKit: an `open` update on a
+    // widget that already exists does nothing there, while one created open
+    // presents (measured on the bundled CEF host, legs 2 to 4).
     if (seed === paletteSeed) setPaletteEpoch((n) => n + 1);
     setPaletteSeed(seed);
     setPaletteQuery(seed);
@@ -896,25 +891,23 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
     setPaletteQuery("");
   }
 
-  /// New tab is Arc-shaped: the empty tab appears and the palette opens over it,
-  /// so one keystroke gets you from "new tab" to "typing an address".
+  /// A new tab lands on the new tab page, whose own centred field takes the
+  /// caret as it mounts. Nothing opens over the page: an in-window dialog is
+  /// painted under the engine's own window on Linux.
   function newTab(): void {
     openTab("");
-    // Compact has no palette to open over the page: its own pill becomes the
-    // field, which is where a new tab starts in Safari.
-    if (compact) setEditingAddress(true);
-    else openPalette("");
   }
 
-  /// What Ctrl+L, the padlock and the new tab page all mean by "let me type an
-  /// address", which is a different widget in each layout.
+  /// Ctrl+L, and the padlock's "type an address" path. Grab-focus selects the
+  /// contents on both backends, so the URL comes up ready to be typed over.
   function openAddress(): void {
-    if (compact) setEditingAddress(true);
-    else openPalette(active.url);
+    const node = omnibox.current;
+    if (!node) return;
+    sendCommand(node, "focus");
+    if (TEST_HOOKS) console.error("ND_APP FOCUS target=omnibox");
   }
 
   function commitQuery(raw: string): void {
-    setEditingAddress(false);
     closePalette();
     navigate(active.id, raw);
   }
@@ -982,6 +975,10 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// nowhere to hang, so its popup rides the puzzle piece.
   const openAction = rows.find((r) => r.id === popupId) ?? null;
   const unpinnedPopup = openAction && !prefs.pinnedExtensions.includes(openAction.id) ? openAction : null;
+  /// The tab run is sized from the window rather than from hexpand: GTK would
+  /// hand every tab an equal share of the whole row, which is what left the
+  /// address field nowhere to go and every title at two characters.
+  const tabMetrics = tabRunMetrics(state.windowWidth, tabs, pinnedActions.length);
 
   void iconEpoch;
   // One line per tab: favicon and title, nothing else. A second line of host
@@ -1088,6 +1085,12 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
             accelerator="primary+l"
             onSelect={openAddress}
           />
+          <menuitem
+            testID="menu-palette"
+            label="Command Palette"
+            accelerator="primary+k"
+            onSelect={() => openPalette("")}
+          />
           <menuitem testID="menu-close-tab" label="Close Tab" accelerator="primary+w" onSelect={() => closeTab(active.id)} />
           <menuitem
             testID="menu-reopen-tab"
@@ -1188,6 +1191,14 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                 const code = process.env.NB_TEST_JS;
                 if (node && code) void executeJavaScript(node, code).catch(() => {});
               }}
+            />
+            {/* Enter in the address field is a keystroke, and GTK synthesises
+                none (-32003). This runs the handler that keystroke runs, on
+                the text the field is actually holding. */}
+            <menuitem
+              testID="menu-commit-address"
+              label="Commit the address field"
+              onSelect={() => commitQuery(typedAddress.current)}
             />
             {/* The menu itself belongs to the engine now, and no automation can
                 open one: GTK4 synthesises no pointer input, and the engine's
@@ -1333,15 +1344,19 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
               onForward={() => command("goForward")}
             >
               {/* One icon for both directions: Adwaita's sidebar-hide glyph has
-                  no SF Symbol behind it, so the state rides the tooltip. */}
-              <button
-                slot="start"
-                testID="layout-toggle"
-                iconName="sidebar-show-symbolic"
-                tooltip={prefs.layout === "sidebar" ? "Use Compact Layout" : "Use Sidebar Layout"}
-                cssClasses={["flat"]}
-                onClick={() => setLayout(prefs.layout === "sidebar" ? "compact" : "sidebar")}
-              />
+                  no SF Symbol behind it, so the state rides the tooltip. In
+                  compact it joins the trailing controls, so the row starts
+                  where the reference's does: back, forward, reload, tabs. */}
+              {!compact && (
+                <button
+                  slot="start"
+                  testID="layout-toggle"
+                  iconName="sidebar-show-symbolic"
+                  tooltip="Use Compact Layout"
+                  cssClasses={["flat"]}
+                  onClick={() => setLayout("compact")}
+                />
+              )}
               <button
                 slot="start"
                 testID="reload"
@@ -1350,6 +1365,35 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                 cssClasses={["flat"]}
                 onClick={() => command(activeRt.loading ? "stop" : "reload")}
               />
+
+              {/* Compact puts the tabs in the row itself, between reload and
+                  the address field, and nothing below it. */}
+              {compact && (
+                <CompactTabs
+                  tabs={tabs}
+                  activeId={active.id}
+                  metrics={tabMetrics}
+                  prefix=""
+                  iconFor={faviconFor}
+                  labelFor={tabLabel}
+                  addressFor={(t) => displayUrl(t.url) || "New Tab"}
+                  onSelect={selectTab}
+                  onClose={closeTab}
+                />
+              )}
+              {compact && (
+                <button
+                  slot="start"
+                  testID="header-new-tab"
+                  // A bare plus, not the boxed tab glyph: in one row of tabs
+                  // the boxed one reads as a sixth tab.
+                  iconName="list-add-symbolic"
+                  tooltip="New Tab"
+                  cssClasses={["flat"]}
+                  onClick={newTab}
+                />
+              )}
+
               {/* One indicator, updated in place. The state rides the testID
                   because getTree exposes a node's text but never its icon
                   name, so that is the only way a drive can assert which
@@ -1449,112 +1493,43 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                   </box>
                 </popover>
               </box>
-              {/* One address widget on both backends. The private window
-                  proved a `<searchinput>` takes the header bar's whole free
-                  run on GTK too (523px of a 778px bar), so the main window no
-                  longer draws its address as a flat label. Typing and Enter
-                  commit straight from the field; Ctrl+L still opens the
-                  palette, which is where history and command ranking live.
+              {/* One address widget on both backends and in both layouts, and
+                  it takes whatever the row has left: the host promotes a
+                  search entry packed straight into a header bar to the title
+                  widget with hexpand, which is the centre run. Wrapping it in
+                  a box loses that and leaves it at its floor. Typing and Enter
+                  commit from the field; Ctrl+L puts the caret in it.
 
                   The padlock stays a separate button to its left: the widget
                   has no leading-icon prop on either backend, so putting the
                   security state inside the field would need a framework arm
                   (LEDGER). */}
-              {!compact && (
-                <searchinput
-                  slot="start"
-                  testID="omnibox"
-                  text={shownUrl}
-                  placeholder="Search or Enter Address"
-                  style={{ hexpand: true }}
-                  onActivate={(e) => commitQuery(e.text)}
-                />
-              )}
+              <searchinput
+                slot="start"
+                ref={(node) => {
+                  omnibox.current = node as NdNodeRef<"searchinput"> | null;
+                }}
+                testID="omnibox"
+                text={shownUrl}
+                placeholder="Search or enter address"
+                // Set, not expanded: see TabRunMetrics.addressWidth for why
+                // hexpand alone leaves the field at its floor.
+                style={{ hexpand: true, minWidth: compact ? tabMetrics.addressWidth : ADDRESS_MIN_WIDTH }}
+                // A ref, not state: feeding a keystroke back into the
+                // controlled `text` prop makes the host's set_text race the
+                // entry and blank it.
+                onChanged={(e) => (typedAddress.current = e.text)}
+                onActivate={(e) => commitQuery(e.text)}
+              />
 
-              {/* Compact is Safari's: one toolbar row, and the tabs in it ARE
-                  the address bar. Every pill takes an equal share of what is
-                  left after the buttons, the active one carries more of it,
-                  and clicking the active pill (or Ctrl+L) swaps it for the
-                  field. Nothing is drawn below this row. */}
-              {compact && (
-                <box
-                  slot="start"
-                  testID="tab-strip"
-                  orientation="horizontal"
-                  spacing={Spacing.xs}
-                  style={{ hexpand: true }}
-                >
-                  {tabs.map((t) =>
-                    t.id === active.id && editingAddress ? (
-                      <searchinput
-                        key={t.id}
-                        ref={(node) => {
-                          if (!node) {
-                            addressFocused.current = 0;
-                            return;
-                          }
-                          if (addressFocused.current === node.id) return;
-                          addressFocused.current = node.id;
-                          sendCommand(node as NdNodeRef<"searchinput">, "focus");
-                        }}
-                        testID="omnibox"
-                        text={shownUrl}
-                        placeholder="Search or Enter Address"
-                        style={{ hexpand: true, minWidth: PILL_ACTIVE_WIDTH }}
-                        onActivate={(e) => commitQuery(e.text)}
-                      />
-                    ) : (
-                      <box
-                        key={t.id}
-                        testID={`tab-slot-${t.id}`}
-                        orientation="horizontal"
-                        style={{ hexpand: true }}
-                        onHoverChanged={(e) => setHoveredTab(e.checked ? t.id : "")}
-                      >
-                        <button
-                          testID={`tab-pill-${t.id}`}
-                          label={tabLabel(t)}
-                          iconData={faviconFor(t.url)}
-                          iconName="web-browser-symbolic"
-                          ellipsize
-                          tooltip={displayUrl(t.url) || "New Tab"}
-                          cssClasses={t.id === active.id ? ["pill", "raised"] : ["pill", "flat"]}
-                          style={{
-                            hexpand: true,
-                            minWidth: t.id === active.id ? PILL_ACTIVE_WIDTH : PILL_MIN_WIDTH,
-                          }}
-                          onClick={() => (t.id === active.id ? setEditingAddress(true) : selectTab(t.id))}
-                        />
-                        {/* The close button appears under the pointer, as it
-                            does in Safari. The slot it takes is reserved
-                            either way, so the row does not resize as the
-                            pointer crosses it. */}
-                        {hoveredTab === t.id ? (
-                          <button
-                            testID={`tab-close-${t.id}`}
-                            iconName="window-close-symbolic"
-                            tooltip={`Close ${tabLabel(t)}`}
-                            cssClasses={["flat", "circular"]}
-                            size="small"
-                            style={{ minWidth: CLOSE_SLOT_WIDTH, valign: "center" }}
-                            onClick={() => closeTab(t.id)}
-                          />
-                        ) : (
-                          <box orientation="horizontal" style={{ minWidth: CLOSE_SLOT_WIDTH }} />
-                        )}
-                      </box>
-                    ),
-                  )}
-                </box>
-              )}
               {compact && (
                 <button
                   slot="end"
-                  testID="header-new-tab"
-                  iconName="tab-new-symbolic"
-                  tooltip="New Tab"
+                  testID="layout-toggle"
+                  iconName="sidebar-show-symbolic"
+                  tooltip="Use Sidebar Layout"
                   cssClasses={["flat"]}
-                  onClick={newTab}
+                  onClick={() => setLayout("sidebar")}
                 />
               )}
 
@@ -1676,6 +1651,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                 {unpinnedPopup ? extensionPopup(unpinnedPopup) : <box orientation="horizontal" />}
               </popover>
               </box>
+              )}
 
               {/* A popover anchors on its TREE parent on both backends, and a
                   header bar's own handle never joins a view hierarchy, so the
@@ -1764,7 +1740,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                 key={paletteEpoch}
                 testID="palette"
                 open={paletteOpen}
-                placeholder="Search or enter address"
+                placeholder="Search tabs, history and commands"
                 query={paletteSeed}
                 items={paletteItems}
                 onQueryChanged={(e) => {
@@ -1859,21 +1835,46 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                     </statuspage>
                   )}
 
+                  {/* A new tab has no webview at all (the map above skips a
+                      tab with no URL), so this native page IS the content
+                      area rather than a layer over one: a GTK widget cannot
+                      be seen over the engine's own X11 child window. */}
                   {active.url === "" && (
-                    <statuspage
-                      testID="new-tab-page"
-                      iconName="web-browser-symbolic"
-                      title="New Tab"
-                      description="Search the web, or open a page you have visited before."
-                      style={{ vexpand: true }}
-                    >
-                      <button
-                        testID="new-tab-search"
-                        label="Search or Enter Address"
-                        cssClasses={["suggested-action", "pill"]}
-                        onClick={openAddress}
-                      />
-                    </statuspage>
+                    <box testID="new-tab-page" orientation="vertical" style={{ hexpand: true, vexpand: true }}>
+                      <box
+                        orientation="vertical"
+                        spacing={Spacing.sm}
+                        style={{ halign: "center", valign: "center", vexpand: true }}
+                      >
+                        <searchinput
+                          // Keyed on the tab, so opening a second new tab
+                          // builds a new field and the caret lands in it
+                          // again.
+                          key={active.id}
+                          ref={(node) => {
+                            if (!node) {
+                              newTabFocused.current = 0;
+                              return;
+                            }
+                            if (newTabFocused.current === node.id) return;
+                            newTabFocused.current = node.id;
+                            sendCommand(node as NdNodeRef<"searchinput">, "focus");
+                          }}
+                          testID="new-tab-search"
+                          placeholder="Search or enter address"
+                          style={{ minWidth: NEW_TAB_FIELD_WIDTH }}
+                          onActivate={(e) => commitQuery(e.text)}
+                        />
+                        <box orientation="horizontal" spacing={Spacing.xs} style={{ halign: "center" }}>
+                          <image iconName="system-search-symbolic" symbolScale="small" cssClasses={["dimmed"]} />
+                          <label
+                            testID="new-tab-engine"
+                            text={`Search with ${engineOf(prefs.searchEngine).name}`}
+                            cssClasses={["dimmed", "caption"]}
+                          />
+                        </box>
+                      </box>
+                    </box>
                   )}
                 </box>
 
