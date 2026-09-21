@@ -909,7 +909,26 @@ try {
       }
       return fail(`the panel lists ${JSON.stringify(seen)} after installing one extension`);
     });
-    const extRow = await app.mustFind(`ext-row-${extId}`);
+      // The extension opens its own welcome tab on install (chrome.tabs.create),
+    // which reaches the app as `newWindow` carrying a chrome-extension:// URL.
+    // It used to arrive empty and the app opened a dead about:blank tab.
+    const welcome = await waitRows(
+      app,
+      (r) => r.some((title) => title === "ND Gate options"),
+      "the tab the extension opened for itself",
+    );
+    // The tab the install added, not the ones earlier legs left lying about:
+    // a dead one would come up as the last row reading about:blank.
+    if (welcome.length !== extTabsBefore + 1 || welcome[welcome.length - 1] !== "ND Gate options") {
+      fail(`the extension's tab came up as ${JSON.stringify(welcome.slice(extTabsBefore))}`);
+    }
+    await step("close the extension's own tab", async () => {
+      const at = welcome.findIndex((title) => title === "ND Gate options");
+      await app.click(`menu-tab-${at}`);
+      await app.click("menu-close-tab");
+    });
+
+  const extRow = await app.mustFind(`ext-row-${extId}`);
     if (extRow.text !== "NB Test Extension") fail(`the row reads ${JSON.stringify(extRow.text)}`);
     if (await app.find("extensions-empty")) fail("the panel still shows its empty state with one extension listed");
 

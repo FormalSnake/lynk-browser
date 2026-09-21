@@ -364,7 +364,10 @@ export function PrivateWindow({
                         onLoadingChanged={(e) => patch(t.id, { loading: e.checked })}
                         onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
                         onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
-                        onNewWindow={(e) => openTab(e.text)}
+                        onNewWindow={(e) => {
+                      const target = e.text.trim();
+                      if (target && target !== "about:blank") openTab(target);
+                    }}
                     onPermissionRequest={(e) => onPermissionRequest(t.id, e.data)}
                         onContextMenuItemClicked={(e) => {
                           const click = e.data as ContextMenuItemClick;

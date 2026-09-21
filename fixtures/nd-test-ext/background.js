@@ -19,6 +19,13 @@ function ndCreateMenus() {
   });
 }
 
+// The welcome tab an extension opens for itself on install, which is how
+// 1Password's sign-in page arrives: it reaches the app as `newWindow` with a
+// chrome-extension:// URL.
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("options.html") });
+});
+
 chrome.runtime.onInstalled.addListener(ndCreateMenus);
 chrome.runtime.onStartup.addListener(ndCreateMenus);
 ndCreateMenus();
