@@ -18,7 +18,8 @@ import type {
 import { Activity } from "react";
 
 import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
-import { displayUrl, toUrl } from "./lib/url.ts";
+import { permissionSentence, splitTypes, type PermissionPrompt } from "./lib/permissions.ts";
+import { displayUrl, hostOf, toUrl } from "./lib/url.ts";
 
 const TAB_ACTIONS: SourceTreeAction[] = [
   { id: "close", iconName: "window-close-symbolic", tooltip: "Close Tab" },
@@ -60,6 +61,12 @@ export function PrivateWindow({
   const [tabs, setTabs] = useState<PrivateTab[]>([blankTab("p1")]);
   const [activeId, setActiveId] = useState("p1");
   const [findOpen, setFindOpen] = useState(false);
+  /// Same queue the main window keeps, with one difference that is the whole
+  /// point of this window: nothing a page is allowed to do here is written
+  /// down, so every request is asked again.
+  const [prompts, setPrompts] = useState<PermissionPrompt[]>([]);
+  const [siteInfoOpen, setSiteInfoOpen] = useState(false);
+  const pending = useRef<PermissionPrompt[]>([]);
   const next = useRef(2);
   const views = useRef(new Map<string, NdNodeRef<"webview"> | null>());
   /// Views whose context-menu items have been pushed. An inline ref callback
@@ -67,6 +74,7 @@ export function PrivateWindow({
   const menuedViews = useRef(new Set<number>());
 
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0]!;
+  const activePrompt = prompts.find((p) => p.tabId === active.id) ?? null;
 
   function patch(id: string, part: Partial<PrivateTab>): void {
     setTabs((list) => list.map((t) => (t.id === id ? { ...t, ...part } : t)));
@@ -79,6 +87,7 @@ export function PrivateWindow({
   }
 
   function closeTab(id: string): void {
+    denyPromptsFor(id);
     views.current.delete(id);
     setTabs((list) => {
       const rest = list.filter((t) => t.id !== id);
@@ -110,6 +119,44 @@ export function PrivateWindow({
     setFindOpen(false);
     const node = views.current.get(active.id);
     if (node) sendCommand(node, "focus");
+  }
+
+  /// An id left unanswered leaves the page waiting for ever, so every way a
+  /// prompt can leave this queue answers it first. Block is the safe answer.
+  /// A ref with the state mirroring it, for the reason the main window's copy
+  /// explains: answering closes the popover, and the close handler must not
+  /// answer the same id a second time.
+  function setQueue(next: PermissionPrompt[]): void {
+    pending.current = next;
+    setPrompts(next);
+  }
+
+  function respond(tabId: string, id: string, allow: boolean): void {
+    const node = views.current.get(tabId);
+    if (node) sendCommand(node, "respondPermission", { id, allow });
+  }
+
+  function denyPromptsFor(tabId: string): void {
+    const doomed = pending.current.filter((p) => p.tabId === tabId);
+    if (doomed.length === 0) return;
+    for (const prompt of doomed) respond(tabId, prompt.id, false);
+    setQueue(pending.current.filter((p) => p.tabId !== tabId));
+  }
+
+  function answerPrompt(prompt: PermissionPrompt, allow: boolean): void {
+    respond(prompt.tabId, prompt.id, allow);
+    setQueue(pending.current.filter((p) => p.id !== prompt.id));
+    setSiteInfoOpen(false);
+  }
+
+  function onPermissionRequest(tabId: string, data: unknown): void {
+    const request = (data ?? {}) as { id?: string; origin?: string; types?: string };
+    if (!request.id) return;
+    setQueue([
+      ...pending.current,
+      { id: request.id, tabId, origin: request.origin ?? "", types: splitTypes(request.types ?? "") },
+    ]);
+    if (tabId === active.id) setSiteInfoOpen(true);
   }
 
   function navigate(raw: string): void {
@@ -186,6 +233,70 @@ export function PrivateWindow({
             onBack={() => command("goBack")}
             onForward={() => command("goForward")}
           >
+            {/* The private window's site-info button: it answers permission
+                requests and says what this window will not do, which is
+                remember any of them. */}
+            <box slot="start" testID="private-site-info-anchor" orientation="horizontal">
+              <button
+                testID="private-site-info"
+                iconName="web-browser-symbolic"
+                tooltip="Site Information"
+                cssClasses={["flat"]}
+                onClick={() => setSiteInfoOpen(!siteInfoOpen)}
+              />
+              <popover
+                testID="private-site-info-popover"
+                open={siteInfoOpen}
+                position="bottom"
+                onClosed={() => {
+                  setSiteInfoOpen(false);
+                  denyPromptsFor(active.id);
+                }}
+              >
+                <box
+                  testID="private-site-info-panel"
+                  orientation="vertical"
+                  spacing={Spacing.sm}
+                  style={{ padding: Spacing.sm, minWidth: FIND_BAR_WIDTH - 100 }}
+                >
+                  <label
+                    testID="private-site-info-host"
+                    text={hostOf(active.url) || "New Tab"}
+                    cssClasses={["heading"]}
+                    style={{ halign: "start" }}
+                  />
+                  {activePrompt ? (
+                    <box orientation="vertical" spacing={Spacing.sm}>
+                      <label
+                        testID="private-permission-request"
+                        text={permissionSentence(hostOf(active.url) || activePrompt.origin, activePrompt.types)}
+                        style={{ halign: "start" }}
+                      />
+                      <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end" }}>
+                        <button
+                          testID="private-permission-block"
+                          label="Block"
+                          onClick={() => answerPrompt(activePrompt, false)}
+                        />
+                        <button
+                          testID="private-permission-allow"
+                          label="Allow"
+                          cssClasses={["suggested-action"]}
+                          onClick={() => answerPrompt(activePrompt, true)}
+                        />
+                      </box>
+                    </box>
+                  ) : (
+                    <label
+                      testID="private-site-permissions-note"
+                      text="Choices you make here are forgotten when this window closes."
+                      cssClasses={["dimmed"]}
+                      style={{ halign: "start" }}
+                    />
+                  )}
+                </box>
+              </popover>
+            </box>
             <button
               slot="start"
               testID="private-reload"
@@ -254,6 +365,7 @@ export function PrivateWindow({
                         onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
                         onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
                         onNewWindow={(e) => openTab(e.text)}
+                    onPermissionRequest={(e) => onPermissionRequest(t.id, e.data)}
                         onContextMenuItemClicked={(e) => {
                           const click = e.data as ContextMenuItemClick;
                           if (click.id === "nb-open-link" && click.linkUrl) openTab(click.linkUrl);

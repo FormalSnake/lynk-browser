@@ -50,6 +50,18 @@ import {
 import { faviconFor, fetchFavicon, rememberFavicon } from "./lib/favicons.ts";
 import { recentVisits, recordTitle, recordVisit, searchHistory, type Visit } from "./lib/history.ts";
 import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
+import {
+  decisionsFor,
+  forgetOrigin,
+  permissionName,
+  permissionSentence,
+  rememberDecision,
+  originOf,
+  rememberedDecision,
+  splitTypes,
+  type PermissionDecision,
+  type PermissionPrompt,
+} from "./lib/permissions.ts";
 import { session } from "./lib/session.ts";
 import { LAYOUTS, SEARCH_ENGINES, engineOf, settings, type Layout } from "./lib/settings.ts";
 import { displayUrl, fileNameFromUrl, hostOf, isSearch, toUrl } from "./lib/url.ts";
@@ -106,6 +118,10 @@ const ZOOM_MAX = 3;
 /// The extensions panel. Wide enough for a name beside its pin toggle, and
 /// fixed so the panel does not resize as extensions come and go.
 const EXTENSIONS_PANEL_WIDTH = 300;
+
+/// The site-info panel, sized for a permission sentence rather than for the
+/// shortest thing it ever holds.
+const SITE_PANEL_WIDTH = 320;
 
 const PILL_ACTIVE_WIDTH = 260;
 const PILL_MIN_WIDTH = 96;
@@ -252,6 +268,13 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// The pill the pointer is on, so its close button can appear. One id rather
   /// than a set, because the pointer is in one place.
   const [hoveredTab, setHoveredTab] = useState("");
+  /// Permission requests waiting for an answer, oldest first. A request is
+  /// per tab and per id: concurrent ones queue, and a background tab's waits
+  /// until that tab is active.
+  const [prompts, setPrompts] = useState<PermissionPrompt[]>([]);
+  const [siteInfoOpen, setSiteInfoOpen] = useState(false);
+  /// The queue the handlers act on; `prompts` is its rendered copy.
+  const pending = useRef<PermissionPrompt[]>([]);
   /// The two halves of an extension row, each from its own framework call.
   const [registry, setRegistry] = useState<InstalledExtension[]>([]);
   const [extActions, setExtActions] = useState<ExtensionAction[]>([]);
@@ -331,6 +354,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
 
   function closeTab(id: string): void {
     setEditingAddress(false);
+    denyPromptsFor(id);
     const gone = tabs.find((t) => t.id === id);
     if (gone) closed.current.push({ url: gone.url, title: gone.title });
     views.current.delete(id);
@@ -373,6 +397,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
 
   function selectTab(id: string): void {
     setEditingAddress(false);
+    setSiteInfoOpen(false);
     session.update((s) => (s.activeId === id ? s : { ...s, activeId: id }));
     applyZoom(id, tabs.find((t) => t.id === id)?.url ?? "");
   }
@@ -403,6 +428,9 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   }
 
   function onNavigated(id: string, url: string): void {
+    // A page that navigated away is not waiting for its own answer any more,
+    // and the id would otherwise stay in the queue for ever.
+    denyPromptsFor(id);
     committed.current.set(id, url);
     setTabUrl(id, url);
     applyZoom(id, url);
@@ -471,6 +499,73 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
     setFind((f) => ({ ...f, open: true, query: text, count: null }));
     if (text) findCommand("findStart", { text });
     else findCommand("findStop");
+  }
+
+  // ---------------------------------------------------- permissions ---
+
+  /// The queue is a ref with the state mirroring it, because the two exits
+  /// from it can happen in one turn: answering the prompt on show closes the
+  /// popover, and the close handler must then find the queue already short of
+  /// it rather than answer the same id twice.
+  function setQueue(next: PermissionPrompt[]): void {
+    pending.current = next;
+    setPrompts(next);
+  }
+
+  function respond(tabId: string, id: string, allow: boolean): void {
+    const node = view(tabId);
+    if (node) sendCommand(node, "respondPermission", { id, allow });
+    if (TEST_HOOKS) console.error(`ND_APP PERMISSION id=${id} allow=${allow}`);
+  }
+
+  function answerPrompt(prompt: PermissionPrompt, allow: boolean): void {
+    respond(prompt.tabId, prompt.id, allow);
+    setQueue(pending.current.filter((p) => p.id !== prompt.id));
+  }
+
+  /// Everything that takes a prompt away without the user choosing: escape, a
+  /// click outside the popover, the tab navigating, the tab closing. Block is
+  /// the safe answer and nothing is remembered, which is what Chrome does with
+  /// a dismissed bubble. An id left unanswered would leave the page waiting
+  /// for ever.
+  function denyPromptsFor(tabId: string): void {
+    const doomed = pending.current.filter((p) => p.tabId === tabId);
+    if (doomed.length === 0) return;
+    for (const prompt of doomed) respond(tabId, prompt.id, false);
+    setQueue(pending.current.filter((p) => p.tabId !== tabId));
+  }
+
+  function onPermissionRequest(tabId: string, data: unknown): void {
+    const request = (data ?? {}) as { id?: string; origin?: string; types?: string };
+    if (!request.id) return;
+    const types = splitTypes(request.types ?? "");
+    const origin = request.origin ?? "";
+    const decided = rememberedDecision(prefs.sitePermissions, origin, types);
+    if (decided) {
+      respond(tabId, request.id, decided === "allow");
+      return;
+    }
+    setQueue([...pending.current, { id: request.id, tabId, origin, types }]);
+    // The bubble opens itself for the tab being looked at, the way Chrome's
+    // does; a background tab's request waits for the tab.
+    if (tabId === active.id) setSiteInfoOpen(true);
+  }
+
+  /// Allow and Block are the only answers that are remembered, and answering
+  /// puts the bubble away the way Chrome's does.
+  function decidePrompt(prompt: PermissionPrompt, decision: PermissionDecision): void {
+    if (prompt.origin) {
+      settings.update((s) => ({
+        ...s,
+        sitePermissions: rememberDecision(s.sitePermissions, prompt.origin, prompt.types, decision),
+      }));
+    }
+    answerPrompt(prompt, decision === "allow");
+    setSiteInfoOpen(false);
+  }
+
+  function resetSiteDecisions(origin: string): void {
+    settings.update((s) => ({ ...s, sitePermissions: forgetOrigin(s.sitePermissions, origin) }));
   }
 
   // ------------------------------------------------------ extensions ---
@@ -784,6 +879,10 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   const recentDownloads = downloads.slice(0, DOWNLOADS_SHOWN);
   const shownUrl = displayUrl(active.url);
   const pageTitle = tabLabel(active);
+  const activeOrigin = originOf(active.url);
+  /// Only the active tab's prompt is on show; the rest of the queue waits.
+  const activePrompt = prompts.find((p) => p.tabId === active.id) ?? null;
+  const siteDecisions = decisionsFor(prefs.sitePermissions, activeOrigin);
   const rows = extensionRows(registry, extActions);
   const pinnedActions = pinnedRows(rows, prefs.pinnedExtensions);
   /// An action opened from the panel rather than from a button of its own has
@@ -1157,14 +1256,99 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                   padlock is drawn; it must NOT ride a `key`, which remounts
                   the button and left AppKit with one toolbar item per state
                   the page had ever been in. */}
-              <button
-                slot="start"
-                testID={`security-${activeRt.security}`}
-                iconName={SECURITY_ICON[activeRt.security]}
-                tooltip={SECURITY_TOOLTIP[activeRt.security]}
-                cssClasses={["flat"]}
-                onClick={openAddress}
-              />
+              {/* The padlock is Chrome's site-info button: what this page is
+                  allowed to do hangs off it, and so does a permission the page
+                  is asking for right now. Boxed because a popover anchors on
+                  its tree parent and a header bar's handle is not one. */}
+              <box slot="start" testID="site-info-anchor" orientation="horizontal">
+                <button
+                  testID={`security-${activeRt.security}`}
+                  iconName={SECURITY_ICON[activeRt.security]}
+                  tooltip={SECURITY_TOOLTIP[activeRt.security]}
+                  cssClasses={["flat"]}
+                  onClick={() => setSiteInfoOpen(!siteInfoOpen)}
+                />
+                <popover
+                  testID="site-info-popover"
+                  open={siteInfoOpen}
+                  position="bottom"
+                  onClosed={() => {
+                    setSiteInfoOpen(false);
+                    // Escape and a click outside are a dismissal, and a
+                    // dismissed request is denied rather than left pending.
+                    denyPromptsFor(active.id);
+                  }}
+                >
+                  <box
+                    testID="site-info-panel"
+                    orientation="vertical"
+                    spacing={Spacing.sm}
+                    style={{ padding: Spacing.sm, minWidth: SITE_PANEL_WIDTH }}
+                  >
+                    <label
+                      testID="site-info-host"
+                      text={hostOf(active.url) || "New Tab"}
+                      cssClasses={["heading"]}
+                      style={{ halign: "start" }}
+                    />
+                    <label
+                      testID="site-info-security"
+                      text={SECURITY_TOOLTIP[activeRt.security]}
+                      cssClasses={["dimmed", "caption"]}
+                      ellipsize
+                      style={{ halign: "start" }}
+                    />
+                    {activePrompt ? (
+                      <box orientation="vertical" spacing={Spacing.sm}>
+                        <label
+                          testID="permission-request"
+                          text={permissionSentence(hostOf(active.url) || activePrompt.origin, activePrompt.types)}
+                          style={{ halign: "start" }}
+                        />
+                        <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end" }}>
+                          <button
+                            testID="permission-block"
+                            label="Block"
+                            onClick={() => decidePrompt(activePrompt, "block")}
+                          />
+                          <button
+                            testID="permission-allow"
+                            label="Allow"
+                            cssClasses={["suggested-action"]}
+                            onClick={() => decidePrompt(activePrompt, "allow")}
+                          />
+                        </box>
+                      </box>
+                    ) : siteDecisions.length === 0 ? (
+                      <label
+                        testID="site-permissions-empty"
+                        text="This site has not asked for anything yet."
+                        cssClasses={["dimmed"]}
+                        style={{ halign: "start" }}
+                      />
+                    ) : (
+                      <box orientation="vertical" spacing={Spacing.xs}>
+                        {siteDecisions.map((row) => (
+                          <box key={row.type} orientation="horizontal" spacing={Spacing.sm}>
+                            <label
+                              testID={`site-permission-${row.type}`}
+                              text={`${permissionName(row.type)}: ${row.decision === "allow" ? "Allowed" : "Blocked"}`}
+                              ellipsize
+                              style={{ halign: "start", hexpand: true }}
+                            />
+                          </box>
+                        ))}
+                        <button
+                          testID="site-permissions-reset"
+                          label="Reset Permissions"
+                          cssClasses={["flat"]}
+                          onClick={() => resetSiteDecisions(activeOrigin)}
+                        />
+                      </box>
+                    )}
+                  </box>
+                </popover>
+              </box>
               {/* One address widget on both backends. The private window
                   proved a `<searchinput>` takes the header bar's whole free
                   run on GTK too (523px of a 778px bar), so the main window no
@@ -1536,6 +1720,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                             onNewWindow={(e) => openTab(e.text, true)}
                             onJavaScriptResult={onJavaScriptResult}
                             onChromeDialog={() => refreshExtensions()}
+                            onPermissionRequest={(e) => onPermissionRequest(t.id, e.data)}
                             onFaviconChanged={(e) => onFavicon(t.url, e.data as { dataUrl?: string; iconUrl?: string })}
                             onSecurityChanged={(e) => patch(t.id, { security: securityOf(t.url, e.data) })}
                             onFindResult={(e) => {

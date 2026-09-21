@@ -66,6 +66,29 @@ const server = Bun.serve({
         const rows = Array.from({ length: 400 }, (_, i) => `<p id="p${i}">row ${i}</p>`).join("");
         return page("long", "Long page", `<h1>Long page</h1>${rows}`);
       }
+      // Three permissions, because Chromium records its own content setting
+      // from every explicit answer: a type that has been allowed or blocked
+      // once never reaches the app again, so each leg needs one of its own.
+      case "/permission":
+        return page(
+          "permission",
+          "Permission",
+          '<script>Notification.requestPermission().then((p) => { document.title = "notif:" + p; });</script>',
+        );
+      case "/permission-geo":
+        return page(
+          "permissionGeo",
+          "Permission geo",
+          '<script>navigator.geolocation.getCurrentPosition(() => { document.title = "geo:ok"; },' +
+            ' (e) => { document.title = "geo:e" + e.code; });</script>',
+        );
+      case "/permission-midi":
+        return page(
+          "permissionMidi",
+          "Permission midi",
+          '<script>navigator.requestMIDIAccess({ sysex: true }).then(() => { document.title = "midi:ok"; },' +
+            ' () => { document.title = "midi:no"; });</script>',
+        );
       case "/search":
         return page("search", "Search results", "<h1>Search results</h1>");
       case "/setcookie":
@@ -333,11 +356,15 @@ function launch(storeDir: string): Promise<AppHandle> {
     // engine: no automation can open a real menu.
     onStderr: (line) => {
       if (line.includes("ND_APP CTXMENU")) menuTraces.push(line.trim());
+      // Kept rather than read back from the tail: the engine writes hundreds
+      // of lines a second, and the tail has moved on by the time a leg looks.
+      if (line.includes("ND_APP PERMISSION")) permissionTraces.push(line.trim());
     },
   });
 }
 
 const menuTraces: string[] = [];
+const permissionTraces: string[] = [];
 
 interface MenuTraceItem {
   id?: string;
@@ -932,6 +959,99 @@ try {
     await waitRows(app, (r) => r.length === extTabsBefore, "the tab count back where it started");
     console.log(`19. extensions: ${extRow.text} installed, pinned, popup ${popupBox.w}x${popupBox.h}, unpinned`);
   }
+
+  // Permissions. Under 0.4.9 Chromium draws no prompt of its own, so the app
+  // owns the whole exchange. Each leg asks for a permission the profile has no
+  // setting for yet: an explicit answer is recorded by Chromium too, and a
+  // type it has already decided never reaches the app a second time.
+  const permTabs = (await tabRows(app)).length;
+  const permStore = (): Record<string, string> => {
+    const saved =
+      (JSON.parse(readFileSync(`${PROFILE}/settings.json`, "utf8")) as {
+        data?: { sitePermissions?: Record<string, Record<string, string>> };
+      }).data?.sitePermissions ?? {};
+    const key = Object.keys(saved).find((k) => k.includes(String(server.port)));
+    return key ? saved[key]! : {};
+  };
+  /// What the app last answered, which is the only way to see an answer the
+  /// user did not click and the only way to tell the app's own memory from a
+  /// setting Chromium answered by itself.
+  const lastAnswer = (): string => permissionTraces[permissionTraces.length - 1] ?? "";
+  const askFor = async (path: string): Promise<void> => {
+    await openPalette(app);
+    await typeQuery(app, `${base}${path}`);
+    await app.setValue("palette", true);
+  };
+
+  await step("open a tab for the permission fixtures", () => app.click("menu-new-tab"));
+  await waitRows(app, (r) => r.length === permTabs + 1, "a tab for the permission page");
+  await step("ask for notifications", () => askFor("/permission"));
+  await step("the site-info bubble opens itself with the request", () =>
+    app.waitFor({ testId: "permission-request", state: "present" }, { timeoutMs: PATIENCE }),
+  );
+  const asked = String((await app.mustFind("permission-request")).text ?? "");
+  if (!asked.includes("wants to send you notifications")) fail(`the prompt reads ${JSON.stringify(asked)}`);
+  await step("allow it", () => clickWhenReady(app, "permission-allow"));
+  await waitRows(app, (r) => r[r.length - 1] === "notif:granted", "the page to hear that it was allowed");
+  await Bun.sleep(700);
+  if (permStore().notifications !== "allow") fail(`the store holds ${JSON.stringify(permStore())} after Allow`);
+  if (!lastAnswer().includes("allow=true")) fail(`the app last sent ${JSON.stringify(lastAnswer())}`);
+
+  // Remembered: the same origin asks again and is answered with no prompt.
+  // Which memory answered is not asserted, and cannot be: an explicit answer
+  // is recorded by Chromium as a content setting too, so the second ask is
+  // settled before the app is told about it. The app's own store is what the
+  // site-info panel shows and resets, and what answers any request that does
+  // reach it.
+  await step("ask a second time", () => askFor("/permission?2"));
+  await waitRows(app, (r) => r[r.length - 1] === "notif:granted", "the remembered answer to reach the page");
+  if (await app.find("permission-request")) fail("a remembered allow still put a prompt up");
+
+  // Reset, from the same bubble the request came up in.
+  await step("open the site-info bubble", () => clickWhenReady(app, "security-insecure"));
+  await step("reset this site's permissions", () => clickWhenReady(app, "site-permissions-reset"));
+  await step("the bubble says the site has nothing on record", () =>
+    app.waitFor({ testId: "site-permissions-empty", state: "present" }, { timeoutMs: PATIENCE }),
+  );
+  await Bun.sleep(700);
+  if (Object.keys(permStore()).length !== 0) fail(`reset left ${JSON.stringify(permStore())} behind`);
+  await step("put the bubble away", () => clickWhenReady(app, "security-insecure"));
+
+  // Block, on a permission this profile has never decided.
+  await step("ask for a location", () => askFor("/permission-geo"));
+  await step("the request comes up", () =>
+    app.waitFor({ testId: "permission-request", state: "present" }, { timeoutMs: PATIENCE }),
+  );
+  const askedGeo = String((await app.mustFind("permission-request")).text ?? "");
+  if (!askedGeo.includes("wants to use your location")) fail(`the location prompt reads ${JSON.stringify(askedGeo)}`);
+  await step("block it", () => clickWhenReady(app, "permission-block"));
+  // PERMISSION_DENIED is code 1; a rig with no location provider answers an
+  // allowed request with code 2, so the code is what proves the block.
+  await waitRows(app, (r) => r[r.length - 1] === "geo:e1", "the page to hear that it was blocked");
+  await Bun.sleep(700);
+  if (permStore().geolocation !== "block") fail(`the store holds ${JSON.stringify(permStore())} after Block`);
+
+  // A tab closed with a prompt open: the request is answered rather than left
+  // pending, which is only visible in what the app sent.
+  await step("open one more tab and ask from it", async () => {
+    await app.click("menu-new-tab");
+    await waitRows(app, (r) => r.length === permTabs + 2, "the second permission tab");
+    await askFor("/permission-midi");
+  });
+  await step("its request is on show", () =>
+    app.waitFor({ testId: "permission-request", state: "present" }, { timeoutMs: PATIENCE }),
+  );
+  const beforeClose = lastAnswer();
+  await step("close the tab under the prompt", () => app.click("menu-close-tab"));
+  await waitRows(app, (r) => r.length === permTabs + 1, "the closed tab to go");
+  const denied = lastAnswer();
+  if (denied === beforeClose || !denied.includes("allow=false")) {
+    fail(`closing the tab should have denied the request, the app last sent ${JSON.stringify(denied)}`);
+  }
+  if (await app.find("permission-request")) fail("the prompt outlived the tab that asked");
+  await step("close the first permission tab", () => app.click("menu-close-tab"));
+  await waitRows(app, (r) => r.length === permTabs, "the tab count back where it started");
+  console.log(`20. permissions: allow, remembered, reset, block and a tab closed under a prompt: ${JSON.stringify(asked)}`);
 
   // Compact is Safari's single row: the pills in the toolbar ARE the tab list
   // and the address bar, and nothing is drawn below it. The live pages must not

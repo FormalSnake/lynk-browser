@@ -1,5 +1,7 @@
 import { createStore } from "@nativedesktop/react";
 
+import type { PermissionDecision, SitePermissions } from "./permissions.ts";
+
 export type SearchEngineId = "duckduckgo" | "google" | "bing";
 
 export interface SearchEngine {
@@ -35,6 +37,10 @@ export interface SettingsState {
   homepage: string;
   restoreOnLaunch: boolean;
   layout: Layout;
+  /// What each site may do, by origin and then by permission type. Only the
+  /// Allow and Block buttons write here: a prompt dismissed without an answer
+  /// is a deny for that request alone, the way Chrome treats it.
+  sitePermissions: SitePermissions;
   /// Extension ids with a toolbar button of their own, in the order they were
   /// pinned. An id that is no longer installed stays here: reinstalling the
   /// extension is meant to bring its button back.
@@ -47,6 +53,7 @@ export const DEFAULT_SETTINGS: SettingsState = {
   restoreOnLaunch: true,
   layout: "sidebar",
   pinnedExtensions: [],
+  sitePermissions: {},
 };
 
 export const settings = createStore<SettingsState>({
@@ -67,5 +74,22 @@ export function normalizeSettings(state: SettingsState): SettingsState {
     pinnedExtensions: Array.isArray(state.pinnedExtensions)
       ? [...new Set(state.pinnedExtensions.filter((id) => typeof id === "string" && id !== ""))]
       : [],
+    sitePermissions: normalizeSitePermissions(state.sitePermissions),
   };
+}
+
+/// Two levels of a plain JSON object, so both levels are checked: a settings
+/// file hand-edited into the wrong shape must not decide what a site may do.
+function normalizeSitePermissions(saved: unknown): SitePermissions {
+  if (!saved || typeof saved !== "object") return {};
+  const out: SitePermissions = {};
+  for (const [origin, types] of Object.entries(saved as Record<string, unknown>)) {
+    if (!types || typeof types !== "object") continue;
+    const kept: Record<string, PermissionDecision> = {};
+    for (const [type, decision] of Object.entries(types as Record<string, unknown>)) {
+      if (decision === "allow" || decision === "block") kept[type] = decision;
+    }
+    if (Object.keys(kept).length > 0) out[origin] = kept;
+  }
+  return out;
 }
