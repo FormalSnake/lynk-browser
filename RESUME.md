@@ -6,35 +6,33 @@ app. UI/UX polish comes later.
 
 To resume, tell Claude: "read RESUME.md and continue".
 
-## Where things are (updated 2026-09-20)
+## Where things are (updated 2026-09-21)
 
 | Repo / tree | Branch | State |
 |---|---|---|
-| `~/Developer/nativebrowser` | `main` (3b0c774, not pushed) | On `@nativedesktop/*` 0.4.3 with `webview.cef.style: "chrome"` in the config. |
-| `~/Developer/NativeDesktop` | `main` (pushed, v0.4.3 published) | `chrome-accept` and `chrome-style-mac` are both merged. |
-| g815 | `~/Developer/nd-main` (framework main build), `~/Developer/nativebrowser-run` | `run-on-desktop.sh` starts the app on the Hyprland session. NixOS cannot run the prebuilt host, so it uses the host built in `nd-main`. |
+| `~/Developer/nativebrowser` | `main` (not pushed) | On `@nativedesktop/*` 0.4.8, `webview.cef.style: "chrome"` in the config. Extensions toolbar, floating find bar, Safari-style compact row, empty Ctrl+T launcher. |
+| `~/Developer/NativeDesktop` | `main` (pushed, v0.4.8 published) | 0.4.3 to 0.4.8 shipped: chrome-accept, chrome-style-mac, flat row actions, portal button layout on x11, DevTools close button, held right click context menu, menu child moves, dock tiling. |
+| `~/Developer/nd-ext-actions` | `ext-actions`, NOT merged | Three `wip:` commits never run (g815 was off): real URL for `chrome.tabs.create` tabs (the owner's about:blank tabs and the unreachable 1Password sign-in), `watchExtensions` event, `installExtension` 90 s timeout. |
+| `~/Developer/nd-chrome-dialogs` | `chrome-dialogs`, NOT merged | `permissionRequest` event and `respondPermission` (run on both platforms). Passkey sheet and HTTP auth still stray as NSWindows on mac. Three `wip:` Linux commits never compiled. |
+| `~/Developer/nd-dock-gap` | `dock-gap` | Merged except the top `wip:` commit (Linux twin of the Inspect pick leg, never run). |
+| g815 | `~/Developer/nd-main`, `~/Developer/nativebrowser-run` | `run-on-desktop.sh` starts the app on the Hyprland session with the host built in `nd-main` (NixOS cannot run the prebuilt host). Rebuild `nd-main` from main before a relaunch. |
 
-Linux gates need the flake shell on g815: `nix develop --command bash scripts/...`.
-Gate state at merge: Linux engine gate green; Linux real-app gate 3 red on x11
-(`<select>` dropdown x2, tab out of the page) and 5 red on XWayland (four
-`focusRouting*.toField`, tab out of the page). Mac engine and reparent gates
-green; mac real-app gate 36 of 38 (tab into the page, intermittent extension
-context-menu item) plus the quit after DevTools.
+Rules learned this round:
+- Every confirmed framework fix ships to npm the same day (see CLAUDE.md). Release = bump the 12 `packages/*/package.json`, `bun install`, `bun scripts/release/check-versions.ts <v>`, commit `release: v<v>`, tag, push; CI publishes. The registry lags a few minutes per package, so retry `bun install` in the app until `@nativedesktop/host` resolves before committing the bump.
+- Linux gates on g815 need `nix develop --command bash scripts/...`, and a display, CDP port and app id of their own when agents run side by side (`ND_CEF_DISPLAY`, `ND_CDP_PORT`, `ND_APP_ID`).
+- Mac gates serialize on one lock. Kill hosts by worktree path, never `pkill -f NDShellDev`.
+- A branch with Linux code that was never compiled does not merge: the release CI builds the Linux host.
 
-Findings that replace the notes below:
-- The Linux engine gate menu pass was not red after a rebase; item 1 is closed.
-- XWayland typing: X hands the key to CEF's child window because the pointer is
-  in it and focus sits on its ancestor toplevel; GTK sees zero key events. A
-  focus proxy window and the InputOnly cover both fail because XI2 does not
-  propagate a key up to the ancestor GDK selected on (`src/cef/engine.zig`).
-  The lever left is handing the key back from `on_pre_key_event` into GTK4.
-- Mac quit after DevTools: `closeDevTools` parks the inspector's BrowserView in
-  `devToolsClosing`, `teardown` invalidates the timer that would retire it, so
-  `cef_window_t::close` never completes. Retiring the view lets the close run
-  and Chromium then segfaults in window destruction; the CEF-side ordering is
-  the open question.
-- Mac: a `pointer` RPC click within about a second of a reload never reaches
-  the page.
+To run on g815 when it is back:
+- `ext-actions`: `cd ~/Developer/nd-ext-actions && ND_CEF_DISPLAY=:71 ND_CDP_PORT=9371 ND_APP_ID=dev.nativedesktop.extActions nix develop --command bash scripts/headless-webview-cef-chrome.sh` (new legs `tabsCreateReportsUrl`, `extensionTabReportsUrl`, `openerNavigatesBlankReportsUrl`, `extensionsChanged`, `installExtensionError`).
+- `chrome-dialogs`: same gate with `ND_CEF_DISPLAY=:98 ND_CDP_PORT=9344 ND_APP_ID=dev.nativedesktop.chromeDialogs`, expect `ND_CEF_CHROME_LEGS_OK(dialogs)`.
+- `dock-gap`: same gate with `:91` / `9391`, for the Inspect pick leg; then check the owner's DevTools gap on the real XWayland session, which no rig reproduced.
+
+Owner reports still open:
+- 1Password: content scripts inject but it draws no field icon until signed in; sign-in was unreachable because its welcome tab arrived as about:blank (fix is the `wip:` above). Its popup hangs on the splash because our popup view is an ordinary tab to Chromium, not `kExtensionPopup` (docs/webview.md). Runtime `setPopup` / badge state needs a hidden extension-page view as transport. `onClicked` and `activeTab` need our own CEF build.
+- Passkey sheet at the top right of the screen on Hyprland: not reproduced on any rig.
+- DevTools gap on Linux: not reproduced on Xvfb; the tiling leg is the instrument.
+- Extension registry commands do not exist on AppKit (about 750 lines of Swift).
 
 ## What is on NativeDesktop main
 
