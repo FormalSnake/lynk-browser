@@ -13,7 +13,7 @@ To resume, tell Claude: "read RESUME.md and continue".
 | `~/Developer/nativebrowser` | `main` (not pushed) | On `@nativedesktop/*` 0.4.8, `webview.cef.style: "chrome"` in the config. Extensions toolbar, floating find bar, Safari-style compact row, empty Ctrl+T launcher. |
 | `~/Developer/NativeDesktop` | `main` (pushed, v0.4.8 published) | 0.4.3 to 0.4.8 shipped: chrome-accept, chrome-style-mac, flat row actions, portal button layout on x11, DevTools close button, held right click context menu, menu child moves, dock tiling. |
 | `~/Developer/nd-ext-actions` | `ext-actions`, NOT merged | Three `wip:` commits never run (g815 was off): real URL for `chrome.tabs.create` tabs (the owner's about:blank tabs and the unreachable 1Password sign-in), `watchExtensions` event, `installExtension` 90 s timeout. |
-| `~/Developer/nd-chrome-dialogs` | `chrome-dialogs`, NOT merged | `permissionRequest` event and `respondPermission` (run on both platforms). Passkey sheet and HTTP auth still stray as NSWindows on mac. Three `wip:` Linux commits never compiled. |
+| `~/Developer/nd-chrome-dialogs` | `chrome-dialogs`, NOT merged | `permissionRequest` event and `respondPermission` (run on both platforms). On mac the host adopts Chromium's own windows (passkey, HTTP auth, save password) as children of the app window over the webview; both mac gates green on the orchestrator's rerun. Four `wip:` Linux commits never compiled, including 0d77455 (mark the dialog transient for the host window, the candidate fix for the sheet landing at the top right on Hyprland, which discards the watcher's `XMoveResizeWindow`). |
 | `~/Developer/nd-dock-gap` | `dock-gap` | Merged except the top `wip:` commit (Linux twin of the Inspect pick leg, never run). |
 | g815 | `~/Developer/nd-main`, `~/Developer/nativebrowser-run` | `run-on-desktop.sh` starts the app on the Hyprland session with the host built in `nd-main` (NixOS cannot run the prebuilt host). Rebuild `nd-main` from main before a relaunch. |
 
@@ -30,7 +30,7 @@ To run on g815 when it is back:
 
 Owner reports still open:
 - 1Password: content scripts inject but it draws no field icon until signed in; sign-in was unreachable because its welcome tab arrived as about:blank (fix is the `wip:` above). Its popup hangs on the splash because our popup view is an ordinary tab to Chromium, not `kExtensionPopup` (docs/webview.md). Runtime `setPopup` / badge state needs a hidden extension-page view as transport. `onClicked` and `activeTab` need our own CEF build.
-- Passkey sheet at the top right of the screen on Hyprland: not reproduced on any rig.
+- Passkey sheet at the top right of the screen on Hyprland: not reproduced on any rig; cause by reading is `onChromeWindowWatch` (NativeDesktop `src/cef/engine.zig:390`) moving a managed XWayland toplevel, which Hyprland ignores. Fallback if transient-for is not enough: `XReparentWindow` into the host's X window.
 - DevTools gap on Linux: not reproduced on Xvfb; the tiling leg is the instrument.
 - Extension registry commands do not exist on AppKit (about 750 lines of Swift).
 
