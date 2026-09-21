@@ -5,6 +5,7 @@ import {
   listExtensionActions,
   listExtensions,
   onExtensionActions,
+  onExtensionsChanged,
   onExtensionsList,
   onJavaScriptResult,
   onToastButtonClicked,
@@ -13,6 +14,7 @@ import {
   revealPath,
   sendCommand,
   setContextMenuItems,
+  watchExtensions,
   showToast,
   useRef,
   useState,
@@ -352,6 +354,16 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
     return created;
   }
 
+  /// A tab a PAGE asked for: `window.open`, target=_blank, and now an
+  /// extension's `chrome.tabs.create`. An empty or about:blank URL is not a
+  /// tab worth opening, it is a dead one; 0.4.10 carries the real URL, so a
+  /// blank one means the route had nothing to say.
+  function openTabFromPage(url: string): void {
+    const target = url.trim();
+    if (!target || target === "about:blank") return;
+    openTab(target, true);
+  }
+
   function closeTab(id: string): void {
     setEditingAddress(false);
     denyPromptsFor(id);
@@ -570,11 +582,10 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
 
   // ------------------------------------------------------ extensions ---
 
-  /// Both halves of the list, from the one view Chromium answers on. Called
-  /// where the registry can have changed: at first attach, when the panel is
-  /// opened, after the app's own install, and on `chromeDialog`, which is what
-  /// a Web Store install and Chrome's own "Remove …?" confirmation arrive as.
-  /// There is no push event for the registry, so those are the triggers.
+  /// Both halves of the list, from the one view Chromium answers on. The
+  /// registry reports its own changes now (`watchExtensions`), so this runs on
+  /// what that reports, plus once when the panel is opened: a list nobody is
+  /// watching is worse than one read a moment too often.
   function refreshExtensions(): void {
     const node = extRegistry.current;
     if (!node) return;
@@ -1707,7 +1718,11 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                               syncContextMenus(t.id);
                               setArmedTabs((a) => (a[t.id] ? a : { ...a, [t.id]: true }));
                             }}
-                            url={armedTabs[t.id] ? t.url : ""}
+                            // A chrome-extension:// page has to be there at
+                            // create time: Chromium refuses a
+                            // renderer-initiated navigation to one, so the
+                            // arming dance would leave the tab blank.
+                            url={armedTabs[t.id] || t.url.startsWith("chrome-extension://") ? t.url : ""}
                             testID={`page-${t.id}`}
                             style={{ hexpand: true, vexpand: true }}
                             onNavigate={(e) => onNavigated(t.id, e.text)}
@@ -1717,9 +1732,8 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                             onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
                             onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
                             onLoadFailed={(e) => patch(t.id, { error: e.data as { url: string; error: string } })}
-                            onNewWindow={(e) => openTab(e.text, true)}
+                            onNewWindow={(e) => openTabFromPage(e.text)}
                             onJavaScriptResult={onJavaScriptResult}
-                            onChromeDialog={() => refreshExtensions()}
                             onPermissionRequest={(e) => onPermissionRequest(t.id, e.data)}
                             onFaviconChanged={(e) => onFavicon(t.url, e.data as { dataUrl?: string; iconUrl?: string })}
                             onSecurityChanged={(e) => patch(t.id, { security: securityOf(t.url, e.data) })}
@@ -1806,13 +1820,22 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                       if (!view || registryArmed.current === view.id) return;
                       registryArmed.current = view.id;
                       refreshExtensions();
+                      // An empty answer means the watcher attached to nothing,
+                      // and a Web Store install would then never show up until
+                      // the panel was opened by hand.
+                      void watchExtensions(view, () => refreshExtensions())
+                        .then((watched) => {
+                          if (watched.length === 0) console.error("ND_APP EXTWATCH attached to nothing");
+                          else if (TEST_HOOKS) console.error(`ND_APP EXTWATCH watching ${watched.length}`);
+                        })
+                        .catch((e: unknown) => console.error(`ND_APP EXTWATCH failed ${String(e)}`));
                     }}
                     url="chrome://extensions"
                     testID="extensions-registry-view"
                     style={{ minWidth: 1, minHeight: 1 }}
                     onExtensionsList={onExtensionsList}
                     onExtensionActions={onExtensionActions}
-                    onChromeDialog={() => refreshExtensions()}
+                    onExtensionsChanged={onExtensionsChanged}
                   />
                 </box>
 
