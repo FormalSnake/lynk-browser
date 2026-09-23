@@ -101,6 +101,13 @@ re-focus once focus-return ships. Then relaunch on g815.
   "Inspect Element" item are stale). `mac-errors.sh` hangs after its four legs
   on main. The owner uses the mac: a `hostStaysKey` failure means focus was
   taken, rerun.
+- Mac legs drive input with `app.cursor` (`@nativedesktop/test`, 0.4.15+: real
+  HID mouse, so hover, native menus and drags see a user) and capture with
+  `ND_AUTOMATION_CAPTURE=region` or `ndshot capture --region` (0.4.14+:
+  composited with sheets, menus, panels). Grant once with `<host> --nd-grant`.
+  The cursor moves the owner's mouse: such runs hold the mac CEF lock
+  (`scripts/mac/cef-gate-lock.sh`, on `startup-window` until it merges).
+  Examples: `scripts/mac/cursor-drive.ts`, `region-capture-drive.ts`.
 - The app's mac drive (`scripts/mac-drive.sh`, bundled CEF host) stops at leg 2
   until the AppKit palette gap is fixed.
 
