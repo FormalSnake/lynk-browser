@@ -24,7 +24,7 @@ const LEADING = 300;
 const TRAILING = 280;
 const TRAILING_SLOT = 36;
 /// The gap `spacing` puts between two tabs.
-const TAB_GAP = 3;
+const TAB_GAP = Spacing.xs;
 
 export interface CompactTab {
   id: string;
@@ -83,6 +83,29 @@ export interface CompactTabsProps {
   addressFor: (tab: CompactTab) => string;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
+  /// What a drag of this tab carries, so the window it lands in can tell
+  /// where it came from and whether its page can move.
+  dragPayload: (tab: CompactTab) => string;
+  /// Where a tab being dragged over the row would land, drawn as a divider
+  /// between two tabs; null while nothing is being dragged over it.
+  dropIndex: number | null;
+  onDragOverIndex: (index: number) => void;
+  onDropAt: (payload: string, index: number) => void;
+  onDragStart: (payload: string) => void;
+  onDragEnd: () => void;
+}
+
+/// The slot a point along the row falls in: before the first tab whose
+/// middle it has not reached. The widths are the ones this file hands out,
+/// which is what makes the row's own coordinates enough to answer.
+function indexAt(x: number, tabs: CompactTab[], metrics: TabRunMetrics): number {
+  let edge = 0;
+  for (let i = 0; i < tabs.length; i++) {
+    const width = tabs[i]!.pinned ? ICON_TAB_WIDTH : metrics.width;
+    if (x < edge + width / 2) return i;
+    edge += width + TAB_GAP;
+  }
+  return tabs.length;
 }
 
 export function CompactTabs({
@@ -95,6 +118,12 @@ export function CompactTabs({
   addressFor,
   onSelect,
   onClose,
+  dragPayload,
+  dropIndex,
+  onDragOverIndex,
+  onDropAt,
+  onDragStart,
+  onDragEnd,
 }: CompactTabsProps): React.ReactNode {
   /// The tab the pointer is on, so its close button can appear. One id rather
   /// than a set, because the pointer is in one place.
@@ -111,15 +140,21 @@ export function CompactTabs({
       orientation="horizontal"
       spacing={Spacing.xs}
       style={{ hexpand: false }}
+      dropTarget
+      onDragOver={(e) => onDragOverIndex(indexAt(e.data.x, tabs, metrics))}
+      onDropped={(e) => onDropAt(e.text, indexAt(e.data.x, tabs, metrics))}
     >
-      {tabs.map((t) => {
+      {tabs.flatMap((t, i) => {
         const active = t.id === activeId;
         // A pinned tab is its site's icon and nothing else, the way every
         // browser draws one, and it keeps that width however crowded the row
         // gets.
         const titled = metrics.titled && !t.pinned;
         const closable = titled && (active || hovered === t.id);
-        return (
+        const marker =
+          dropIndex === i ? [<separator key="drop" testID={`${prefix}tab-drop`} orientation="vertical" />] : [];
+        return [
+          ...marker,
           <box
             key={t.id}
             testID={`${prefix}tab-slot-${t.id}`}
@@ -149,6 +184,10 @@ export function CompactTabs({
               cssClasses={["flat", "body"]}
               style={{ hexpand: true }}
               onClick={() => onSelect(t.id)}
+              draggable
+              dragPayload={dragPayload(t)}
+              onDragStarted={(e) => onDragStart(e.text)}
+              onDragEnded={onDragEnd}
             />
             {titled &&
               (closable ? (
@@ -166,9 +205,10 @@ export function CompactTabs({
                 // title does not reflow as the pointer crosses the row.
                 <box orientation="horizontal" style={{ minWidth: CLOSE_SLOT_WIDTH }} />
               ))}
-          </box>
-        );
+          </box>,
+        ];
       })}
+      {dropIndex === tabs.length && <separator testID={`${prefix}tab-drop`} orientation="vertical" />}
     </box>
   );
 }

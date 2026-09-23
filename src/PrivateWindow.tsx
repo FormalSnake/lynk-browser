@@ -17,10 +17,12 @@ import type {
 } from "@nativedesktop/react";
 import { Activity } from "react";
 
+import type { MoveTarget } from "./BrowserWindow.tsx";
 import { ADDRESS_MIN_WIDTH, CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
 import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
 import { permissionSentence, splitTypes, type PermissionPrompt } from "./lib/permissions.ts";
 import { settings } from "./lib/settings.ts";
+import { parseTabPayload, tabPayload } from "./lib/tabdrag.ts";
 import { displayUrl, hostOf, toUrl } from "./lib/url.ts";
 
 const WINDOW_WIDTH = 1100;
@@ -47,6 +49,15 @@ function blankTab(id: string): PrivateTab {
   return { id, url: "", title: "", canGoBack: false, canGoForward: false, loading: false };
 }
 
+/// How the rest of the app hands this window a tab from a normal window. The
+/// page cannot come with it: this window's pages live on an ephemeral profile
+/// of their own, so the address is reopened here.
+export interface PrivateBridge {
+  open(url: string, index: number): void;
+  /// A private tab dropped on a normal window, reopened there.
+  close(tabId: string): void;
+}
+
 /// What a private window cannot own itself. Settings and the downloads list
 /// are one per app and live in the main window, so the private window's menu
 /// routes to them rather than growing copies.
@@ -55,6 +66,14 @@ export interface PrivateWindowProps {
   onSettings: () => void;
   onDownloads: () => void;
   onDownload: (url: string, suggested?: string) => void;
+  /// The normal windows a tab can be sent to, and the call that reopens one
+  /// there. A private page never moves live into a normal window: its
+  /// cookies and storage are this window's and nobody else's.
+  moveTargets: MoveTarget[];
+  onMoveOut: (url: string, windowId: string, index: number) => void;
+  /// A normal window's tab dropped here: the root closes it where it was.
+  onAdopt: (tabId: string) => void;
+  bridge: { current: PrivateBridge | null };
 }
 
 export function PrivateWindow({
@@ -62,6 +81,10 @@ export function PrivateWindow({
   onSettings,
   onDownloads,
   onDownload,
+  moveTargets,
+  onMoveOut,
+  onAdopt,
+  bridge,
 }: PrivateWindowProps): React.ReactNode {
   const prefs = useStoreValue(settings);
   const compact = prefs.layout === "compact";
@@ -84,6 +107,9 @@ export function PrivateWindow({
   const menuedViews = useRef(new Set<number>());
 
   const [width, setWidth] = useState(WINDOW_WIDTH);
+  /// Where a tab dragged over the row would land. There is no drag-leave
+  /// event, so it clears when the drag ends or drops.
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
 
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0]!;
   const activePrompt = prompts.find((p) => p.tabId === active.id) ?? null;
@@ -95,22 +121,61 @@ export function PrivateWindow({
     setTabs((list) => list.map((t) => (t.id === id ? { ...t, ...part } : t)));
   }
 
-  function openTab(url = ""): void {
+  function openTab(url = "", index?: number): void {
     const id = `p${next.current++}`;
-    setTabs((list) => [...list, { ...blankTab(id), url }]);
+    setTabs((list) => {
+      const at = index ?? list.length;
+      return [...list.slice(0, at), { ...blankTab(id), url }, ...list.slice(at)];
+    });
     setActiveId(id);
+  }
+
+  bridge.current = { open: (url, index) => openTab(url, index), close: (tabId) => closeTab(tabId) };
+
+  /// A reorder within this window: the page stays live, it only changes
+  /// place in the list.
+  function moveTab(id: string, index: number): void {
+    setTabs((list) => {
+      const tab = list.find((t) => t.id === id);
+      if (!tab) return list;
+      const rest = list.filter((t) => t.id !== id);
+      const at = Math.max(0, Math.min(rest.length, index));
+      return [...rest.slice(0, at), tab, ...rest.slice(at)];
+    });
+    setActiveId(id);
+  }
+
+  function moveOut(windowId: string): void {
+    onMoveOut(active.url, windowId, Number.MAX_SAFE_INTEGER);
+    closeTab(active.id);
+  }
+
+  function onDropAt(payload: string, index: number): void {
+    setDropIndex(null);
+    const drag = parseTabPayload(payload);
+    if (!drag) return;
+    if (drag.profile === "private") {
+      const from = tabs.findIndex((t) => t.id === drag.tabId);
+      if (from < 0) return;
+      // The slot was counted with the dragged tab still in the row.
+      moveTab(drag.tabId, from < index ? index - 1 : index);
+      return;
+    }
+    // A normal tab: a page on another profile cannot come across live.
+    openTab(drag.url, index);
+    onAdopt(drag.tabId);
   }
 
   function closeTab(id: string): void {
     denyPromptsFor(id);
     views.current.delete(id);
+    // The last tab takes the window with it, the way a normal window's does.
+    if (tabs.length === 1 && tabs[0]!.id === id) {
+      onClose();
+      return;
+    }
     setTabs((list) => {
       const rest = list.filter((t) => t.id !== id);
-      if (rest.length === 0) {
-        const fresh = `p${next.current++}`;
-        setActiveId(fresh);
-        return [blankTab(fresh)];
-      }
       if (id === activeId) setActiveId(rest[rest.length - 1]!.id);
       return rest;
     });
@@ -278,6 +343,12 @@ export function PrivateWindow({
                 addressFor={(t) => displayUrl(t.url) || "New Tab"}
                 onSelect={setActiveId}
                 onClose={closeTab}
+                dragPayload={(t) => tabPayload({ profile: "private", tabId: t.id, url: t.url })}
+                dropIndex={dropIndex}
+                onDragOverIndex={setDropIndex}
+                onDropAt={onDropAt}
+                onDragStart={() => {}}
+                onDragEnd={() => setDropIndex(null)}
               />
             )}
             {compact && (
@@ -386,6 +457,32 @@ export function PrivateWindow({
                 }}
               />
               <menuitem testID="private-menu-find" label="Find in Page" onSelect={() => setFindOpen(true)} />
+              <menuitem role="separator" testID="private-menu-sep-move" />
+              <menuitem
+                testID="private-menu-move-left"
+                label="Move Tab Left"
+                enabled={tabs.indexOf(active) > 0}
+                onSelect={() => moveTab(active.id, tabs.indexOf(active) - 1)}
+              />
+              <menuitem
+                testID="private-menu-move-right"
+                label="Move Tab Right"
+                enabled={tabs.indexOf(active) < tabs.length - 1}
+                onSelect={() => moveTab(active.id, tabs.indexOf(active) + 1)}
+              />
+              {moveTargets.length > 0 && (
+                <menu label="Move Tab to Window" testID="private-menu-move-to">
+                  {moveTargets.map((t) => (
+                    <menuitem
+                      key={t.id}
+                      testID={`private-menu-move-to-${t.id}`}
+                      label={t.label}
+                      enabled={active.url !== ""}
+                      onSelect={() => moveOut(t.id)}
+                    />
+                  ))}
+                </menu>
+              )}
               <menuitem role="separator" testID="private-menu-sep" />
               <menuitem testID="private-menu-downloads" label="Downloads" onSelect={onDownloads} />
               <menuitem testID="private-menu-settings" label="Settings" onSelect={onSettings} />
@@ -404,8 +501,11 @@ export function PrivateWindow({
                 find anchor for why it has to be a popover on Linux. */}
             <overlay testID="private-page-stack" style={{ hexpand: true, vexpand: true }}>
               <box orientation="vertical" style={{ hexpand: true, vexpand: true }}>
-                {tabs
+                {/* In id order, not tab order: a reorder must never move a
+                    live view within its parent, only the tab list. */}
+                {[...tabs]
                   .filter((t) => t.url !== "")
+                  .sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)))
                   .map((t) => (
                     <Activity key={t.id} mode={t.id === active.id ? "visible" : "hidden"}>
                       <webview

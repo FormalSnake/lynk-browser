@@ -89,6 +89,18 @@ const server = Bun.serve({
           '<script>navigator.requestMIDIAccess({ sysex: true }).then(() => { document.title = "midi:ok"; },' +
             ' () => { document.title = "midi:no"; });</script>',
         );
+      // A page with state a reload would lose: a counter that ticks, a field
+      // holding a value, both reported in the title so the tab row can be
+      // read for them. The load counter is the server's own.
+      case "/counter":
+        return page(
+          "counter",
+          "Counter",
+          '<input id="field"><script>let n = 0; const f = document.getElementById("field");' +
+            ' const show = () => { document.title = `Counter c=${n} f=${f.value}`; };' +
+            " setInterval(() => { n++; show(); }, 500); f.addEventListener(\"input\", show);" +
+            ' window.nbTest = () => { f.value = "typed-by-drive"; f.dispatchEvent(new Event("input")); };</script>',
+        );
       case "/action":
         return page("action", "Action page", "<h1>Action page</h1>");
       case "/search":
@@ -402,7 +414,9 @@ function launch(storeDir: string): Promise<AppHandle> {
       NB_TEST_EXT: resolve(import.meta.dir, "../fixtures/nd-test-ext"),
       // Declares a popup, switches it off at runtime and sets a badge.
       NB_TEST_EXT_ACTION: resolve(import.meta.dir, "../fixtures/nd-action-ext"),
-      NB_TEST_JS: "document.getElementById('open').click()",
+      // The counter page defines nbTest to fill its field; every other page
+      // the drive runs this on has the link.
+      NB_TEST_JS: "window.nbTest ? window.nbTest() : document.getElementById('open').click()",
       // What the Debug menu's "Context: save image" hook downloads.
       NB_TEST_IMAGE: `${base}/image.png`,
       // Searches land on the fixture: a live engine can answer the search tab
@@ -424,6 +438,7 @@ function launch(storeDir: string): Promise<AppHandle> {
       // of lines a second, and the tail has moved on by the time a leg looks.
       if (line.includes("ND_APP PERMISSION")) permissionTraces.push(line.trim());
       if (line.includes("ND_APP ACTION ")) actionTraces.push(line.trim());
+      if (line.includes("ND_APP MOVE ")) moveTraces.push(line.trim());
     },
   });
 }
@@ -431,6 +446,7 @@ function launch(storeDir: string): Promise<AppHandle> {
 const menuTraces: string[] = [];
 const permissionTraces: string[] = [];
 const actionTraces: string[] = [];
+const moveTraces: string[] = [];
 
 interface MenuTraceItem {
   id?: string;
@@ -939,8 +955,10 @@ try {
   // assertion: opening private tabs must not change what a restart would bring
   // back.
   const storedTabs = (): number => {
-    const raw = JSON.parse(readFileSync(`${PROFILE}/session.json`, "utf8")) as { data?: { tabs?: unknown[] } };
-    return raw.data?.tabs?.length ?? 0;
+    const raw = JSON.parse(readFileSync(`${PROFILE}/session.json`, "utf8")) as {
+      data?: { windows?: { tabs: unknown[] }[] };
+    };
+    return (raw.data?.windows ?? []).reduce((n, w) => n + w.tabs.length, 0);
   };
   // The store is written on a debounce, and the leg before this one closes a
   // tab, so the baseline is taken once the file has stopped moving. Reading it
@@ -1080,9 +1098,9 @@ try {
   const pinnedOnDisk =
     (
       JSON.parse(readFileSync(`${PROFILE}/session.json`, "utf8")) as {
-        data?: { tabs?: { pinned?: boolean }[] };
+        data?: { windows?: { tabs: { pinned?: boolean }[] }[] };
       }
-    ).data?.tabs?.filter((t) => t.pinned).length ?? 0;
+    ).data?.windows?.flatMap((w) => w.tabs).filter((t) => t.pinned).length ?? 0;
   if (pinnedOnDisk !== 1) fail(`the session store holds ${pinnedOnDisk} pinned tabs, want 1`);
 
   await step("unpin it again", () => clickRowAction(app, toPin.testID!, "unpin"));
@@ -1521,6 +1539,173 @@ try {
   await waitUrl(app, "/c");
   await shoot(app, "19-sidebar-again", mainWindow);
   console.log(`18. compact drops the sidebar and still navigates; the round trip kept ${afterCompact.length} live tabs`);
+
+  // Tabs move between windows, and between windows on one profile the LIVE
+  // page moves: the counter keeps counting from where it was, the field keeps
+  // its value and the server sees no second load. GTK cannot synthesise the
+  // pointer drag itself (-32003), so every move here goes through the menu
+  // items, which call the same moveTab the chips' drop handler calls. Not
+  // covered: the drag gesture, the drop index a pointer position maps to, the
+  // insertion divider while dragging, and a docked inspector riding along.
+  const counterRe = /^Counter c=(\d+) f=(.*)$/;
+  const counterIn = (rows: string[]): { c: number; f: string } | null => {
+    for (const title of rows) {
+      const m = counterRe.exec(title);
+      if (m) return { c: Number(m[1]), f: m[2]! };
+    }
+    return null;
+  };
+  const rowsIn = async (listId: string): Promise<string[]> => {
+    const node = await app.find(listId);
+    return (node?.rows ?? []).filter((r) => r.testID).map((r) => r.title);
+  };
+  const waitRowsIn = async (listId: string, check: (rows: string[]) => boolean, what: string): Promise<string[]> => {
+    const deadline = Date.now() + PATIENCE;
+    let seen: string[] = [];
+    while (Date.now() < deadline) {
+      seen = await rowsIn(listId);
+      if (check(seen)) return seen;
+      await Bun.sleep(200);
+    }
+    return fail(`timed out waiting for ${what}; ${listId} rows were ${JSON.stringify(seen)}`);
+  };
+  /// The move reported after the first `seen` traces.
+  const nextMove = async (seen: number): Promise<RegExpExecArray> => {
+    const deadline = Date.now() + PATIENCE;
+    while (Date.now() < deadline) {
+      const m = /tab=(t\d+) from=(w\d+) to=(w\d+)/.exec(moveTraces[seen] ?? "");
+      if (m) return m;
+      await Bun.sleep(100);
+    }
+    return fail("the app never reported the move");
+  };
+  const windowCount = async (): Promise<number> => (await app.windows()).windows.length;
+  const waitWindowCount = async (n: number, what: string): Promise<void> => {
+    const deadline = Date.now() + PATIENCE;
+    while (Date.now() < deadline) {
+      if ((await windowCount()) === n) return;
+      await Bun.sleep(150);
+    }
+    fail(`${what}: ${await windowCount()} windows, want ${n}`);
+  };
+
+  await step("open a tab for the counter page", () => app.click("menu-new-tab"));
+  await goTo(app, `${base}/counter`);
+  await waitUrl(app, "/counter");
+  // The address is the app's as soon as it is set; the page's script is
+  // there once the title is its own.
+  await waitRowsIn("tab-list", (r) => counterIn(r) !== null, "the counter page running");
+  await step("fill the page's field", () => app.click("menu-run-test-js"));
+  const start = counterIn(
+    await waitRowsIn("tab-list", (r) => counterIn(r)?.f === "typed-by-drive", "the counter page reporting its field"),
+  )!;
+  if (loads.counter !== 1) fail(`the counter page loaded ${loads.counter} times before any move`);
+
+  // Reorder within the window: left, then right again.
+  const idsBefore = await waitTabIds(app, () => true, "the tab rows");
+  const counterRow = idsBefore[idsBefore.length - 1]!;
+  await step("move the tab left", () => app.click("menu-move-left"));
+  await waitTabIds(app, (ids) => ids[ids.length - 2] === counterRow, "the counter tab one place to the left");
+  await step("move the tab right", () => app.click("menu-move-right"));
+  await waitTabIds(app, (ids) => ids[ids.length - 1] === counterRow, "the counter tab back at the end");
+  if (loads.counter !== 1) fail(`reordering reloaded the page: ${loads.counter} loads`);
+  console.log(`21a. Move Tab Left/Right reorders ${counterRow} within the window, loads counter=${loads.counter}`);
+
+  // To a new window: the live page moves.
+  const windowsBefore = await windowCount();
+  const movesBefore = moveTraces.length;
+  await step("move the tab to a new window", () => app.click("menu-move-new-window"));
+  const toNew = await nextMove(movesBefore);
+  const [, movedTab, mainId, newId] = toNew;
+  await waitWindowCount(windowsBefore + 1, "a window for the moved tab");
+  const inNew = counterIn(
+    await waitRowsIn(`${newId}-tab-list`, (r) => r.length === 1 && (counterIn(r)?.c ?? -1) > start.c, "the counter ticking on in the new window"),
+  )!;
+  if (inNew.f !== "typed-by-drive") fail(`the field came across as ${JSON.stringify(inNew.f)}`);
+  if (counterIn(await rowsIn("tab-list"))) fail("the counter tab is still listed in the window it left");
+  if (loads.counter !== 1) fail(`moving the tab to a new window reloaded it: ${loads.counter} loads`);
+  await shoot(app, "21-moved-to-new-window", (await app.find(`${newId}-window`))?.ref);
+  console.log(`21b. ${movedTab} moved ${mainId} -> new ${newId} live: c ${start.c} -> ${inNew.c}, field ${inNew.f}, loads counter=${loads.counter}`);
+
+  // Back, from the new window's own menu. It was that window's only tab, so
+  // the window closes behind it.
+  await step("move it back from the new window's menu", () => app.click(`${newId}-menu-move-to-${mainId}`));
+  await waitWindowCount(windowsBefore, "the emptied window closing");
+  const back = counterIn(
+    await waitRowsIn("tab-list", (r) => (counterIn(r)?.c ?? -1) > inNew.c, "the counter ticking on back in the first window"),
+  )!;
+  if (back.f !== "typed-by-drive") fail(`the field came back as ${JSON.stringify(back.f)}`);
+  if (loads.counter !== 1) fail(`moving the tab between windows reloaded it: ${loads.counter} loads`);
+  console.log(`21c. ${movedTab} moved ${newId} -> ${mainId} live and ${newId} closed: c ${inNew.c} -> ${back.c}, field ${back.f}, loads counter=${loads.counter}`);
+
+  // Into the private window: another profile, so the page is reopened there
+  // at its address and the tab leaves this window. A second load is the
+  // design, not a failure.
+  if (!(await app.find("private-window"))) {
+    await step("open the private window", () => app.click("menu-private-window"));
+    await app.waitFor({ testId: "private-window", state: "present" }, { timeoutMs: PATIENCE });
+  }
+  await step("move it to the private window", () => app.click("menu-move-to-private"));
+  await waitRowsIn("private-tab-list", (r) => r.some((t) => t.startsWith("Counter")), "the counter reopened in the private window");
+  if (counterIn(await rowsIn("tab-list"))) fail("the counter tab is still listed in the normal window");
+  const deadlineLoads = Date.now() + PATIENCE;
+  const counterLoads = (): number => loads.counter ?? 0;
+  while (Date.now() < deadlineLoads && counterLoads() !== 2) await Bun.sleep(150);
+  if (counterLoads() !== 2) fail(`a move across profiles should reload once, loads counter=${counterLoads()}`);
+  console.log(`21d. a move into the private window reopens the page there (loads counter=${loads.counter}) and closes it here`);
+
+  // Each window is persisted with its own tabs and restored as its own
+  // window.
+  await step("open a new window", () => app.click("menu-new-window"));
+  await waitWindowCount(windowsBefore + 1, "the new window");
+  const stored = (): { id: string; urls: string[] }[] =>
+    (
+      JSON.parse(readFileSync(`${PROFILE}/session.json`, "utf8")) as {
+        data?: { windows?: { id: string; tabs: { url: string }[] }[] };
+      }
+    ).data?.windows?.map((w) => ({ id: w.id, urls: w.tabs.map((t) => t.url) })) ?? [];
+  const secondId = await step("the store lists the new window", async () => {
+    const deadline = Date.now() + PATIENCE;
+    while (Date.now() < deadline) {
+      const ws = stored();
+      if (ws.length === 2) return ws[1]!.id;
+      await Bun.sleep(200);
+    }
+    return fail(`the store lists ${JSON.stringify(stored())}`);
+  });
+  await step("type an address into the new window", () => app.setValue(`${secondId}-omnibox`, `${base}/b`));
+  await step("commit it", () => app.click("menu-commit-address"));
+  await waitRowsIn(`${secondId}-tab-list`, (r) => r[0]?.startsWith("Page B") ?? false, "page B in the new window");
+  await step("open settings", () => app.click("menu-settings"));
+  await step("turn reopen-on-launch back on", async () => {
+    const deadline = Date.now() + PATIENCE;
+    for (;;) {
+      try {
+        return await app.setValue("settings-restore", true);
+      } catch (e) {
+        if (Date.now() > deadline) throw e;
+        await Bun.sleep(200);
+      }
+    }
+  });
+  const persisted = await step("both windows reach the store", async () => {
+    const deadline = Date.now() + PATIENCE;
+    while (Date.now() < deadline) {
+      const ws = stored();
+      if (ws.length === 2 && ws[1]!.urls.some((u) => u.endsWith("/b"))) return ws;
+      await Bun.sleep(200);
+    }
+    return fail(`the store lists ${JSON.stringify(stored())}`);
+  });
+  const mainRows = await rowsIn("tab-list");
+  await app.restart();
+  await app.waitForPresent("tab-list", { timeoutMs: PATIENCE });
+  await waitWindowCount(2, "both windows restored");
+  await waitRowsIn("tab-list", (r) => r.length === mainRows.length, "the first window's tabs restored");
+  await waitRowsIn(`${secondId}-tab-list`, (r) => r.length === 1, "the second window's tab restored");
+  console.log(
+    `21e. restart restored 2 windows: ${persisted.map((w) => `${w.id}=${w.urls.length} tabs`).join(", ")}`,
+  );
 
   console.log("NB_MVP_OK");
 } catch (e) {
