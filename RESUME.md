@@ -6,32 +6,32 @@ app. UI/UX polish comes later.
 
 To resume, tell Claude: "read RESUME.md and continue".
 
-## Where things are (updated 2026-09-21)
+## Where things are (updated 2026-09-23)
 
 | Repo / tree | Branch | State |
 |---|---|---|
-| `~/Developer/nativebrowser` | `main` (not pushed) | On `@nativedesktop/*` 0.4.8, `webview.cef.style: "chrome"` in the config. Extensions toolbar, floating find bar, Safari-style compact row, empty Ctrl+T launcher. |
-| `~/Developer/NativeDesktop` | `main` (pushed, v0.4.8 published) | 0.4.3 to 0.4.8 shipped: chrome-accept, chrome-style-mac, flat row actions, portal button layout on x11, DevTools close button, held right click context menu, menu child moves, dock tiling. |
-| `~/Developer/nd-ext-actions` | `ext-actions`, NOT merged | Three `wip:` commits never run (g815 was off): real URL for `chrome.tabs.create` tabs (the owner's about:blank tabs and the unreachable 1Password sign-in), `watchExtensions` event, `installExtension` 90 s timeout. |
-| `~/Developer/nd-chrome-dialogs` | `chrome-dialogs`, NOT merged | `permissionRequest` event and `respondPermission` (run on both platforms). On mac the host adopts Chromium's own windows (passkey, HTTP auth, save password) as children of the app window over the webview; both mac gates green on the orchestrator's rerun. Four `wip:` Linux commits never compiled, including 0d77455 (mark the dialog transient for the host window, the candidate fix for the sheet landing at the top right on Hyprland, which discards the watcher's `XMoveResizeWindow`). |
-| `~/Developer/nd-dock-gap` | `dock-gap` | Merged except the top `wip:` commit (Linux twin of the Inspect pick leg, never run). |
-| g815 | `~/Developer/nd-main`, `~/Developer/nativebrowser-run` | `run-on-desktop.sh` starts the app on the Hyprland session with the host built in `nd-main` (NixOS cannot run the prebuilt host). Rebuild `nd-main` from main before a relaunch. |
+| `~/Developer/nativebrowser` | `main` (8c6b43c, not pushed) | Deps 0.4.13. Compact row is tabs + one address field (2b62f50), chrome:// tabs created at URL, extensions toolbar reads live action state (8c6b43c). |
+| `~/Developer/nativebrowser-crash` | `crash-minwidth` | Crash agent: compact row demands 1482 px at 1266 wide; Ctrl+Shift+S collides with Chromium's Save page as. |
+| `~/Developer/NativeDesktop` | `main` (v0.4.13 published) | 0.4.9 permission event, 0.4.10 tabs.create URLs + watchExtensions, 0.4.11 readExtensionAction, 0.4.12 dialogs over a page + Chromium windows carry the app class, 0.4.13 GTK sizing batch (released by another session). |
+| `nd-dock-gap-app` | `dock-gap-app` | DevTools placeholder fix both platforms, green on dockTiling; REGRESSES `<select>` dropdowns on x11 (main green, branch red). Agent on it. |
+| `nd-permission-states` | `permission-states` | Linux engine gate green on my run (dismiss state, resetPermissions, withdrawn event, frame URL, URL.origin form). Mac gates NOT run (my run hung in a cache collision). |
+| `nd-focus-return` | `focus-return` | Focus fight fixed (two browsers, 55k on_set_focus), onFocusChanged, webviewEngine.active(); REGRESSES paletteTakesKeys. Agent on it, then the two host wedges and two AppKit gaps. |
+| `nd-headerbar-field` | `headerbar-field` | GTK green on my run (title field fills the run, leadingIconName, font reaches labels). AppKit half unfinished (field 61 px short). Agent on it. |
+| `nd-min-width`, `nd-startup-window` | | Crash agent (framework half); startup-window agent (Chrome's restore bubble / New Tab window after an unclean exit, gate cache collision). |
+| g815 | `nd-main`, `nativebrowser-run` | Live instance NOT running (owner closed it after the compact crash). Relaunch after the crash fix lands. Crash log kept at `~/Developer/nativebrowser-run-crash-0923.log`. |
 
 Rules learned this round:
-- Every confirmed framework fix ships to npm the same day (see CLAUDE.md). Release = bump the 12 `packages/*/package.json`, `bun install`, `bun scripts/release/check-versions.ts <v>`, commit `release: v<v>`, tag, push; CI publishes. The registry lags a few minutes per package, so retry `bun install` in the app until `@nativedesktop/host` resolves before committing the bump.
-- Linux gates on g815 need `nix develop --command bash scripts/...`, and a display, CDP port and app id of their own when agents run side by side (`ND_CEF_DISPLAY`, `ND_CDP_PORT`, `ND_APP_ID`).
-- Mac gates serialize on one lock. Kill hosts by worktree path, never `pkill -f NDShellDev`.
-- A branch with Linux code that was never compiled does not merge: the release CI builds the Linux host.
-
-To run on g815 when it is back:
-- `ext-actions`: `cd ~/Developer/nd-ext-actions && ND_CEF_DISPLAY=:71 ND_CDP_PORT=9371 ND_APP_ID=dev.nativedesktop.extActions nix develop --command bash scripts/headless-webview-cef-chrome.sh` (new legs `tabsCreateReportsUrl`, `extensionTabReportsUrl`, `openerNavigatesBlankReportsUrl`, `extensionsChanged`, `installExtensionError`).
-- `chrome-dialogs`: same gate with `ND_CEF_DISPLAY=:98 ND_CDP_PORT=9344 ND_APP_ID=dev.nativedesktop.chromeDialogs`, expect `ND_CEF_CHROME_LEGS_OK(dialogs)`.
-- `dock-gap`: same gate with `:91` / `9391`, for the Inspect pick leg; then check the owner's DevTools gap on the real XWayland session, which no rig reproduced.
+- Mac CEF gates from two worktrees at once share the default CEF cache: the second host shows Chromium's "Restore pages?" bubble and a full "New Tab - Chromium" window. Always `ND_CEF_CACHE=<fresh temp dir>` per run and check `pgrep -fl NDShell` first. A machine-wide lock is being added.
+- g815 with 4+ rigs at once produces false reds (hypr contextMenu, x11 dockTiling). Rerun a red rig ALONE (`ND_ACCEPT_RIGS=<rig>`) and against a main baseline built the same way before believing it.
+- A `wip:` commit is how an agent's unverified half survives a cutoff; never merge one.
 
 Owner reports still open:
-- 1Password: content scripts inject but it draws no field icon until signed in; sign-in was unreachable because its welcome tab arrived as about:blank (fix is the `wip:` above). Its popup hangs on the splash because our popup view is an ordinary tab to Chromium, not `kExtensionPopup` (docs/webview.md). Runtime `setPopup` / badge state needs a hidden extension-page view as transport. `onClicked` and `activeTab` need our own CEF build.
-- Passkey sheet at the top right of the screen on Hyprland: not reproduced on any rig; cause by reading is `onChromeWindowWatch` (NativeDesktop `src/cef/engine.zig:390`) moving a managed XWayland toplevel, which Hyprland ignores. Fallback if transient-for is not enough: `XReparentWindow` into the host's X window.
-- DevTools gap on Linux: not reproduced on Xvfb; the tiling leg is the instrument.
+- Compact row at 1266 px: tab buttons keep the full title as minimum (`ndButtonApplyIconData`, widgets.zig:310) plus app widths from windowWidth; returning to sidebar divides 0/0 in libadwaita (setShowSidebar call sites). Fix in flight.
+- Ctrl+Shift+S: app shortcut and Chromium Save page as both fire; each press opened a Chromium file dialog that alt-tab lists as nd-hello. Fix in flight (pre-emption leg, file dialogs routed or transient, app shortcut moved).
+- Compact row: titles bold, padlock beside the field, computed address width: all wait on `headerbar-field`.
+- 1Password: content scripts inject, popup was disabled at runtime (now handled), sign-in tab now arrives. onClicked/activeTab need our own CEF build. Runtime badge via probe views.
+- Passkey sheet at the top right on Hyprland: owner's window rule for empty class+title (`~/.config/hypr/hyprland.lua:507`); transient-for hints shipped in 0.4.9.
+- Mac: palette does not present while a search input holds first responder; header-bar SearchInput not automatable. Focus agent.
 - Extension registry commands do not exist on AppKit (about 750 lines of Swift).
 
 ## What is on NativeDesktop main
