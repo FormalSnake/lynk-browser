@@ -17,6 +17,7 @@ app. To resume, tell Claude: "read RESUME.md and continue".
 - Visual bar (owner): before a merge, look at a region capture of every
   touched surface at a normal and a narrow width. Crammed content, overflow or
   clipping, wrong control size, wrong layout, off-centre content all block it.
+  Context menus included (real right-click, capture, no duplicate items).
 - Every confirmed framework fix ships to npm the same day (both CLAUDE.md files
   say so). Release: bump the 12 `packages/*/package.json`, `bun install`,
   `bun scripts/release/check-versions.ts <v>`, commit `release: v<v>`, tag
