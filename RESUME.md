@@ -14,6 +14,9 @@ app. To resume, tell Claude: "read RESUME.md and continue".
 - Merge bar: rebase onto `main`, then no leg that is green on a `main` baseline
   built and run the same way may be red on the branch. Known-red legs are listed
   below and stay out of the bar.
+- Visual bar (owner): before a merge, look at a region capture of every
+  touched surface at a normal and a narrow width. Crammed content, overflow or
+  clipping, wrong control size, wrong layout, off-centre content all block it.
 - Every confirmed framework fix ships to npm the same day (both CLAUDE.md files
   say so). Release: bump the 12 `packages/*/package.json`, `bun install`,
   `bun scripts/release/check-versions.ts <v>`, commit `release: v<v>`, tag
