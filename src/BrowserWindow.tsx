@@ -1151,24 +1151,6 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 />
               )}
 
-              {/* The menu bar lives in the first window. Every other window
-                  carries its own menu for what acts on THAT window, moving
-                  its tab above all, which a drag must never be the only way
-                  to do. */}
-              {!first && (
-                <menubutton slot="end" testID={`${p}window-menu`} iconName="open-menu-symbolic" tooltip="Main Menu">
-                  <menuitem testID={`${p}menu-new-tab`} label="New Tab" onSelect={() => ctx.openTab(win.id, "")} />
-                  <menuitem testID={`${p}menu-new-window`} label="New Window" onSelect={ctx.newWindow} />
-                  <menuitem testID={`${p}menu-close-tab`} label="Close Tab" onSelect={() => ctx.closeTab(active.id)} />
-                  <menuitem role="separator" testID={`${p}menu-sep-move`} />
-                  {moveItems(`${p}menu-`, win, targets)}
-                  <menuitem role="separator" testID={`${p}menu-sep`} />
-                  <menuitem testID={`${p}menu-find`} label="Find in Page" onSelect={() => ctx.openFind(active.id)} />
-                  <menuitem testID={`${p}menu-downloads`} label="Downloads" onSelect={() => setDownloadsOpen(true)} />
-                  <menuitem testID={`${p}menu-settings`} label="Settings" onSelect={ctx.openSettings} />
-                </menubutton>
-              )}
-
               {/* Chrome's extensions area: the pinned actions, then the puzzle
                   piece that lists everything installed. Each pinned action is
                   boxed with its own popover so the popup opens under the button
@@ -1392,6 +1374,25 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                   </box>
                 </popover>
               </box>
+
+              {/* The menu bar lives in the first window. Every other window
+                  carries its own menu for what acts on THAT window, moving
+                  its tab above all, which a drag must never be the only way
+                  to do. Last in the row, where the
+                  first window's menu bar puts its own button. */}
+              {!first && (
+                <menubutton slot="end" testID={`${p}window-menu`} iconName="open-menu-symbolic" tooltip="Main Menu">
+                  <menuitem testID={`${p}menu-new-tab`} label="New Tab" onSelect={() => ctx.openTab(win.id, "")} />
+                  <menuitem testID={`${p}menu-new-window`} label="New Window" onSelect={ctx.newWindow} />
+                  <menuitem testID={`${p}menu-close-tab`} label="Close Tab" onSelect={() => ctx.closeTab(active.id)} />
+                  <menuitem role="separator" testID={`${p}menu-sep-move`} />
+                  {moveItems(`${p}menu-`, win, targets)}
+                  <menuitem role="separator" testID={`${p}menu-sep`} />
+                  <menuitem testID={`${p}menu-find`} label="Find in Page" onSelect={() => ctx.openFind(active.id)} />
+                  <menuitem testID={`${p}menu-downloads`} label="Downloads" onSelect={() => setDownloadsOpen(true)} />
+                  <menuitem testID={`${p}menu-settings`} label="Settings" onSelect={ctx.openSettings} />
+                </menubutton>
+              )}
             </headerbar>
 
             <box testID={`${p}content`} orientation="vertical" style={{ hexpand: true, vexpand: true }}>

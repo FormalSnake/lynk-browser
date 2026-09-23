@@ -1640,6 +1640,11 @@ try {
   if (counterIn(await rowsIn("tab-list"))) fail("the counter tab is still listed in the window it left");
   if (loads.counter !== 1) fail(`moving the tab to a new window reloaded it: ${loads.counter} loads`);
   await shoot(app, "21-moved-to-new-window", (await app.find(`${newId}-window`))?.ref);
+  // A second window's own menu closes its header row, where the first
+  // window's menu bar button sits.
+  const menuX = (await app.find(`${newId}-window-menu`))?.geometry?.x ?? -1;
+  const downloadsX = (await app.find(`${newId}-downloads-button`))?.geometry?.x ?? -1;
+  if (!(menuX > downloadsX && downloadsX >= 0)) fail(`${newId}'s menu sits at x=${menuX}, downloads at x=${downloadsX}`);
   console.log(`21b. ${movedTab} moved ${mainId} -> new ${newId} live: c ${start.c} -> ${inNew.c}, field ${inNew.f}, loads counter=${loads.counter}`);
 
   // Back, from the new window's own menu. It was that window's only tab, so
