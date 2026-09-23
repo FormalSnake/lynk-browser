@@ -20,12 +20,15 @@ import {
   waitText as textMatching,
 } from "./drive-lib.ts";
 
-const PROFILE = "/tmp/nb-drive-profile";
-const DOWNLOADS = "/tmp/nb-drive-downloads";
+// NB_DRIVE_ROOT moves every scratch path below so a run with its own display
+// and lock file does not share them with another run on the same machine.
+const SCRATCH = process.env.NB_DRIVE_ROOT ?? "/tmp";
+const PROFILE = `${SCRATCH}/nb-drive-profile`;
+const DOWNLOADS = `${SCRATCH}/nb-drive-downloads`;
 // The webview jar lives under the user data dir, so the cookie round trip needs
 // one of its own — otherwise it reads a jar the dev box already had and a
 // browser that persists nothing still passes.
-const DATA_HOME = "/tmp/nb-drive-data";
+const DATA_HOME = `${SCRATCH}/nb-drive-data`;
 // Fresh per run for the same reason: a value left behind by the previous run
 // would survive a restart no matter what the engine did with this one.
 const COOKIE_VALUE = `v${Date.now()}`;
@@ -41,6 +44,7 @@ mkdirSync(SHOTS, { recursive: true });
 // ---------------------------------------------------------------- fixture ---
 
 const loads: Record<string, number> = {};
+let cookieSets = 0;
 
 function page(key: string, title: string, body: string): Response {
   loads[key] = (loads[key] ?? 0) + 1;
@@ -105,13 +109,17 @@ const server = Bun.serve({
         return page("action", "Action page", "<h1>Action page</h1>");
       case "/search":
         return page("search", "Search results", "<h1>Search results</h1>");
+      // Sets the cookie on its first load only. The tab is restored at this
+      // address, and a restored tab that loads it again after the restart
+      // would set the cookie afresh and hide a jar that persisted nothing.
       case "/setcookie":
+        cookieSets++;
         return new Response(
           '<!doctype html><meta charset="utf-8"><title>Cookie set</title><h1>Cookie set</h1>',
           {
             headers: {
               "content-type": "text/html; charset=utf-8",
-              "set-cookie": `nbdrive=${COOKIE_VALUE}; Path=/; Max-Age=3600`,
+              ...(cookieSets === 1 ? { "set-cookie": `nbdrive=${COOKIE_VALUE}; Path=/; Max-Age=3600` } : {}),
             },
           },
         );
@@ -424,7 +432,7 @@ function launch(storeDir: string): Promise<AppHandle> {
       NB_TEST_SEARCH_PREFIX: `${base}/search?q=`,
       // A D-Bus name, so no hyphens: GTK accepts an invalid application id and
       // then degrades silently.
-      ND_APP_ID: "dev.nativebrowser.browser",
+      ND_APP_ID: process.env.ND_APP_ID ?? "dev.nativebrowser.browser",
     },
     readyTimeoutMs: PATIENCE,
     // waitFor blocks host-side for its full condition timeout, so the client's
@@ -770,8 +778,15 @@ try {
   // accepted yesterday is back today, and on a site that bounces through a
   // consent host it is back on every launch. Set it here, read it back after
   // the restart below.
+  // The address field shows /setcookie as soon as the app sets it, before
+  // the engine has fetched anything. Restarting on that alone raced the
+  // request: under load the host was torn down before the Set-Cookie
+  // response arrived, and leg 13 read cookie=none. The row's title comes
+  // from the document, which is parsed after its headers are processed.
   await goTo(app, `${base}/setcookie`);
   await waitUrl(app, "/setcookie");
+  await waitRows(app, (r) => r.includes("Cookie set"), "the Set-Cookie response to reach the engine");
+  if (cookieSets !== 1) fail(`/setcookie was served ${cookieSets} times before the restart, want 1`);
 
   // Acceptance 7 — restart: the session store brings back the same tabs and the same active one.
   const before = (await tabRows(app)).map((r) => r.title);
