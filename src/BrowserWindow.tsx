@@ -30,6 +30,8 @@ import type {
 
 import { INSET, Sidebar } from "./Sidebar.tsx";
 import { ADDRESS_MIN_WIDTH, CompactTabs, LAYOUT_BUTTON_WIDTH, tabRunMetrics } from "./CompactTabs.tsx";
+import { ZoomPopover, useZoomPopover, zoomFieldProps } from "./ZoomControl.tsx";
+import { stepZoom } from "./lib/zoom.ts";
 import type { DownloadItem } from "./lib/downloads.ts";
 import { downloadDir } from "./lib/downloads.ts";
 import {
@@ -171,6 +173,8 @@ export interface BrowserContext {
   command(tabId: string, name: "goBack" | "goForward" | "reload" | "stop"): void;
   zoomFor(url: string): number;
   setZoom(tabId: string, next: number): void;
+  /// One preset step in, out, or (0) back to 100%, with the popover shown.
+  zoomStep(tabId: string, direction: 1 | -1 | 0): void;
   setLayout(next: Layout): void;
 
   openFind(tabId: string): void;
@@ -266,6 +270,11 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// callback runs on every render, and focusing on each one would fight the
   /// user for the caret.
   const findFocused = useRef(0);
+  /// Compact's address field, which the zoom popover points at: its trailing
+  /// icon is the magnifier.
+  const addressField = useRef<NdNodeRef<"searchinput"> | null>(null);
+  const zoomFactor = ctx.zoomFor(active.url);
+  const zoomPopover = useZoomPopover(active.id, ctx.rt(active.id).zoomNotice);
   /// What is in the address field right now. Only a test hook reads it: a
   /// person presses Enter, which carries the text with it.
   const typedAddress = useRef("");
@@ -439,11 +448,11 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
       case "settings":
         return ctx.openSettings();
       case "zoom-in":
-        return ctx.setZoom(active.id, ctx.zoomFor(active.url) + 0.1);
+        return ctx.zoomStep(active.id, 1);
       case "zoom-out":
-        return ctx.setZoom(active.id, ctx.zoomFor(active.url) - 0.1);
+        return ctx.zoomStep(active.id, -1);
       case "zoom-reset":
-        return ctx.setZoom(active.id, 1);
+        return ctx.zoomStep(active.id, 0);
       case "extensions":
         return openExtensionsList();
       case "extensions-page":
@@ -1207,19 +1216,19 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               testID="menu-zoom-in"
               label="Zoom In"
               accelerator={KEYS["zoom-in"]}
-              onSelect={() => ctx.setZoom(menuActive.id, ctx.zoomFor(menuActive.url) + 0.1)}
+              onSelect={() => ctx.zoomStep(menuActive.id, 1)}
             />
             <menuitem
               testID="menu-zoom-out"
               label="Zoom Out"
               accelerator={KEYS["zoom-out"]}
-              onSelect={() => ctx.setZoom(menuActive.id, ctx.zoomFor(menuActive.url) - 0.1)}
+              onSelect={() => ctx.zoomStep(menuActive.id, -1)}
             />
             <menuitem
               testID="menu-zoom-reset"
               label="Reset Zoom"
               accelerator={KEYS["zoom-reset"]}
-              onSelect={() => ctx.setZoom(menuActive.id, 1)}
+              onSelect={() => ctx.zoomStep(menuActive.id, 0)}
             />
           </menu>
           <menu label="Tabs" testID="menu-tabs">
@@ -1533,6 +1542,9 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                   The padlock is the field's own leading icon, Chrome's site
                   information button, and the panel hangs off the icon. */}
               <searchinput
+                // The ref object itself, not a callback: React detaches and
+                // re-attaches a fresh callback ref on every commit, and the
+                // zoom popover's anchorRef reads this ref mid-commit.
                 ref={addressField}
                 testID={`${p}omnibox`}
                 text={shownUrl}
@@ -1547,6 +1559,16 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 // entry and blank it.
                 onChanged={(e) => (typedAddress.current = e.text)}
                 onActivate={(e) => commitQuery(e.text, "current")}
+                {...zoomFieldProps(zoomFactor, zoomPopover.open, zoomPopover.toggle)}
+              />
+              <ZoomPopover
+                anchor={addressField}
+                open={zoomPopover.open}
+                factor={zoomFactor}
+                prefix={p}
+                onStep={(direction) => ctx.setZoom(active.id, stepZoom(zoomFactor, direction))}
+                onReset={() => ctx.setZoom(active.id, 1)}
+                onClosed={zoomPopover.close}
               />
               {createPortal(
                 <popover

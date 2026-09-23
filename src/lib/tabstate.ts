@@ -35,6 +35,9 @@ export interface Runtime {
   /// Bumped by "Try again": it is the webview's key, so a retry remounts the
   /// engine widget rather than asking a failed view to reload itself.
   attempt: number;
+  /// Bumped whenever zoom changes from a chord or a menu step, which is what
+  /// shows the zoom popover for a moment.
+  zoomNotice: number;
 }
 
 export const IDLE: Runtime = {
@@ -45,6 +48,7 @@ export const IDLE: Runtime = {
   error: null,
   security: "none",
   attempt: 0,
+  zoomNotice: 0,
 };
 
 export interface FindState {

@@ -79,10 +79,8 @@ import {
 } from "./lib/tabstate.ts";
 import { LAYOUT_SEGMENT_WIDTH } from "./lib/metrics.ts";
 import { fileNameFromUrl, hostOf, toUrl } from "./lib/url.ts";
+import { clampZoom, stepZoom } from "./lib/zoom.ts";
 import { PrivateWindow, type PrivateBridge } from "./PrivateWindow.tsx";
-
-const ZOOM_MIN = 0.5;
-const ZOOM_MAX = 3;
 
 /// A window with no tabs left is closed, not kept around empty.
 function withoutEmptyWindows(s: SessionState): SessionState {
@@ -580,12 +578,39 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   }
 
   function setZoom(tabId: string, next: number): void {
-    const host = hostOf(tabOf(tabId)?.url ?? "");
-    if (!host) return;
-    const clamped = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(next * 100) / 100));
-    session.update((s) => ({ ...s, zoomByHost: { ...s.zoomByHost, [host]: clamped } }));
+    if (!rememberZoom(tabId, next)) return;
     const node = view(tabId);
-    if (node) sendCommand(node, "setZoom", clamped);
+    if (node) sendCommand(node, "setZoom", clampZoom(next));
+  }
+
+  /// A step from the menu, the palette or the zoom popover. The popover shows
+  /// for a moment so the new value is visible, as it is after a chord.
+  function zoomStep(tabId: string, direction: 1 | -1 | 0): void {
+    const current = zoomFor(tabOf(tabId)?.url ?? "");
+    setZoom(tabId, direction === 0 ? 1 : stepZoom(current, direction));
+    bumpZoomNotice(tabId);
+  }
+
+  function bumpZoomNotice(tabId: string): void {
+    setRuntime((r) => ({ ...r, [tabId]: { ...(r[tabId] ?? IDLE), zoomNotice: (r[tabId] ?? IDLE).zoomNotice + 1 } }));
+  }
+
+  function rememberZoom(tabId: string, factor: number): boolean {
+    const host = hostOf(tabOf(tabId)?.url ?? "");
+    if (!host) return false;
+    const clamped = clampZoom(factor);
+    session.update((s) => ({ ...s, zoomByHost: { ...s.zoomByHost, [host]: clamped } }));
+    return true;
+  }
+
+  /// The engine serves a zoom chord and ctrl+wheel inside the page itself; the
+  /// app keeps the factor for the host and shows the popover. Changes the app
+  /// made, and a level Chromium restored on navigation, need nothing here.
+  function onZoomChanged(tabId: string, data: unknown): void {
+    const change = data as { factor: number; source: string };
+    if (change.source !== "page") return;
+    if (!rememberZoom(tabId, change.factor)) return;
+    bumpZoomNotice(tabId);
   }
 
   function command(tabId: string, name: "goBack" | "goForward" | "reload" | "stop"): void {
@@ -1208,6 +1233,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     command,
     zoomFor,
     setZoom,
+    zoomStep,
     setLayout,
     openFind: (tabId) => setFind(tabId, (f) => ({ ...f, open: true })),
     closeFind,
@@ -1306,6 +1332,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                     onPermissionRequest={(e) => onPermissionRequest(t.id, e.data)}
                     onFaviconChanged={(e) => onFavicon(t.url, e.data as { dataUrl?: string; iconUrl?: string })}
                     onSecurityChanged={(e) => patch(t.id, { security: securityOf(t.url, e.data) })}
+                    onZoomChanged={(e) => onZoomChanged(t.id, e.data)}
                     onFindResult={(e) => {
                       // Two events per search on GTK: `done` carries the
                       // outcome, `done: false` carries the total from the
