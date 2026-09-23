@@ -94,7 +94,7 @@ const COMMANDS: { id: string; title: string; hint: string; iconName: string }[] 
   { id: "reload", title: "Reload", hint: "Ctrl+R", iconName: "view-refresh-symbolic" },
   { id: "find", title: "Find in Page", hint: "Ctrl+F", iconName: "edit-find-symbolic" },
   { id: "downloads", title: "Downloads", hint: "Toolbar", iconName: "folder-download-symbolic" },
-  { id: "layout", title: "Switch Layout", hint: "Sidebar or compact", iconName: "sidebar-show-symbolic" },
+  { id: "layout", title: "Switch Layout", hint: "Ctrl+Alt+S", iconName: "sidebar-show-symbolic" },
   { id: "private", title: "New Private Window", hint: "Ctrl+Shift+P", iconName: "view-conceal-symbolic" },
   { id: "settings", title: "Settings", hint: "Ctrl+Comma", iconName: "preferences-system-symbolic" },
   { id: "zoom-in", title: "Zoom In", hint: "Ctrl++", iconName: "zoom-in-symbolic" },
@@ -721,10 +721,14 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               accelerator="primary+r"
               onSelect={() => ctx.command(menuActive.id, "reload")}
             />
+            {/* Chromium binds most ctrl and ctrl+shift letters, and password
+                managers take ctrl+shift+l and ctrl+shift+x. primary+shift+comma
+                never fired from the address field on X11, where GTK sees the
+                key as less. */}
             <menuitem
               testID="menu-layout"
               label={compact ? "Use Sidebar Layout" : "Use Compact Layout"}
-              accelerator="primary+shift+s"
+              accelerator="primary+alt+s"
               onSelect={() => ctx.setLayout(compact ? "sidebar" : "compact")}
             />
             <menuitem testID="menu-downloads" label="Downloads" onSelect={() => menuTarget()?.openDownloads()} />
