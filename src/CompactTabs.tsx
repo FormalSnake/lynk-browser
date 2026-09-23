@@ -142,7 +142,11 @@ export function CompactTabs({
       style={{ hexpand: false }}
       dropTarget
       onDragOver={(e) => onDragOverIndex(indexAt(e.data.x, tabs, metrics))}
-      onDropped={(e) => onDropAt(e.text, indexAt(e.data.x, tabs, metrics))}
+      onDropped={(e) => {
+        const index = indexAt(e.data.x, tabs, metrics);
+        if (process.env.NB_TEST_HOOKS === "1") console.error(`ND_APP DROP ${prefix}tab-strip x=${e.data.x} index=${index}`);
+        onDropAt(e.text, index);
+      }}
     >
       {tabs.flatMap((t, i) => {
         const active = t.id === activeId;
