@@ -77,6 +77,7 @@ import {
   type FindState,
   type Runtime,
 } from "./lib/tabstate.ts";
+import { LAYOUT_SEGMENT_WIDTH } from "./lib/metrics.ts";
 import { fileNameFromUrl, hostOf, toUrl } from "./lib/url.ts";
 import { PrivateWindow, type PrivateBridge } from "./PrivateWindow.tsx";
 
@@ -1221,6 +1222,10 @@ function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
                   <segmentedcontrol
                     slot="suffix"
                     testID="settings-layout"
+                    // The row hands its suffix only its minimum once the
+                    // subtitle wants the width, and a toggle group's minimum
+                    // is two ellipsized labels: "Comp…" in the capture.
+                    style={{ minWidth: LAYOUT_SEGMENT_WIDTH }}
                     options={LAYOUTS.map((l) => l.name)}
                     selectedIndex={layoutIndex}
                     onSelectionChanged={(e) => {

@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { launchApp, type AppHandle, type JsonNode } from "@nativedesktop/test";
+import { LAYOUT_SEGMENT_WIDTH } from "../src/lib/metrics.ts";
 import {
   SHOTS,
   fail,
@@ -1034,6 +1035,10 @@ try {
   if (!searchTitle.includes("Google")) fail(`the palette still offers ${JSON.stringify(searchTitle)} after choosing Google`);
   await step("dismiss the palette", () => app.click("menu-address"));
   await shoot(app, "13-settings", (await app.find("settings-window"))?.ref);
+  // The layout switch took the width its two labels need rather than the
+  // minimum the row would hand it, which ellipsized "Compact".
+  const segmentWidth = (await app.find("settings-layout"))?.geometry?.w ?? 0;
+  if (segmentWidth < LAYOUT_SEGMENT_WIDTH) fail(`the layout switch is ${segmentWidth} px wide, want ${LAYOUT_SEGMENT_WIDTH}`);
   console.log(`15. settings: engine + restore persisted, palette now offers ${JSON.stringify(searchTitle)}`);
 
   // Stage 6: the page context menu. The menu itself is the engine's own

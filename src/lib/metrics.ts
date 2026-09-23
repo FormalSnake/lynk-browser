@@ -4,3 +4,8 @@
 /// bar's right edge on the page's right edge instead of over the window's
 /// border. It also keeps the bar from resizing as the match count changes.
 export const FIND_BAR_WIDTH = 420;
+
+/// Room for "Sidebar" and "Compact" at their natural width in both segments
+/// of the layout switch (each about 86 px in Adwaita), plus some for a
+/// larger system font.
+export const LAYOUT_SEGMENT_WIDTH = 200;
