@@ -6,6 +6,7 @@
 // tab lives at the root for the same reason; what lives here is the state of
 // this window's own chrome (palette, popovers, the popup an action opened).
 import {
+  Platform,
   Spacing,
   executeJavaScript,
   onJavaScriptResult,
@@ -18,15 +19,15 @@ import {
   useRef,
   useState,
 } from "@nativedesktop/react";
+import { Activity } from "react";
 import type {
   ContextMenuItemClick,
   ExtensionActionState,
   NdNodeRef,
-  SourceTreeAction,
-  SourceTreeNode,
 } from "@nativedesktop/react";
 
-import { ADDRESS_MIN_WIDTH, CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
+import { INSET, Sidebar } from "./Sidebar.tsx";
+import { CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
 import type { DownloadItem } from "./lib/downloads.ts";
 import { downloadDir } from "./lib/downloads.ts";
 import {
@@ -50,7 +51,7 @@ import {
 } from "./lib/permissions.ts";
 import type { SessionState, SessionWindow } from "./lib/session.ts";
 import { SEARCH_ENGINES, engineOf, type Layout, type SettingsState } from "./lib/settings.ts";
-import { tabPayload } from "./lib/tabdrag.ts";
+import { parseTabPayload, tabPayload } from "./lib/tabdrag.ts";
 import {
   SECURITY_ICON,
   SECURITY_TOOLTIP,
@@ -62,14 +63,6 @@ import {
   type Runtime,
 } from "./lib/tabstate.ts";
 import { displayUrl, hostOf, isSearch, toUrl } from "./lib/url.ts";
-
-/// Every action a tab row can carry. A row names the ones it wants through
-/// `actionIds`, which is what keeps Pin and Unpin off the same row.
-const TAB_ACTIONS: SourceTreeAction[] = [
-  { id: "pin", iconName: "view-pin-symbolic", tooltip: "Pin Tab" },
-  { id: "unpin", iconName: "view-pin-symbolic", tooltip: "Unpin Tab" },
-  { id: "close", iconName: "window-close-symbolic", tooltip: "Close Tab" },
-];
 
 /// Most recent downloads the toolbar popover lists. Older ones are still on
 /// disk; the panel is a receipt for what just happened, not a file manager.
@@ -127,6 +120,11 @@ export interface WindowController {
   commitAddress(): void;
   openDownloads(): void;
   openSiteInfo(): void;
+  /// Arc's Cmd+S, for the sidebar layout.
+  toggleSidebar(): void;
+  /// Test-only: what the pointer at the leading edge does, for a backend with
+  /// no pointer synthesis.
+  revealSidebar(show: boolean): void;
   showPopup(id: string, url: string): void;
   toast(title: string): void;
 }
@@ -247,8 +245,17 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   const [popupId, setPopupId] = useState("");
   const [popupUrl, setPopupUrl] = useState("");
   const [popupSize, setPopupSize] = useState({ width: POPUP_DEFAULT_WIDTH, height: POPUP_DEFAULT_HEIGHT });
+  /// Arc's Cmd+S: the column is hidden and the page takes the window, and the
+  /// pointer at the leading edge brings the column back over it while it is.
+  const [sidebarHidden, setSidebarHidden] = useState(false);
+  /// Whether that hidden column is showing over the page right now.
+  const [revealed, setRevealed] = useState(false);
+  /// Whether the desktop's decoration layout puts window buttons on the
+  /// trailing side (GTK); they then get the strip over the page.
+  const [trailingControls, setTrailingControls] = useState(false);
 
   const toast = useRef<NdNodeRef<"toastoverlay">>(null);
+  const split = useRef<NdNodeRef<"splitview">>(null);
   /// The find field the app has already put the caret in. An inline ref
   /// callback runs on every render, and focusing on each one would fight the
   /// user for the caret.
@@ -271,12 +278,17 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   const activeRt = ctx.rt(active.id);
   const find = ctx.findFor(active.id);
   const compact = prefs.layout === "compact";
+  const gtk = Platform.backend === "gtk";
 
   ctx.registerController(win.id, {
     openPalette,
     openAddress,
     commitAddress: () => commitQuery(typedAddress.current),
     openDownloads: () => setDownloadsOpen(true),
+    toggleSidebar: () => setSidebarHidden((h) => !h),
+    revealSidebar: (show) => {
+      if (split.current) sendCommand(split.current, show ? "revealSidebar" : "concealSidebar");
+    },
     openSiteInfo: () => setSiteInfoOpen(true),
     showPopup: (id, url) => {
       setExtensionsOpen(false);
@@ -310,9 +322,18 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     setPaletteQuery("");
   }
 
-  /// Ctrl+L, and the padlock's "type an address" path. Grab-focus selects the
-  /// contents on both backends, so the URL comes up ready to be typed over.
+  /// Ctrl+L. In the sidebar the address is not an entry: it opens the command
+  /// bar holding the page's full address. In compact, grab-focus selects the
+  /// field's contents on both backends, so the URL comes up ready to be typed
+  /// over.
   function openAddress(): void {
+    if (!compact) {
+      // A second Ctrl+L puts the bar away again.
+      if (paletteOpen) return closePalette();
+      openPalette(active.url);
+      if (TEST_HOOKS) console.error("ND_APP FOCUS target=palette");
+      return;
+    }
     const node = omnibox.current;
     if (!node) return;
     sendCommand(node, "focus");
@@ -513,37 +534,6 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   const dropIndex = ctx.dropHint?.windowId === win.id ? ctx.dropHint.index : null;
 
   void ctx.iconEpoch;
-  // One line per tab: favicon and title, nothing else. A second line of host
-  // costs a third of the column's height and repeats what the address bar
-  // already says about the tab you are looking at.
-  function tabNode(t: (typeof tabs)[number]): SourceTreeNode {
-    return {
-      id: t.id,
-      title: tabLabel(t),
-      // The site's own icon when it has been seen, the generic page glyph
-      // until then. iconData wins over iconName when both are set.
-      iconData: faviconFor(t.url),
-      iconName: "web-browser-symbolic",
-      // Pin rides the selected row only. Every action a row declares reserves
-      // its width whether or not it is being hovered, and a second one on a
-      // 190pt column costs a third of the title; the Tabs menu covers pinning
-      // from the keyboard.
-      actionIds: t.id === active.id ? [t.pinned ? "unpin" : "pin", "close"] : ["close"],
-      testID: `${p}tab-${t.id}`,
-    };
-  }
-
-  // Headings only once a tab is pinned: an unpinned window is a plain column of
-  // tabs, and a lone "Tabs" heading over it would be labelling the obvious.
-  const pinned = tabs.filter((t) => t.pinned);
-  const loose = tabs.filter((t) => !t.pinned);
-  const nodes: SourceTreeNode[] = [];
-  if (pinned.length > 0) {
-    nodes.push({ id: "section-pinned", title: "Pinned", section: true });
-    for (const t of pinned) nodes.push(tabNode(t));
-    if (loose.length > 0) nodes.push({ id: "section-tabs", title: "Tabs", section: true });
-  }
-  for (const t of loose) nodes.push(tabNode(t));
 
   // Ranking is entirely the app's job: <commandpalette> renders what it is
   // given, in order. Address first (that is what a browser bar is for), then
@@ -627,6 +617,399 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             ))}
           </menu>
         )}
+      </>
+    );
+  }
+
+  /// The page-load bar: a thin line in the secondary ink along the page's top
+  /// edge, in both layouts. Floats over the page, so it takes no layout of
+  /// its own, and stays mounted once a load has run so a finished load can
+  /// fade out instead of vanishing.
+  function loadBar(): React.ReactNode {
+    if (!activeRt.loading && activeRt.progress <= 0) return null;
+    return (
+      <progressbar
+        testID={`${p}progress`}
+        // The engine reports nothing for the first moments of a load; a
+        // sliver says the click was heard.
+        fraction={activeRt.loading ? Math.max(activeRt.progress, 0.08) : 1}
+        cssClasses={["osd", "dimmed"]}
+        style={{ valign: "start", hexpand: true }}
+      />
+    );
+  }
+
+  // The controls a popover hangs off. Both layouts draw them, in the header
+  // bar (compact) or the sidebar, so each is built once and handed a slot.
+
+  function siteInfoControl(slot?: "start"): React.ReactNode {
+    return (
+      <>
+        {/* One indicator, updated in place. The state rides the testID
+            because getTree exposes a node's text but never its icon
+            name, so that is the only way a drive can assert which
+            padlock is drawn; it must NOT ride a `key`, which remounts
+            the button and left AppKit with one toolbar item per state
+            the page had ever been in. */}
+        {/* The padlock is Chrome's site-info button: what this page is
+            allowed to do hangs off it, and so does a permission the page
+            is asking for right now. Boxed because a popover anchors on
+            its tree parent and a header bar's handle is not one. */}
+        <box slot={slot} testID={`${p}site-info-anchor`} orientation="horizontal">
+          <button
+            testID={`${p}security-${activeRt.security}`}
+            iconName={SECURITY_ICON[activeRt.security]}
+            tooltip={SECURITY_TOOLTIP[activeRt.security]}
+            cssClasses={["flat"]}
+            onClick={() => setSiteInfoOpen(!siteInfoOpen)}
+          />
+          <popover
+            testID={`${p}site-info-popover`}
+            open={siteInfoOpen}
+            position="bottom"
+            onClosed={() => {
+              setSiteInfoOpen(false);
+              // Escape and a click outside are a dismissal, and a
+              // dismissed request is denied rather than left pending.
+              ctx.denyPromptsFor(active.id);
+            }}
+          >
+            <box
+              testID={`${p}site-info-panel`}
+              orientation="vertical"
+              spacing={Spacing.sm}
+              style={{ padding: Spacing.sm, minWidth: SITE_PANEL_WIDTH }}
+            >
+              <label
+                testID={`${p}site-info-host`}
+                text={hostOf(active.url) || "New Tab"}
+                cssClasses={["heading"]}
+                style={{ halign: "start" }}
+              />
+              <label
+                testID={`${p}site-info-security`}
+                text={SECURITY_TOOLTIP[activeRt.security]}
+                cssClasses={["dimmed", "caption"]}
+                ellipsize
+                style={{ halign: "start" }}
+              />
+              {activePrompt ? (
+                <box orientation="vertical" spacing={Spacing.sm}>
+                  <label
+                    testID={`${p}permission-request`}
+                    text={permissionSentence(hostOf(active.url) || activePrompt.origin, activePrompt.types)}
+                    style={{ halign: "start" }}
+                  />
+                  <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end" }}>
+                    <button
+                      testID={`${p}permission-block`}
+                      label="Block"
+                      onClick={() => {
+                        ctx.decidePrompt(activePrompt, "block");
+                        setSiteInfoOpen(false);
+                      }}
+                    />
+                    <button
+                      testID={`${p}permission-allow`}
+                      label="Allow"
+                      cssClasses={["suggested-action"]}
+                      onClick={() => {
+                        ctx.decidePrompt(activePrompt, "allow");
+                        setSiteInfoOpen(false);
+                      }}
+                    />
+                  </box>
+                </box>
+              ) : siteDecisions.length === 0 ? (
+                <label
+                  testID={`${p}site-permissions-empty`}
+                  text="This site has not asked for anything yet."
+                  cssClasses={["dimmed"]}
+                  style={{ halign: "start" }}
+                />
+              ) : (
+                <box orientation="vertical" spacing={Spacing.xs}>
+                  {siteDecisions.map((row) => (
+                    <box key={row.type} orientation="horizontal" spacing={Spacing.sm}>
+                      <label
+                        testID={`${p}site-permission-${row.type}`}
+                        text={`${permissionName(row.type)}: ${row.decision === "allow" ? "Allowed" : "Blocked"}`}
+                        ellipsize
+                        style={{ halign: "start", hexpand: true }}
+                      />
+                    </box>
+                  ))}
+                  <button
+                    testID={`${p}site-permissions-reset`}
+                    label="Reset Permissions"
+                    cssClasses={["flat"]}
+                    onClick={() => ctx.resetSiteDecisions(activeOrigin)}
+                  />
+                </box>
+              )}
+            </box>
+          </popover>
+        </box>
+      </>
+    );
+  }
+
+  function windowMenu(slot?: "end"): React.ReactNode {
+    return (
+      <>
+        {/* The menu bar lives in the first window. Every other window
+            carries its own menu for what acts on THAT window, moving
+            its tab above all, which a drag must never be the only way
+            to do. */}
+        {!first && (
+          <menubutton slot={slot} testID={`${p}window-menu`} iconName="open-menu-symbolic" tooltip="Main Menu">
+            <menuitem testID={`${p}menu-new-tab`} label="New Tab" onSelect={() => ctx.openTab(win.id, "")} />
+            <menuitem testID={`${p}menu-new-window`} label="New Window" onSelect={ctx.newWindow} />
+            <menuitem testID={`${p}menu-close-tab`} label="Close Tab" onSelect={() => ctx.closeTab(active.id)} />
+            <menuitem role="separator" testID={`${p}menu-sep-move`} />
+            {moveItems(`${p}menu-`, win, targets)}
+            <menuitem role="separator" testID={`${p}menu-sep`} />
+            <menuitem testID={`${p}menu-find`} label="Find in Page" onSelect={() => ctx.openFind(active.id)} />
+            <menuitem testID={`${p}menu-downloads`} label="Downloads" onSelect={() => setDownloadsOpen(true)} />
+            <menuitem testID={`${p}menu-settings`} label="Settings" onSelect={ctx.openSettings} />
+          </menubutton>
+        )}
+      </>
+    );
+  }
+
+  function extensionControls(slot?: "end"): React.ReactNode {
+    return (
+      <>
+        {/* Chrome's extensions area: the pinned actions, then the puzzle
+            piece that lists everything installed. Each pinned action is
+            boxed with its own popover so the popup opens under the button
+            that was clicked; an unpinned one opens under the puzzle. */}
+        {chromium &&
+          pinnedActions.map((row) => {
+            const live = actionState(row.id);
+            return (
+              <box slot={slot} key={row.id} testID={`${p}ext-pin-${row.id}`} orientation="horizontal">
+                {/* The badge floats over the icon's top corner, where
+                    Chrome draws it, rather than widening the button. */}
+                <overlay testID={`${p}ext-action-stack-${row.id}`}>
+                  <button
+                    testID={`${p}ext-action-${row.id}`}
+                    iconData={row.iconData || undefined}
+                    iconName="application-x-addon-symbolic"
+                    tooltip={popupTooltip(row)}
+                    cssClasses={["flat"]}
+                    enabled={row.enabled && row.popupUrl !== "" && ctx.checkingAction !== row.id}
+                    onClick={() => openExtensionPopup(row)}
+                  />
+                  {live?.badgeText ? (
+                    <badge
+                      testID={`${p}ext-badge-${row.id}`}
+                      label={live.badgeText}
+                      variant={badgeVariant(live.badgeColor)}
+                      style={{ halign: "end", valign: "start" }}
+                    />
+                  ) : null}
+                </overlay>
+                <popover
+                  testID={`${p}ext-popup-${row.id}`}
+                  open={popupId === row.id}
+                  position="bottom"
+                  onClosed={closeExtensionPopup}
+                >
+                  {popupId === row.id ? extensionPopup(row) : <box orientation="horizontal" />}
+                </popover>
+              </box>
+            );
+          })}
+        {chromium && (
+          <box slot={slot} testID={`${p}extensions-anchor`} orientation="horizontal">
+            <button
+              testID={`${p}extensions-button`}
+              iconName="application-x-addon-symbolic"
+              tooltip="Extensions"
+              cssClasses={["flat"]}
+              onClick={() => (extensionsOpen ? setExtensionsOpen(false) : openExtensionsList())}
+            />
+            <popover
+              testID={`${p}extensions-popover`}
+              open={extensionsOpen}
+              position="bottom"
+              onClosed={() => setExtensionsOpen(false)}
+            >
+              <box
+                testID={`${p}extensions-panel`}
+                orientation="vertical"
+                spacing={Spacing.sm}
+                style={{ padding: Spacing.sm, minWidth: EXTENSIONS_PANEL_WIDTH }}
+              >
+                <label text="Extensions" cssClasses={["heading"]} style={{ halign: "start" }} />
+                {rows.length === 0 ? (
+                  <label
+                    testID={`${p}extensions-empty`}
+                    text="Extensions you install appear here."
+                    cssClasses={["dimmed"]}
+                    style={{ halign: "start" }}
+                  />
+                ) : (
+                  rows.map((row) => (
+                    <box key={row.id} orientation="horizontal" spacing={Spacing.sm}>
+                      {/* The name IS the button: a row-wide target is
+                          what a pointer aims at, and the icon rides it
+                          rather than sitting beside it as decoration. */}
+                      <button
+                        testID={`${p}ext-row-${row.id}`}
+                        label={row.name}
+                        iconData={row.iconData || undefined}
+                        iconName="application-x-addon-symbolic"
+                        labelAlign="start"
+                        ellipsize
+                        tooltip={popupTooltip(row)}
+                        cssClasses={["flat"]}
+                        enabled={row.enabled && row.popupUrl !== ""}
+                        style={{ hexpand: true }}
+                        onClick={() => openExtensionPopup(row)}
+                      />
+                      <togglebutton
+                        testID={`${p}ext-pin-toggle-${row.id}`}
+                        iconName="view-pin-symbolic"
+                        tooltip={prefs.pinnedExtensions.includes(row.id) ? "Unpin from toolbar" : "Pin to toolbar"}
+                        active={prefs.pinnedExtensions.includes(row.id)}
+                        cssClasses={["flat"]}
+                        style={{ valign: "center" }}
+                        onToggled={() => ctx.pinExtension(row.id)}
+                      />
+                    </box>
+                  ))
+                )}
+                <button
+                  testID={`${p}extensions-manage`}
+                  label="Manage Extensions"
+                  cssClasses={["flat"]}
+                  onClick={() => {
+                    setExtensionsOpen(false);
+                    ctx.openTab(win.id, "chrome://extensions");
+                  }}
+                />
+                {/* Test-only: the drive has no other way in. `nd dev` and
+                    a packaged run both take extensions from the Web Store
+                    or the command line, and launchApp passes no argv. */}
+                {TEST_HOOKS && (
+                  <button
+                    testID={`${p}extensions-install-test`}
+                    label="Install the test extension"
+                    cssClasses={["flat"]}
+                    onClick={() => ctx.installTestExtension(process.env.NB_TEST_EXT)}
+                  />
+                )}
+                {TEST_HOOKS && (
+                  <button
+                    testID={`${p}extensions-install-action-test`}
+                    label="Install the action test extension"
+                    cssClasses={["flat"]}
+                    onClick={() => ctx.installTestExtension(process.env.NB_TEST_EXT_ACTION)}
+                  />
+                )}
+              </box>
+            </popover>
+            {/* An unpinned action has no button of its own, so its popup
+                hangs off the puzzle piece it was opened from. */}
+            <popover
+              testID={`${p}ext-popup-unpinned`}
+              open={unpinnedPopup !== null}
+              position="bottom"
+              onClosed={closeExtensionPopup}
+            >
+              {unpinnedPopup ? extensionPopup(unpinnedPopup) : <box orientation="horizontal" />}
+            </popover>
+          </box>
+        )}
+      </>
+    );
+  }
+
+  function downloadsControl(slot?: "end"): React.ReactNode {
+    return (
+      <>
+        {/* A popover anchors on its TREE parent on both backends, and a
+            header bar's own handle never joins a view hierarchy, so the
+            button it hangs off has to be boxed. */}
+        <box slot={slot} testID={`${p}downloads-anchor`} orientation="horizontal">
+          <button
+            testID={`${p}downloads-button`}
+            iconName="folder-download-symbolic"
+            tooltip="Downloads"
+            cssClasses={["flat"]}
+            onClick={() => setDownloadsOpen(!downloadsOpen)}
+          />
+          <popover
+            testID={`${p}downloads-popover`}
+            open={downloadsOpen}
+            position="bottom"
+            onClosed={() => setDownloadsOpen(false)}
+          >
+            {/* Stacked boxes rather than a list widget: a popover sizes
+                itself from what it contains, and every list widget here
+                is a scroll view, which contributes no height at all. */}
+            <box
+              testID={`${p}downloads-panel`}
+              orientation="vertical"
+              spacing={Spacing.sm}
+              style={{ padding: Spacing.sm }}
+            >
+              <label text="Downloads" cssClasses={["heading"]} style={{ halign: "start" }} />
+              {recentDownloads.length === 0 ? (
+                <label
+                  testID={`${p}downloads-empty`}
+                  text="Files you download appear here."
+                  cssClasses={["dimmed"]}
+                  style={{ halign: "start" }}
+                />
+              ) : (
+                recentDownloads.map((d) => (
+                  <box key={d.id} orientation="horizontal" spacing={Spacing.sm}>
+                    <image
+                      iconName={d.state === "failed" ? "dialog-warning-symbolic" : "folder-download-symbolic"}
+                      symbolScale="small"
+                      cssClasses={d.state === "failed" ? ["error"] : ["dimmed"]}
+                    />
+                    <box orientation="vertical" style={{ hexpand: true }}>
+                      <label
+                        testID={`${p}downloads-item-${d.id}`}
+                        text={d.name}
+                        ellipsize
+                        style={{ halign: "start" }}
+                      />
+                      <label
+                        testID={`${p}downloads-status-${d.id}`}
+                        text={downloadStatus(d)}
+                        cssClasses={["dimmed", "caption"]}
+                        style={{ halign: "start" }}
+                      />
+                    </box>
+                    {/* Only once the transfer has produced a file. */}
+                    {d.state === "done" && (
+                      <button
+                        testID={`${p}downloads-reveal-${d.id}`}
+                        iconName="folder-symbolic"
+                        tooltip="Show in Folder"
+                        cssClasses={["flat"]}
+                        style={{ halign: "end", valign: "center" }}
+                        onClick={() => void revealPath(d.path).catch(() => {})}
+                      />
+                    )}
+                  </box>
+                ))
+              )}
+              <button
+                testID={`${p}downloads-folder`}
+                label="Open Downloads Folder"
+                cssClasses={["flat"]}
+                onClick={() => void openPath(downloadDir()).catch(() => {})}
+              />
+            </box>
+          </popover>
+        </box>
       </>
     );
   }
@@ -721,6 +1104,14 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               accelerator="primary+r"
               onSelect={() => ctx.command(menuActive.id, "reload")}
             />
+            {!compact && (
+              <menuitem
+                testID="menu-toggle-sidebar"
+                label={sidebarHidden && menuWin.id === win.id ? "Show Sidebar" : "Hide Sidebar"}
+                accelerator="primary+s"
+                onSelect={() => menuTarget()?.toggleSidebar()}
+              />
+            )}
             {/* Chromium binds most ctrl and ctrl+shift letters, and password
                 managers take ctrl+shift+l and ctrl+shift+x. primary+shift+comma
                 never fired from the address field on X11, where GTK sees the
@@ -780,12 +1171,14 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             <menuitem
               testID="menu-back"
               label="Back"
+              accelerator="primary+["
               enabled={menuRt.canGoBack}
               onSelect={() => ctx.command(menuActive.id, "goBack")}
             />
             <menuitem
               testID="menu-forward"
               label="Forward"
+              accelerator="primary+]"
               enabled={menuRt.canGoForward}
               onSelect={() => ctx.command(menuActive.id, "goForward")}
             />
@@ -804,6 +1197,16 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               {/* Enter in the address field is a keystroke, and GTK synthesises
                   none (-32003). This runs the handler that keystroke runs, on
                   the text the field is actually holding. */}
+              <menuitem
+                testID="menu-reveal-sidebar"
+                label="Reveal the hidden sidebar"
+                onSelect={() => menuTarget()?.revealSidebar(true)}
+              />
+              <menuitem
+                testID="menu-conceal-sidebar"
+                label="Conceal the revealed sidebar"
+                onSelect={() => menuTarget()?.revealSidebar(false)}
+              />
               <menuitem
                 testID="menu-commit-address"
                 label="Commit the address field"
@@ -861,66 +1264,88 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
       )}
 
       <toastoverlay ref={toast} onToastButtonClicked={onToastButtonClicked} onToastDismissed={onToastDismissed}>
-        <splitview sidebarWidth={0.24} testID={`${p}split`}>
-          {/* Compact drops the sidebar child on both backends. The content
-              pane stays this splitview's second child either way, so the page
-              slot never moves and no page reloads. */}
+        {/* The sidebar layout is Arc's: no header bar, the column running
+            the window's full height with the window controls in its first
+            row, and the page a rounded card on the sidebar's surface
+            (docs/sidebar.md). Compact drops the column and puts one header
+            bar row over a plain page. The content pane stays this
+            splitview's second child in both, so the page slot never moves
+            and no page reloads on a switch. */}
+        <splitview
+          ref={split}
+          sidebarWidth={0.24}
+          collapsed={!compact && sidebarHidden}
+          edgeReveal={!compact}
+          contentStyle={compact ? "plain" : "card"}
+          testID={`${p}split`}
+          onRevealChanged={(e) => setRevealed(e.checked)}
+        >
           {!compact && (
-            <toolbarview slot="sidebar" testID={`${p}sidebar-toolbar`}>
-              <headerbar testID={`${p}sidebar-header`} title="NativeBrowser" />
-              {/* No horizontal padding: a source-list row insets its own
-                  content, so every point the container takes comes straight
-                  off the tab title. */}
-              <box
-                testID={`${p}sidebar`}
-                orientation="vertical"
-                spacing={Spacing.xs}
-                style={{ vexpand: true, padding: { top: Spacing.sm, bottom: Spacing.sm } }}
-              >
-                {/* Full-width and left-aligned, so it reads as the first row of
-                    the column rather than a button parked above it. The box
-                    around it carries the row inset the button itself cannot:
-                    `padding` on a button only inflates its intrinsic size. */}
-                <box orientation="horizontal" style={{ hexpand: true, padding: { left: Spacing.md } }}>
-                  <button
-                    testID={`${p}new-tab`}
-                    label="New Tab"
-                    iconName="tab-new-symbolic"
-                    labelAlign="start"
-                    cssClasses={["flat"]}
-                    style={{ hexpand: true }}
-                    onClick={() => ctx.openTab(win.id, "")}
-                  />
-                </box>
-                <sourcetree
-                  testID={`${p}tab-list`}
-                  nodes={nodes}
-                  actions={TAB_ACTIONS}
-                  selectedId={active.id}
-                  // A flat list has no levels, and the reserved indent is what
-                  // pushed the tab rows out of line with the New Tab row.
-                  indentationPerLevel={0}
-                  style={{ vexpand: true }}
-                  onSelectionChanged={(e) => {
-                    const { nodeId } = e.data as { nodeId: string | null };
-                    if (nodeId && tabs.some((t) => t.id === nodeId)) selectTab(nodeId);
-                  }}
-                  onMiddleClick={(e) => {
-                    const { nodeId } = e.data as { nodeId: string | null };
-                    if (nodeId && tabs.some((t) => t.id === nodeId)) ctx.closeTab(nodeId);
-                  }}
-                  onActionClicked={(e) => {
-                    const { nodeId, actionId } = e.data as { nodeId: string; actionId: string };
-                    if (actionId === "close") ctx.closeTab(nodeId);
-                    if (actionId === "pin") ctx.setPinned(nodeId, true);
-                    if (actionId === "unpin") ctx.setPinned(nodeId, false);
-                  }}
-                />
-              </box>
-            </toolbarview>
+            <Sidebar
+              p={p}
+              tabs={tabs}
+              activeId={active.id}
+              loading={activeRt.loading}
+              labelFor={tabLabel}
+              addressFor={(t) => displayUrl(t.url) || "New Tab"}
+              iconFor={faviconFor}
+              siteInfo={siteInfoControl()}
+              extensions={extensionControls()}
+              downloads={downloadsControl()}
+              windowMenu={windowMenu()}
+              onSelect={selectTab}
+              onClose={ctx.closeTab}
+              onNewTab={() => ctx.openTab(win.id, "")}
+              onOpenAddress={openAddress}
+              onOpenSettings={ctx.openSettings}
+              dragPayload={(t) => tabPayload({ profile: "default", tabId: t.id, url: t.url })}
+              dropIndex={dropIndex}
+              onDragOverIndex={(index) => {
+                if (TEST_HOOKS) console.error(`ND_APP DRAG over index=${index}`);
+                ctx.setDropHint(win.id, index);
+              }}
+              onDropAt={(payload, index, pinned) => {
+                if (TEST_HOOKS) console.error(`ND_APP DRAG drop index=${index} pinned=${pinned}`);
+                const drag = parseTabPayload(payload);
+                // Landing in the other section is what pins or unpins a tab.
+                if (drag?.profile === "default") {
+                  const tab = ctx.session.windows.flatMap((w) => w.tabs).find((t) => t.id === drag.tabId);
+                  if (tab && tab.pinned !== pinned) ctx.setPinned(tab.id, pinned);
+                }
+                ctx.onTabDropped(win.id, payload, index);
+              }}
+              onDragStart={(payload) => {
+                if (TEST_HOOKS) console.error("ND_APP DRAG start");
+                ctx.onDragStart(payload);
+              }}
+              onDragEnd={ctx.onDragEnd}
+            />
           )}
 
           <toolbarview slot="content" testID={`${p}content-toolbar`}>
+            {/* Window controls the desktop puts on the TRAILING side
+                (GNOME's default) do not belong in a leading sidebar: they get
+                a strip of their own over the page card, which starts below
+                it. The strip is only as tall as the controls and moves the
+                window like a title bar. With no trailing controls (a layout
+                that leads with them, or none at all as on a tiling
+                compositor) it is hidden rather than unmounted, so the card
+                keeps its full inset and a change of the setting is still
+                heard. macOS has all three in the sidebar. */}
+            {!compact && gtk && (
+              <Activity mode={trailingControls ? "visible" : "hidden"}>
+                <box slot="top" testID={`${p}controls-strip`} orientation="horizontal" windowHandle style={{ padding: INSET }}>
+                  <box orientation="horizontal" style={{ hexpand: true }} />
+                  <windowcontrols
+                    testID={`${p}controls-end`}
+                    side="end"
+                    style={{ valign: "center" }}
+                    onEmptyChanged={(e) => setTrailingControls(!e.checked)}
+                  />
+                </box>
+              </Activity>
+            )}
+            {compact && (
             <headerbar
               testID={`${p}chrome`}
               title=""
@@ -933,16 +1358,6 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                   no SF Symbol behind it, so the state rides the tooltip. In
                   compact it joins the trailing controls, so the row starts
                   where the reference's does: back, forward, reload, tabs. */}
-              {!compact && (
-                <button
-                  slot="start"
-                  testID={`${p}layout-toggle`}
-                  iconName="sidebar-show-symbolic"
-                  tooltip="Use Compact Layout"
-                  cssClasses={["flat"]}
-                  onClick={() => ctx.setLayout("compact")}
-                />
-              )}
               <button
                 slot="start"
                 testID={`${p}reload`}
@@ -986,111 +1401,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 />
               )}
 
-              {/* One indicator, updated in place. The state rides the testID
-                  because getTree exposes a node's text but never its icon
-                  name, so that is the only way a drive can assert which
-                  padlock is drawn; it must NOT ride a `key`, which remounts
-                  the button and left AppKit with one toolbar item per state
-                  the page had ever been in. */}
-              {/* The padlock is Chrome's site-info button: what this page is
-                  allowed to do hangs off it, and so does a permission the page
-                  is asking for right now. Boxed because a popover anchors on
-                  its tree parent and a header bar's handle is not one. */}
-              <box slot="start" testID={`${p}site-info-anchor`} orientation="horizontal">
-                <button
-                  testID={`${p}security-${activeRt.security}`}
-                  iconName={SECURITY_ICON[activeRt.security]}
-                  tooltip={SECURITY_TOOLTIP[activeRt.security]}
-                  cssClasses={["flat"]}
-                  onClick={() => setSiteInfoOpen(!siteInfoOpen)}
-                />
-                <popover
-                  testID={`${p}site-info-popover`}
-                  open={siteInfoOpen}
-                  position="bottom"
-                  onClosed={() => {
-                    setSiteInfoOpen(false);
-                    // Escape and a click outside are a dismissal, and a
-                    // dismissed request is denied rather than left pending.
-                    ctx.denyPromptsFor(active.id);
-                  }}
-                >
-                  <box
-                    testID={`${p}site-info-panel`}
-                    orientation="vertical"
-                    spacing={Spacing.sm}
-                    style={{ padding: Spacing.sm, minWidth: SITE_PANEL_WIDTH }}
-                  >
-                    <label
-                      testID={`${p}site-info-host`}
-                      text={hostOf(active.url) || "New Tab"}
-                      cssClasses={["heading"]}
-                      style={{ halign: "start" }}
-                    />
-                    <label
-                      testID={`${p}site-info-security`}
-                      text={SECURITY_TOOLTIP[activeRt.security]}
-                      cssClasses={["dimmed", "caption"]}
-                      ellipsize
-                      style={{ halign: "start" }}
-                    />
-                    {activePrompt ? (
-                      <box orientation="vertical" spacing={Spacing.sm}>
-                        <label
-                          testID={`${p}permission-request`}
-                          text={permissionSentence(hostOf(active.url) || activePrompt.origin, activePrompt.types)}
-                          style={{ halign: "start" }}
-                        />
-                        <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end" }}>
-                          <button
-                            testID={`${p}permission-block`}
-                            label="Block"
-                            onClick={() => {
-                              ctx.decidePrompt(activePrompt, "block");
-                              setSiteInfoOpen(false);
-                            }}
-                          />
-                          <button
-                            testID={`${p}permission-allow`}
-                            label="Allow"
-                            cssClasses={["suggested-action"]}
-                            onClick={() => {
-                              ctx.decidePrompt(activePrompt, "allow");
-                              setSiteInfoOpen(false);
-                            }}
-                          />
-                        </box>
-                      </box>
-                    ) : siteDecisions.length === 0 ? (
-                      <label
-                        testID={`${p}site-permissions-empty`}
-                        text="This site has not asked for anything yet."
-                        cssClasses={["dimmed"]}
-                        style={{ halign: "start" }}
-                      />
-                    ) : (
-                      <box orientation="vertical" spacing={Spacing.xs}>
-                        {siteDecisions.map((row) => (
-                          <box key={row.type} orientation="horizontal" spacing={Spacing.sm}>
-                            <label
-                              testID={`${p}site-permission-${row.type}`}
-                              text={`${permissionName(row.type)}: ${row.decision === "allow" ? "Allowed" : "Blocked"}`}
-                              ellipsize
-                              style={{ halign: "start", hexpand: true }}
-                            />
-                          </box>
-                        ))}
-                        <button
-                          testID={`${p}site-permissions-reset`}
-                          label="Reset Permissions"
-                          cssClasses={["flat"]}
-                          onClick={() => ctx.resetSiteDecisions(activeOrigin)}
-                        />
-                      </box>
-                    )}
-                  </box>
-                </popover>
-              </box>
+              {siteInfoControl("start")}
               {/* One address widget on both backends and in both layouts, and
                   it takes whatever the row has left: the host promotes a
                   search entry packed straight into a header bar to the title
@@ -1112,7 +1423,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 placeholder="Search or enter address"
                 // Set, not expanded: see TabRunMetrics.addressWidth for why
                 // hexpand alone leaves the field at its floor.
-                style={{ hexpand: true, minWidth: compact ? tabMetrics.addressWidth : ADDRESS_MIN_WIDTH }}
+                style={{ hexpand: true, minWidth: tabMetrics.addressWidth }}
                 // A ref, not state: feeding a keystroke back into the
                 // controlled `text` prop makes the host's set_text race the
                 // entry and blank it.
@@ -1131,251 +1442,17 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 />
               )}
 
-              {/* Chrome's extensions area: the pinned actions, then the puzzle
-                  piece that lists everything installed. Each pinned action is
-                  boxed with its own popover so the popup opens under the button
-                  that was clicked; an unpinned one opens under the puzzle. */}
-              {chromium &&
-                pinnedActions.map((row) => {
-                  const live = actionState(row.id);
-                  return (
-                    <box slot="end" key={row.id} testID={`${p}ext-pin-${row.id}`} orientation="horizontal">
-                      {/* The badge floats over the icon's top corner, where
-                          Chrome draws it, rather than widening the button. */}
-                      <overlay testID={`${p}ext-action-stack-${row.id}`}>
-                        <button
-                          testID={`${p}ext-action-${row.id}`}
-                          iconData={row.iconData || undefined}
-                          iconName="application-x-addon-symbolic"
-                          tooltip={popupTooltip(row)}
-                          cssClasses={["flat"]}
-                          enabled={row.enabled && row.popupUrl !== "" && ctx.checkingAction !== row.id}
-                          onClick={() => openExtensionPopup(row)}
-                        />
-                        {live?.badgeText ? (
-                          <badge
-                            testID={`${p}ext-badge-${row.id}`}
-                            label={live.badgeText}
-                            variant={badgeVariant(live.badgeColor)}
-                            style={{ halign: "end", valign: "start" }}
-                          />
-                        ) : null}
-                      </overlay>
-                      <popover
-                        testID={`${p}ext-popup-${row.id}`}
-                        open={popupId === row.id}
-                        position="bottom"
-                        onClosed={closeExtensionPopup}
-                      >
-                        {popupId === row.id ? extensionPopup(row) : <box orientation="horizontal" />}
-                      </popover>
-                    </box>
-                  );
-                })}
-              {chromium && (
-                <box slot="end" testID={`${p}extensions-anchor`} orientation="horizontal">
-                  <button
-                    testID={`${p}extensions-button`}
-                    iconName="application-x-addon-symbolic"
-                    tooltip="Extensions"
-                    cssClasses={["flat"]}
-                    onClick={() => (extensionsOpen ? setExtensionsOpen(false) : openExtensionsList())}
-                  />
-                  <popover
-                    testID={`${p}extensions-popover`}
-                    open={extensionsOpen}
-                    position="bottom"
-                    onClosed={() => setExtensionsOpen(false)}
-                  >
-                    <box
-                      testID={`${p}extensions-panel`}
-                      orientation="vertical"
-                      spacing={Spacing.sm}
-                      style={{ padding: Spacing.sm, minWidth: EXTENSIONS_PANEL_WIDTH }}
-                    >
-                      <label text="Extensions" cssClasses={["heading"]} style={{ halign: "start" }} />
-                      {rows.length === 0 ? (
-                        <label
-                          testID={`${p}extensions-empty`}
-                          text="Extensions you install appear here."
-                          cssClasses={["dimmed"]}
-                          style={{ halign: "start" }}
-                        />
-                      ) : (
-                        rows.map((row) => (
-                          <box key={row.id} orientation="horizontal" spacing={Spacing.sm}>
-                            {/* The name IS the button: a row-wide target is
-                                what a pointer aims at, and the icon rides it
-                                rather than sitting beside it as decoration. */}
-                            <button
-                              testID={`${p}ext-row-${row.id}`}
-                              label={row.name}
-                              iconData={row.iconData || undefined}
-                              iconName="application-x-addon-symbolic"
-                              labelAlign="start"
-                              ellipsize
-                              tooltip={popupTooltip(row)}
-                              cssClasses={["flat"]}
-                              enabled={row.enabled && row.popupUrl !== ""}
-                              style={{ hexpand: true }}
-                              onClick={() => openExtensionPopup(row)}
-                            />
-                            <togglebutton
-                              testID={`${p}ext-pin-toggle-${row.id}`}
-                              iconName="view-pin-symbolic"
-                              tooltip={prefs.pinnedExtensions.includes(row.id) ? "Unpin from toolbar" : "Pin to toolbar"}
-                              active={prefs.pinnedExtensions.includes(row.id)}
-                              cssClasses={["flat"]}
-                              style={{ valign: "center" }}
-                              onToggled={() => ctx.pinExtension(row.id)}
-                            />
-                          </box>
-                        ))
-                      )}
-                      <button
-                        testID={`${p}extensions-manage`}
-                        label="Manage Extensions"
-                        cssClasses={["flat"]}
-                        onClick={() => {
-                          setExtensionsOpen(false);
-                          ctx.openTab(win.id, "chrome://extensions");
-                        }}
-                      />
-                      {/* Test-only: the drive has no other way in. `nd dev` and
-                          a packaged run both take extensions from the Web Store
-                          or the command line, and launchApp passes no argv. */}
-                      {TEST_HOOKS && (
-                        <button
-                          testID={`${p}extensions-install-test`}
-                          label="Install the test extension"
-                          cssClasses={["flat"]}
-                          onClick={() => ctx.installTestExtension(process.env.NB_TEST_EXT)}
-                        />
-                      )}
-                      {TEST_HOOKS && (
-                        <button
-                          testID={`${p}extensions-install-action-test`}
-                          label="Install the action test extension"
-                          cssClasses={["flat"]}
-                          onClick={() => ctx.installTestExtension(process.env.NB_TEST_EXT_ACTION)}
-                        />
-                      )}
-                    </box>
-                  </popover>
-                  {/* An unpinned action has no button of its own, so its popup
-                      hangs off the puzzle piece it was opened from. */}
-                  <popover
-                    testID={`${p}ext-popup-unpinned`}
-                    open={unpinnedPopup !== null}
-                    position="bottom"
-                    onClosed={closeExtensionPopup}
-                  >
-                    {unpinnedPopup ? extensionPopup(unpinnedPopup) : <box orientation="horizontal" />}
-                  </popover>
-                </box>
-              )}
+              {extensionControls("end")}
 
-              {/* A popover anchors on its TREE parent on both backends, and a
-                  header bar's own handle never joins a view hierarchy, so the
-                  button it hangs off has to be boxed. */}
-              <box slot="end" testID={`${p}downloads-anchor`} orientation="horizontal">
-                <button
-                  testID={`${p}downloads-button`}
-                  iconName="folder-download-symbolic"
-                  tooltip="Downloads"
-                  cssClasses={["flat"]}
-                  onClick={() => setDownloadsOpen(!downloadsOpen)}
-                />
-                <popover
-                  testID={`${p}downloads-popover`}
-                  open={downloadsOpen}
-                  position="bottom"
-                  onClosed={() => setDownloadsOpen(false)}
-                >
-                  {/* Stacked boxes rather than a list widget: a popover sizes
-                      itself from what it contains, and every list widget here
-                      is a scroll view, which contributes no height at all. */}
-                  <box
-                    testID={`${p}downloads-panel`}
-                    orientation="vertical"
-                    spacing={Spacing.sm}
-                    style={{ padding: Spacing.sm }}
-                  >
-                    <label text="Downloads" cssClasses={["heading"]} style={{ halign: "start" }} />
-                    {recentDownloads.length === 0 ? (
-                      <label
-                        testID={`${p}downloads-empty`}
-                        text="Files you download appear here."
-                        cssClasses={["dimmed"]}
-                        style={{ halign: "start" }}
-                      />
-                    ) : (
-                      recentDownloads.map((d) => (
-                        <box key={d.id} orientation="horizontal" spacing={Spacing.sm}>
-                          <image
-                            iconName={d.state === "failed" ? "dialog-warning-symbolic" : "folder-download-symbolic"}
-                            symbolScale="small"
-                            cssClasses={d.state === "failed" ? ["error"] : ["dimmed"]}
-                          />
-                          <box orientation="vertical" style={{ hexpand: true }}>
-                            <label
-                              testID={`${p}downloads-item-${d.id}`}
-                              text={d.name}
-                              ellipsize
-                              style={{ halign: "start" }}
-                            />
-                            <label
-                              testID={`${p}downloads-status-${d.id}`}
-                              text={downloadStatus(d)}
-                              cssClasses={["dimmed", "caption"]}
-                              style={{ halign: "start" }}
-                            />
-                          </box>
-                          {/* Only once the transfer has produced a file. */}
-                          {d.state === "done" && (
-                            <button
-                              testID={`${p}downloads-reveal-${d.id}`}
-                              iconName="folder-symbolic"
-                              tooltip="Show in Folder"
-                              cssClasses={["flat"]}
-                              style={{ halign: "end", valign: "center" }}
-                              onClick={() => void revealPath(d.path).catch(() => {})}
-                            />
-                          )}
-                        </box>
-                      ))
-                    )}
-                    <button
-                      testID={`${p}downloads-folder`}
-                      label="Open Downloads Folder"
-                      cssClasses={["flat"]}
-                      onClick={() => void openPath(downloadDir()).catch(() => {})}
-                    />
-                  </box>
-                </popover>
-              </box>
+              {downloadsControl("end")}
 
-              {/* The menu bar lives in the first window. Every other window
-                  carries its own menu for what acts on THAT window, moving
-                  its tab above all, which a drag must never be the only way
-                  to do. Last in the row, where the
-                  first window's menu bar puts its own button. */}
-              {!first && (
-                <menubutton slot="end" testID={`${p}window-menu`} iconName="open-menu-symbolic" tooltip="Main Menu">
-                  <menuitem testID={`${p}menu-new-tab`} label="New Tab" onSelect={() => ctx.openTab(win.id, "")} />
-                  <menuitem testID={`${p}menu-new-window`} label="New Window" onSelect={ctx.newWindow} />
-                  <menuitem testID={`${p}menu-close-tab`} label="Close Tab" onSelect={() => ctx.closeTab(active.id)} />
-                  <menuitem role="separator" testID={`${p}menu-sep-move`} />
-                  {moveItems(`${p}menu-`, win, targets)}
-                  <menuitem role="separator" testID={`${p}menu-sep`} />
-                  <menuitem testID={`${p}menu-find`} label="Find in Page" onSelect={() => ctx.openFind(active.id)} />
-                  <menuitem testID={`${p}menu-downloads`} label="Downloads" onSelect={() => setDownloadsOpen(true)} />
-                  <menuitem testID={`${p}menu-settings`} label="Settings" onSelect={ctx.openSettings} />
-                </menubutton>
-              )}
+              {/* Last in the row, where the first window's menu bar puts its
+                  own button. */}
+              {windowMenu("end")}
             </headerbar>
+            )}
 
-            <box testID={`${p}content`} orientation="vertical" style={{ hexpand: true, vexpand: true }}>
+            <box testID={`${p}content`} orientation="vertical" spacing={0} style={{ hexpand: true, vexpand: true }}>
               {/* Presents over the active window wherever it is mounted. */}
               <commandpalette
                 key={paletteEpoch}
@@ -1466,14 +1543,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                   </box>
                 )}
 
-                {activeRt.loading && (
-                  <progressbar
-                    testID={`${p}progress`}
-                    fraction={activeRt.progress}
-                    cssClasses={["osd"]}
-                    style={{ valign: "start", hexpand: true }}
-                  />
-                )}
+                {loadBar()}
 
                 {first && ctx.hiddenViews}
 

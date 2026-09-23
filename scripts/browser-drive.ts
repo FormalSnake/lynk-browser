@@ -17,6 +17,9 @@ import {
   step,
   textsUnder,
   walk,
+  listActive,
+  listRows,
+  listSections,
   waitRows as rowsMatching,
   waitText as textMatching,
 } from "./drive-lib.ts";
@@ -164,14 +167,12 @@ const base = `http://127.0.0.1:${server.port}`;
 /// Tab rows only: the sidebar's "Pinned"/"Tabs" headings are rows as well, and
 /// they are the ones without a testID.
 async function tabRows(app: AppHandle): Promise<{ title: string; testID: string | null }[]> {
-  const list = await app.mustFind("tab-list");
-  return (list.rows ?? []).filter((r) => r.testID).map((r) => ({ title: r.title, testID: r.testID }));
+  return listRows(await app.mustFind("tab-list"));
 }
 
 /// The section headings the sidebar is currently drawing, in order.
 async function tabSections(app: AppHandle): Promise<string[]> {
-  const list = await app.mustFind("tab-list");
-  return (list.rows ?? []).filter((r) => !r.testID).map((r) => r.title);
+  return listSections(await app.mustFind("tab-list"));
 }
 
 /// The fixture's load counters once they have stopped moving. The omnibox
@@ -211,6 +212,18 @@ async function waitContentInset(app: AppHandle, check: (x: number) => boolean): 
 /// A row action the app only offers under some condition, retried until the
 /// row actually declares it. The alternative is sleeping and hoping.
 async function clickRowAction(app: AppHandle, testId: string, action: string): Promise<void> {
+  // The sidebar layout's rows carry no pin action; the Tabs menu pins the
+  // selected tab, which is the row the callers here have just selected.
+  const row = /(^|-)tab-(t\d+)$/.exec(testId);
+  if (row && (action === "pin" || action === "unpin")) {
+    const deadline = Date.now() + PATIENCE;
+    while (listActive(await app.mustFind("tab-list")) !== row[2]) {
+      if (Date.now() > deadline) fail(`${testId} never became the selected tab to ${action}`);
+      await Bun.sleep(150);
+    }
+    await app.click("menu-pin-tab");
+    return;
+  }
   const deadline = Date.now() + PATIENCE;
   for (;;) {
     try {
@@ -285,8 +298,15 @@ async function paletteRow(app: AppHandle, match: (id: string) => boolean, what: 
 }
 
 /// The current page URL, as shown by the header's address display.
+/// The address the window shows: the field's text, or, in the sidebar layout
+/// (no field), the accessible name of the row on show, which carries the
+/// whole address.
 async function shownUrl(app: AppHandle): Promise<string> {
-  return String((await app.mustFind("omnibox")).text ?? "");
+  const field = await app.find("omnibox");
+  if (field) return String(field.text ?? "");
+  const active = listActive(await app.mustFind("tab-list"));
+  const row = await app.mustFind(`tab-${active}`);
+  return row.label === "New Tab" ? "" : String(row.label ?? "");
 }
 
 async function waitUrl(app: AppHandle, suffix: string, timeoutMs = PATIENCE): Promise<string> {
@@ -481,13 +501,12 @@ try {
   const { windows } = await app.windows();
   if (windows.length !== 1) fail(`expected 1 window, got ${windows.length}`);
   await app.mustFind("sidebar");
-  await app.mustFind("omnibox");
   await app.mustFind("new-tab-page");
   const first = await tabRows(app);
   if (first.length !== 1 || first[0]!.title !== "New Tab") {
     fail(`session should start with one New Tab row, got ${JSON.stringify(first)}`);
   }
-  console.log("1. launch: window + sidebar + omnibox, session has one New Tab");
+  console.log("1. launch: window + sidebar, session has one New Tab");
 
   // Which engine actually drew a page. The app reads it off its own first view
   // rather than off the config, because `ND_WEBVIEW_ENGINE=chromium` against a
@@ -583,25 +602,44 @@ try {
   await settledLoads();
   const holder = await focusSettled(app);
   await step("Ctrl+L asks for the address field", () => app.click("menu-address"));
-  await step("the app asked for the caret", async () => {
-    const deadline = Date.now() + PATIENCE;
-    while (Date.now() < deadline) {
-      if (app.stderrTail(400).includes("ND_APP FOCUS target=omnibox")) return;
-      await Bun.sleep(150);
+  // The sidebar layout has no address field: Cmd+L opens the command bar
+  // holding the page's address.
+  if (!(await app.find("omnibox"))) {
+    await step("Ctrl+L opens the command bar on the address", async () => {
+      const deadline = Date.now() + PATIENCE;
+      while (Date.now() < deadline) {
+        if (app.stderrTail(400).includes("ND_APP FOCUS target=palette")) return;
+        await Bun.sleep(150);
+      }
+      return fail("Ctrl+L never opened the command bar");
+    });
+    await app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE });
+    await step("a second Ctrl+L puts it away", () => app.click("menu-address"));
+    const shut = Date.now() + PATIENCE;
+    while ((await app.find("palette"))?.visible && Date.now() < shut) await Bun.sleep(150);
+    if ((await app.find("palette"))?.visible) fail("a second Ctrl+L left the command bar up");
+    console.log("4a. Ctrl+L opened the command bar on the page's address and put it away again");
+  } else {
+    await step("the app asked for the caret", async () => {
+      const deadline = Date.now() + PATIENCE;
+      while (Date.now() < deadline) {
+        if (app.stderrTail(400).includes("ND_APP FOCUS target=omnibox")) return;
+        await Bun.sleep(150);
+      }
+      return fail("the app never issued a focus command for the address field");
+    });
+    const ctrlLField = await app.mustFind("omnibox");
+    if (String(ctrlLField.text ?? "") !== (await shownUrl(app))) {
+      fail(`the address field holds ${JSON.stringify(ctrlLField.text)}, want the page's own address`);
     }
-    return fail("the app never issued a focus command for the address field");
-  });
-  const ctrlLField = await app.mustFind("omnibox");
-  if (String(ctrlLField.text ?? "") !== (await shownUrl(app))) {
-    fail(`the address field holds ${JSON.stringify(ctrlLField.text)}, want the page's own address`);
+    if (await app.find("palette").then((n) => n?.visible)) fail("Ctrl+L opened the command palette instead of focusing the field");
+    const caretLanded = (await app.mustFind("omnibox")).focused;
+    console.log(
+      caretLanded
+        ? `4a. Ctrl+L put the caret in the address field (focus had been on ${holder})`
+        : `4a. Ctrl+L asked for the address field; the engine kept the focus on ${await focusName(app)} (engine gap, see the comment)`,
+    );
   }
-  if (await app.find("palette").then((n) => n?.visible)) fail("Ctrl+L opened the command palette instead of focusing the field");
-  const caretLanded = (await app.mustFind("omnibox")).focused;
-  console.log(
-    caretLanded
-      ? `4a. Ctrl+L put the caret in the address field (focus had been on ${holder})`
-      : `4a. Ctrl+L asked for the address field; the engine kept the focus on ${await focusName(app)} (engine gap, see the comment)`,
-  );
 
   await openPalette(app);
   await typeQuery(app, "Page B");
@@ -754,9 +792,25 @@ try {
   const beforeAction = await tabRows(app);
   const victim = beforeAction[beforeAction.length - 1]!;
   if (!victim.testID) fail("sidebar rows carry no testID");
-  await step("close a tab from its sidebar row action", () =>
-    app.click({ testId: victim.testID!, action: "close" }),
-  );
+  const closeId = victim.testID.replace(/tab-(t\d+)$/, "tab-close-$1");
+  if (closeId !== victim.testID) {
+    // The sidebar layout shows a row's close button on hover or on the
+    // selected row. Hover is real input and macOS only, so elsewhere the row
+    // is selected first.
+    await step("show the row's close button", async () => {
+      try {
+        await app.hover(victim.testID!);
+      } catch {
+        await app.click(victim.testID!);
+      }
+      await app.waitFor({ testId: closeId, state: "visible" }, { timeoutMs: PATIENCE });
+    });
+    await step("close a tab from its sidebar row button", () => app.click(closeId));
+  } else {
+    await step("close a tab from its sidebar row action", () =>
+      app.click({ testId: victim.testID!, action: "close" }),
+    );
+  }
   await waitRows(app, (r) => r.length === beforeAction.length - 1, "the row-action close to land");
   await app.click("menu-reopen-tab");
   await waitRows(app, (r) => r.length === beforeAction.length, "the row-action close to be undone");
@@ -870,11 +924,13 @@ try {
     return found[0] ?? fail("the finished download offers no way to show it in a folder");
   });
   if (!reveal.enabled) fail("the reveal action is disabled on a download that finished");
-  // The whole point of the move: nothing about downloads is in the tab column
-  // any more.
+  // The whole point of the move: nothing about downloads is in the tab list
+  // any more. The sidebar layout's bottom bar holds the downloads button, so
+  // only the list itself is checked there.
   const inSidebar: string[] = [];
+  const sidebarLayout = (await app.find("tab-list")) !== null;
   walk((await app.tree(mainWindow)).root, (n) => {
-    if (n.testID !== "sidebar") return;
+    if (n.testID !== (sidebarLayout ? "tab-list" : "sidebar")) return;
     walk(n, (child) => {
       if (child.testID?.startsWith("downloads")) inSidebar.push(child.testID);
     });
@@ -1380,7 +1436,7 @@ try {
   // drawn below it, and the live pages must not notice the switch, so the
   // server's load counters bracket each one.
   const beforeCompact = (await tabRows(app)).map((r) => r.testID!);
-  const activeTabId = String((await app.mustFind("tab-list")).value ?? "");
+  const activeTabId = listActive(await app.mustFind("tab-list"));
   const otherTabId = beforeCompact.map((id) => id.slice(4)).find((id) => id !== activeTabId)!;
   const activeBeforeCompact = await shownUrl(app);
   let loadsAt = await settledLoads();
@@ -1563,7 +1619,7 @@ try {
   };
   const rowsIn = async (listId: string): Promise<string[]> => {
     const node = await app.find(listId);
-    return (node?.rows ?? []).filter((r) => r.testID).map((r) => r.title);
+    return node ? listRows(node).map((r) => r.title) : [];
   };
   const waitRowsIn = async (listId: string, check: (rows: string[]) => boolean, what: string): Promise<string[]> => {
     const deadline = Date.now() + PATIENCE;

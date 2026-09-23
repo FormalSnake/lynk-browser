@@ -20,7 +20,10 @@ export const FRAMEWORK = resolve(import.meta.dir, "..", process.env.ND_FRAMEWORK
 /// host, which on macOS 26 paints hosted views (header bars, text fields)
 /// blank; ndshot captures the live composited window over ScreenCaptureKit
 /// instead, so it is the only capture that proves what is on screen.
-export const NDSHOT = `${FRAMEWORK}/tools/ndshot/bin/ndshot`;
+export const NDSHOT = process.env.ND_NDSHOT ?? `${FRAMEWORK}/tools/ndshot/bin/ndshot`;
+/// A capture that never returns stalls the whole drive, so each call is cut
+/// off and fails instead.
+const NDSHOT_TIMEOUT_MS = 30_000;
 
 export interface NdshotWindow {
   pid: number;
@@ -37,7 +40,7 @@ export interface NdshotWindow {
 /// Every on-screen window ndshot can see for one process, largest first: the
 /// app's own window comes before the popovers and menus hanging off it.
 export function ndshotWindows(pid: number): NdshotWindow[] {
-  const out = Bun.spawnSync([NDSHOT, "list"]);
+  const out = Bun.spawnSync([NDSHOT, "list"], { timeout: NDSHOT_TIMEOUT_MS });
   if (out.exitCode !== 0) fail(`ndshot list failed: ${out.stderr.toString().trim()}`);
   return out.stdout
     .toString()
@@ -50,7 +53,9 @@ export function ndshotWindows(pid: number): NdshotWindow[] {
 
 export function ndshotCapture(windowID: number, name: string): string {
   const out = `${SHOTS}/${name}.png`;
-  const shot = Bun.spawnSync([NDSHOT, "capture", "--out", out, "--window-id", String(windowID)]);
+  const shot = Bun.spawnSync([NDSHOT, "capture", "--out", out, "--window-id", String(windowID)], {
+    timeout: NDSHOT_TIMEOUT_MS,
+  });
   if (shot.exitCode !== 0) fail(`ndshot capture failed for ${windowID}: ${shot.stderr.toString().trim()}`);
   return out;
 }
@@ -200,7 +205,10 @@ export function paletteDriver(config: { timeoutMs: number }) {
   /// drive cannot fill it there and the palette is the only field it can both
   /// fill and submit. Framework gap; the app draws the same field on both.
   async function goTo(app: AppHandle, url: string): Promise<void> {
-    if (process.platform === "darwin") {
+    // The sidebar layout has no address field: the address is edited in the
+    // palette there, on every backend.
+    const addressIsField = (await app.find("omnibox")) !== null;
+    if (process.platform === "darwin" || !addressIsField) {
       await openPalette(app);
       await typeQuery(app, url);
       await whenReady("submit the palette query", () => app.setValue("palette", true));
@@ -222,6 +230,49 @@ export function paletteDriver(config: { timeoutMs: number }) {
 }
 
 /// The titles of a SourceTree's item rows, polled until they satisfy `check`.
+/// The tab rows a list draws, in order: a source list's rows (the private
+/// window's), or the tab buttons under the sidebar layout's list box. Section
+/// headings are left out either way.
+export function listRows(list: JsonNode): { title: string; testID: string }[] {
+  if (list.rows) return list.rows.filter((r) => r.testID).map((r) => ({ title: r.title, testID: r.testID! }));
+  const rows: { title: string; testID: string }[] = [];
+  walk(list, (n) => {
+    if (n.testID && /(^|-)tab-t\d+$/.test(n.testID)) rows.push({ title: n.text ?? "", testID: n.testID });
+  });
+  return rows;
+}
+
+/// The section headings a list reads as: a source list's heading rows, or,
+/// for the sidebar layout, "Pinned" once a tab is pinned and "Tabs" under it
+/// when there are unpinned tabs too (the old list's headings).
+export function listSections(list: JsonNode): string[] {
+  if (list.rows) return list.rows.filter((r) => !r.testID).map((r) => r.title);
+  const count = (suffix: string): number => {
+    let n = 0;
+    walk(list, (node) => {
+      if (node.testID?.endsWith(suffix)) n += listRows(node).length;
+    });
+    return n;
+  };
+  const pinned = count("pinned-tabs");
+  const today = count("today-tabs");
+  if (pinned === 0) return [];
+  return today > 0 ? ["Pinned", "Tabs"] : ["Pinned"];
+}
+
+/// The selected tab's id: a source list's value, or the sidebar row that
+/// carries a close button (or its load spinner, or a pinned tile's marker)
+/// while the pointer is elsewhere.
+export function listActive(list: JsonNode): string {
+  if (list.rows) return String(list.value ?? "");
+  let found = "";
+  walk(list, (n) => {
+    const m = /tab-(?:close|spinner|live)-(t\d+)$/.exec(n.testID ?? "");
+    if (m && !found) found = m[1]!;
+  });
+  return found;
+}
+
 /// Both drives assert on a tab list; only the widget's testId differs. A
 /// `section` heading is a row too and carries no testID, so filtering on that
 /// is what keeps "the second tab" meaning the second TAB.
@@ -235,7 +286,7 @@ export async function waitRows(
   const deadline = Date.now() + timeoutMs;
   let last: string[] = [];
   while (Date.now() < deadline) {
-    last = ((await app.mustFind(testId)).rows ?? []).filter((r) => r.testID).map((r) => r.title);
+    last = listRows(await app.mustFind(testId)).map((r) => r.title);
     if (check(last)) return last;
     await Bun.sleep(120);
   }
