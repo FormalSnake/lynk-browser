@@ -8,9 +8,8 @@
 // no command palette (its ranking reads history) and no downloads list; the
 // address field IS the address bar, which is also the only place in the app
 // that exercises `<searchinput>` on GTK.
-import { Spacing, sendCommand, setContextMenuItems, useRef, useState, useStoreValue } from "@nativedesktop/react";
+import { Spacing, executeJavaScript, sendCommand, useRef, useState, useStoreValue } from "@nativedesktop/react";
 import type {
-  ContextMenuItemClick,
   NdNodeRef,
   SourceTreeAction,
   SourceTreeNode,
@@ -102,9 +101,6 @@ export function PrivateWindow({
   /// The header's address field, so the menu's Open Address Bar can put the
   /// caret in it. Grab-focus selects the contents on both backends.
   const omnibox = useRef<NdNodeRef<"searchinput"> | null>(null);
-  /// Views whose context-menu items have been pushed. An inline ref callback
-  /// runs on every render, and the items here never change.
-  const menuedViews = useRef(new Set<number>());
 
   const [width, setWidth] = useState(WINDOW_WIDTH);
   /// Where a tab dragged over the row would land. There is no drag-leave
@@ -511,13 +507,6 @@ export function PrivateWindow({
                       <webview
                         ref={(node) => {
                           views.current.set(t.id, node as NdNodeRef<"webview"> | null);
-                          if (!node || menuedViews.current.has(node.id)) return;
-                          menuedViews.current.add(node.id);
-                          // The whole menu the app adds to the engine's own.
-                          setContextMenuItems(node as NdNodeRef<"webview">, [
-                            { id: "nb-open-link", label: "Open Link in New Tab", contexts: ["link"] },
-                            { id: "nb-save-image", label: "Save Image", contexts: ["image"] },
-                          ]);
                         }}
                         url={t.url}
                         profile={PRIVATE_PROFILE}
@@ -533,10 +522,14 @@ export function PrivateWindow({
                       if (target && target !== "about:blank") openTab(target);
                     }}
                     onPermissionRequest={(e) => onPermissionRequest(t.id, e.data)}
-                        onContextMenuItemClicked={(e) => {
-                          const click = e.data as ContextMenuItemClick;
-                          if (click.id === "nb-open-link" && click.linkUrl) openTab(click.linkUrl);
-                          if (click.id === "nb-save-image" && click.imageUrl) onDownload(click.imageUrl);
+                        onBrowserCommand={(e) => {
+                          // The page's own Chrome shortcuts, for the ones this
+                          // window has an answer to. A new private window is
+                          // this one, which is already open.
+                          if (e.text === "newTab") openTab();
+                          if (e.text === "closeTab") closeTab(t.id);
+                          const node = views.current.get(t.id);
+                          if (e.text === "print" && node) void executeJavaScript(node, "window.print()").catch(() => {});
                         }}
                         onDownloadRequested={(e) => {
                           // Private browsing hides the trail, it does not refuse

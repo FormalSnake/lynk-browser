@@ -1050,32 +1050,19 @@ try {
   const menuTree = lastMenuTree();
   if (!menuTree) fail("the app never pushed a context-menu tree to any view");
   const menuLabels = menuTree!.map((i) => i.label ?? "");
-  const wantedItems = ["Open Link in New Tab", "Save Image", "Search with Google"];
+  // Chromium's own menu already carries Open Link in New Tab and Save Image
+  // As, so the app adds only what it alone knows: its search engine.
+  const wantedItems = ["Search with Google"];
   for (const wanted of wantedItems) {
     if (!menuLabels.includes(wanted)) fail(`the context menu is missing ${JSON.stringify(wanted)}: ${JSON.stringify(menuLabels)}`);
   }
-  const linkItem = menuTree!.find((i) => i.id === "nb-open-link");
-  if (JSON.stringify(linkItem?.contexts) !== JSON.stringify(["link"])) {
-    fail(`the open-link item should be link-only, got ${JSON.stringify(linkItem)}`);
+  for (const duplicate of ["Open Link in New Tab", "Save Image"]) {
+    if (menuLabels.includes(duplicate)) fail(`the app adds ${JSON.stringify(duplicate)}, which Chromium's menu already has`);
   }
-
   const tabsBefore = (await tabRows(app)).length;
-  await step("context menu: open a link in a new tab", () => app.click("menu-ctx-open-link"));
-  await waitRows(app, (r) => r.length === tabsBefore + 1, "a background tab from the context menu");
-  const afterOpen = await tabRows(app);
-  if (afterOpen[tabsBefore] === undefined) fail("the context menu opened no new tab");
-  // A background tab, so the one that was active still is.
-  await waitUrl(app, "/a");
-
-  await step("context menu: save an image", () => app.click("menu-ctx-save-image"));
-  const savedImage = `${DOWNLOADS}/image.png`;
-  const imageLanded = Date.now() + 25_000;
-  while (Date.now() < imageLanded && !existsSync(savedImage)) await Bun.sleep(150);
-  if (!existsSync(savedImage)) fail(`Save Image did not land at ${savedImage}`);
-
   await step("context menu: search the selection", () => app.click("menu-ctx-search-selection"));
-  await waitRows(app, (r) => r.length === tabsBefore + 2, "a tab for the searched selection");
-  const searchTab = (await tabRows(app))[tabsBefore + 1];
+  await waitRows(app, (r) => r.length === tabsBefore + 1, "a tab for the searched selection");
+  const searchTab = (await tabRows(app))[tabsBefore];
   // Served by the fixture (NB_TEST_SEARCH_PREFIX), counted server-side like
   // every other page here.
   const searched = Date.now() + PATIENCE;
@@ -1083,8 +1070,7 @@ try {
   if (!loads["search"]) fail("the search tab never reached the fixture's /search");
   console.log(
     `16. page context menu: ${menuLabels.length} app items (${JSON.stringify(menuLabels)}), ` +
-      `open-link and search each opened a tab (last is ${JSON.stringify(searchTab?.title ?? "")}), ` +
-      `Save Image landed ${savedImage}`,
+      `search opened a tab (${JSON.stringify(searchTab?.title ?? "")})`,
   );
 
   // Pinning is a second row action on the same rows, and it re-sorts the

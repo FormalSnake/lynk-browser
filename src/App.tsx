@@ -267,6 +267,55 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     openTab(windowOfTab(session.get(), fromTab)?.id ?? focusedWindowId, target, true);
   }
 
+  /// A Chrome shortcut the page had the keyboard for (cmd+shift+N, cmd+Y, …).
+  /// The engine refuses Chromium's own window or panel for it and names the
+  /// command instead; this runs the app's equivalent, and drops the ones the
+  /// app has none for.
+  function onBrowserCommand(fromTab: string, name: string): void {
+    const windowId = windowOfTab(session.get(), fromTab)?.id ?? focusedWindowId;
+    const controller = controllers.current.get(windowId);
+    switch (name) {
+      case "newWindow":
+        return newWindow();
+      case "newPrivateWindow":
+        return setPrivateOpen(true);
+      case "newTab":
+        openTab(windowId, "");
+        return;
+      case "reopenClosedTab":
+        return reopenTab(windowId);
+      case "closeTab":
+        return closeTab(fromTab);
+      case "nextTab":
+        return cycleTab(windowId, 1);
+      case "previousTab":
+        return cycleTab(windowId, -1);
+      case "downloads":
+        return controller?.openDownloads();
+      case "history":
+        return controller?.openPalette("");
+      case "settings":
+        return setSettingsOpen(true);
+      case "extensions":
+        openTab(windowId, "chrome://extensions");
+        return;
+      case "find":
+        return setFind(fromTab, (f) => ({ ...f, open: true }));
+      case "findNext":
+        return findCommand(fromTab, "findNext");
+      case "findPrevious":
+        return findCommand(fromTab, "findPrevious");
+      case "focusAddress":
+        return controller?.openAddress();
+      case "print": {
+        // The page's own print, which opens the system print panel.
+        const node = view(fromTab);
+        if (node) void executeJavaScript(node, "window.print()").catch(() => {});
+        return;
+      }
+    }
+  }
+
   /// Everything a tab leaves behind at the root, for a tab that is gone.
   function forgetTab(id: string): void {
     denyPromptsFor(id);
@@ -800,15 +849,13 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
 
   // ------------------------------------------------------- context menu ---
 
-  /// The engine draws the menu: Back/Forward/Reload, Open Link and Copy Image
-  /// are its own and always there. These are the things a browser has to add
-  /// on top, because they act on the browser rather than on the page: a tab,
-  /// this app's downloads and the search engine the user picked. Inspect is
-  /// Chromium's own item, which opens the docked inspector on the element.
+  /// The engine draws the menu: Back/Forward/Reload, Open Link in New Tab and
+  /// Save Image As are its own and always there, and an item added beside
+  /// them showed up twice. What is left to add is the search engine the user
+  /// picked. Inspect is Chromium's own item, which opens the docked inspector
+  /// on the element.
   function appContextMenuItems(): ContextMenuItem[] {
     return [
-      { id: "nb-open-link", label: "Open Link in New Tab", contexts: ["link"] },
-      { id: "nb-save-image", label: "Save Image", contexts: ["image"] },
       { id: "nb-search-selection", label: `Search with ${engineOf(prefs.searchEngine).name}`, contexts: ["selection"] },
     ];
   }
@@ -837,12 +884,6 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   function onContextMenuItem(tabId: string, click: ContextMenuItemClick): void {
     const windowId = windowOfTab(session.get(), tabId)?.id ?? focusedWindowId;
     switch (click.id) {
-      case "nb-open-link":
-        if (click.linkUrl) openTab(windowId, click.linkUrl, true);
-        return;
-      case "nb-save-image":
-        if (click.imageUrl) startDownload(click.imageUrl);
-        return;
       case "nb-search-selection":
         if (click.selectionText) openTab(windowId, toUrl(click.selectionText) ?? "", true);
         return;
@@ -1135,6 +1176,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                     onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
                     onLoadFailed={(e) => patch(t.id, { error: e.data as { url: string; error: string } })}
                     onNewWindow={(e) => openTabFromPage(t.id, e.text)}
+                    onBrowserCommand={(e) => onBrowserCommand(t.id, e.text)}
                     onJavaScriptResult={onJavaScriptResult}
                     onPermissionRequest={(e) => onPermissionRequest(t.id, e.data)}
                     onFaviconChanged={(e) => onFavicon(t.url, e.data as { dataUrl?: string; iconUrl?: string })}

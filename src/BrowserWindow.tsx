@@ -816,30 +816,6 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                   half the app owns. What the menu CONTAINS is asserted from the
                   ND_APP CTXMENU trace instead. */}
               <menuitem
-                testID="menu-ctx-open-link"
-                label="Context: open link in new tab"
-                onSelect={() =>
-                  ctx.onContextMenuItem(menuActive.id, {
-                    id: "nb-open-link",
-                    pageUrl: menuActive.url,
-                    linkUrl: `${menuActive.url || "https://example.com/"}#link`,
-                    editable: false,
-                  })
-                }
-              />
-              <menuitem
-                testID="menu-ctx-save-image"
-                label="Context: save image"
-                onSelect={() =>
-                  ctx.onContextMenuItem(menuActive.id, {
-                    id: "nb-save-image",
-                    pageUrl: menuActive.url,
-                    imageUrl: process.env.NB_TEST_IMAGE || `${menuActive.url || "https://example.com/"}#image`,
-                    editable: false,
-                  })
-                }
-              />
-              <menuitem
                 testID="menu-ctx-search-selection"
                 label="Context: search the selection"
                 onSelect={() =>
