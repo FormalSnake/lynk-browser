@@ -183,6 +183,8 @@ export interface BrowserContext {
   navigate(tabId: string, raw: string): void;
   retry(tabId: string): void;
   command(tabId: string, name: "goBack" | "goForward" | "reload" | "stop"): void;
+  toggleReader(tabId: string): void;
+  toggleFloat(tabId: string): void;
   zoomFor(url: string): number;
   setZoom(tabId: string, next: number): void;
   /// One preset step in, out, or (0) back to 100%, with the popover shown.
@@ -485,6 +487,10 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
         return ctx.setLayout(compact ? "sidebar" : "compact");
       case "private":
         return ctx.openPrivate();
+      case "reader":
+        return ctx.toggleReader(active.id);
+      case "float":
+        return ctx.toggleFloat(active.id);
       case "settings":
         return ctx.openSettings();
       case "zoom-in":
@@ -756,6 +762,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     chromium,
     pinned: active.pinned,
     canSleep: ctx.canSleep(active.id),
+    reading: ctx.rt(active.id).reading,
     favicon: faviconFor,
   });
 
@@ -1349,6 +1356,20 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               accelerator={KEYS["bookmark-page"]}
               enabled={/^https?:/.test(menuActive.url)}
               onSelect={() => toggleBookmark(menuActive)}
+            />
+            <menuitem
+              testID="menu-reader"
+              label={ctx.rt(menuActive.id).reading ? "Leave Reading Mode" : "Reading Mode"}
+              accelerator={KEYS.reader}
+              enabled={chromium}
+              onSelect={() => ctx.toggleReader(menuActive.id)}
+            />
+            <menuitem
+              testID="menu-float"
+              label="Float Video"
+              accelerator={KEYS.float}
+              enabled={chromium}
+              onSelect={() => ctx.toggleFloat(menuActive.id)}
             />
             <menuitem role="separator" testID="menu-view-sep" />
             <menuitem

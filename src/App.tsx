@@ -23,13 +23,16 @@ import {
   uninstallExtension as removeExtension,
   setContextMenuItems,
   useLayoutEffect,
+  useMountEffect,
   watchExtensions,
   useRef,
   useState,
   useStoreValue,
   Spacing,
+  system,
 } from "@nativedesktop/react";
 import type {
+  Appearance,
   ContextMenuItem,
   ContextMenuItemClick,
   DownloadRequest,
@@ -79,6 +82,7 @@ import {
 import { nativePage } from "./lib/pages.ts";
 import { extensionRows, pinnedRows, probeUrl, togglePinned, type ExtensionRow } from "./lib/extensions.ts";
 import { fetchFavicon, rememberFavicon } from "./lib/favicons.ts";
+import { FLOAT_SCRIPT, floatState } from "./lib/float.ts";
 import { clearVisits, recentVisits, recordTitle, recordVisit, type Visit } from "./lib/history.ts";
 import {
   forgetOrigin,
@@ -99,6 +103,7 @@ import {
   type SessionTab,
 } from "./lib/session.ts";
 import { LAYOUTS, PIN_STYLES, SEARCH_ENGINES, engineOf, settings, type Layout } from "./lib/settings.ts";
+import { leaveReaderScript, readerSchemeScript, readerState, toggleReaderScript } from "./lib/reader.ts";
 import { parseTabPayload } from "./lib/tabdrag.ts";
 import {
   IDLE,
@@ -518,7 +523,8 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
 
   /// A woken page is put back where it was scrolled to once it has loaded.
   function onLoading(id: string, loading: boolean): void {
-    patch(id, { loading });
+    // A new document has no reader over it, whatever the last one had.
+    patch(id, loading ? { loading, reading: false } : { loading });
     const at = scrollMemory.current.get(id);
     const node = view(id);
     // Until the page has committed, the view is still on the blank page it
@@ -612,6 +618,14 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     // A page that navigated away is not waiting for its own answer any more,
     // and the id would otherwise stay in the queue for ever.
     denyPromptsFor(id);
+    // A page that changes its address without loading a new document keeps
+    // the reader up over an article it no longer shows.
+    const before = committed.current.get(id);
+    if (rt(id).reading && before !== url) {
+      patch(id, { reading: false });
+      const node = view(id);
+      if (node) void executeJavaScript(node, leaveReaderScript()).catch(() => {});
+    }
     committed.current.set(id, url);
     setTabUrl(id, url);
     applyZoom(id, url);
@@ -683,6 +697,61 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   function command(tabId: string, name: "goBack" | "goForward" | "reload" | "stop"): void {
     const node = view(tabId);
     if (node) sendCommand(node, name);
+  }
+
+  // ------------------------------------------------ reading and floating ---
+
+  /// The app's own light or dark, which the reader follows. The app has no
+  /// appearance setting of its own: it is the system's.
+  const appearance = useRef<Appearance>("light");
+  /// The runtime the appearance listener reads: it outlives the render that
+  /// subscribed it.
+  const runtimeRef = useRef(runtime);
+  runtimeRef.current = runtime;
+  useMountEffect(() => {
+    void system
+      .getAppearance()
+      .then((a) => {
+        appearance.current = a.appearance;
+      })
+      .catch(() => {});
+    return system.onAppearanceChange((a) => {
+      appearance.current = a.appearance;
+      for (const [id, node] of views.current) {
+        if (node && runtimeRef.current[id]?.reading) {
+          void executeJavaScript(node, readerSchemeScript(a.appearance)).catch(() => {});
+        }
+      }
+    });
+  });
+
+  function toggleReader(tabId: string): void {
+    const node = view(tabId);
+    if (!node || !chromium) return;
+    void executeJavaScript(node, toggleReaderScript(appearance.current))
+      .then((answer) => {
+        const state = readerState(answer);
+        if (TEST_HOOKS) console.error(`ND_APP READER ${tabId} ${state}`);
+        patch(tabId, { reading: state === "on" });
+        if (state === "none") toast("No article to read on this page");
+      })
+      .catch((e: unknown) => {
+        console.error(`ND_APP READER failed ${String(e)}`);
+        toast("This page cannot be shown in reading mode");
+      });
+  }
+
+  function toggleFloat(tabId: string): void {
+    const node = view(tabId);
+    if (!node || !chromium) return;
+    void executeJavaScript(node, FLOAT_SCRIPT, undefined, { userGesture: true })
+      .then((answer) => {
+        const state = floatState(answer);
+        if (TEST_HOOKS) console.error(`ND_APP FLOAT ${tabId} ${state}`);
+        if (state === "none") toast("No video on this page");
+        else if (state.startsWith("error:")) toast("This video cannot float");
+      })
+      .catch((e: unknown) => console.error(`ND_APP FLOAT failed ${String(e)}`));
   }
 
   /// The sidebar pane is the only thing the two layouts disagree about, and it
@@ -1554,6 +1623,8 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     navigate,
     retry: (tabId) => patch(tabId, { error: null, attempt: rt(tabId).attempt + 1 }),
     command,
+    toggleReader,
+    toggleFloat,
     zoomFor,
     setZoom,
     zoomStep,

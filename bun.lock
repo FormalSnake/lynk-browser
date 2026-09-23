@@ -5,6 +5,7 @@
     "": {
       "name": "nativebrowser",
       "dependencies": {
+        "@mozilla/readability": "^0.6.0",
         "@nativedesktop/cli": "^0.4.42",
         "@nativedesktop/data": "^0.4.42",
         "@nativedesktop/native": "^0.4.42",
@@ -92,6 +93,8 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
+
+    "@mozilla/readability": ["@mozilla/readability@0.6.0", "", {}, "sha512-juG5VWh4qAivzTAeMzvY9xs9HY5rAcr2E4I7tiSSCokRFi7XIZCAu92ZkSTsIj1OPceCifL3cpfteP3pDT9/QQ=="],
 
     "@nativedesktop/cli": ["@nativedesktop/cli@0.4.42", "", { "dependencies": { "@nativedesktop/host": "0.4.42" }, "bin": { "nd": "src/index.ts" } }, "sha512-rp6q5CZN9LmXqtaJCbZae1L9pD9Ew7CBNmKuah706GRnbZ/b6eduie07Uy2GYnu6o/22BEhG/pN2mTGNCHmMjw=="],
 

@@ -113,3 +113,21 @@ test("Put Tab to Sleep is offered only for a tab that can sleep", () => {
   expect(ids(false)).toEqual([]);
   expect(omniRows({ ...base, mode: "switcher", query: "memory", canSleep: true }).map((r) => r.id)).toEqual(["cmd:sleep-tab"]);
 });
+
+test("reading mode and the floating video are commands with their chords", () => {
+  const rows = omniRows({ ...base, mode: "switcher", query: "read" });
+  expect(rows.find((r) => r.id === "cmd:reader")?.hint).toBe(process.platform === "darwin" ? "⇧⌘R" : "Ctrl+Shift+R");
+  const reading = omniRows({ ...base, mode: "switcher", reading: true, mac: false });
+  expect(reading.find((r) => r.id === "cmd:reader")?.title).toBe("Leave Reading Mode");
+  expect(reading.find((r) => r.id === "cmd:float")?.hint).toBe("Ctrl+Shift+P");
+  expect(omniRows({ ...base, mode: "switcher", query: "pip" }).map((r) => r.id)).toContain("cmd:float");
+  const webkit = omniRows({ ...base, mode: "switcher", chromium: false }).map((r) => r.id);
+  expect(webkit).not.toContain("cmd:reader");
+  expect(webkit).not.toContain("cmd:float");
+});
+
+test("no two declared shortcuts share a chord", async () => {
+  const { KEYS } = await import("./keys.ts");
+  const chords = Object.values(KEYS);
+  expect(new Set(chords).size).toBe(chords.length);
+});

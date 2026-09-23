@@ -10,6 +10,7 @@
     "test": "bun test --pass-with-no-tests"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "@nativedesktop/cli": "^0.4.42",
     "@nativedesktop/data": "^0.4.42",
     "@nativedesktop/native": "^0.4.42",

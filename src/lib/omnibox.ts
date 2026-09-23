@@ -69,6 +69,8 @@ export const COMMANDS: OmniCommand[] = [
   { id: "zoom-in", title: "Zoom In", iconName: "zoom-in-symbolic", keys: "zoom-in" },
   { id: "zoom-out", title: "Zoom Out", iconName: "zoom-out-symbolic", keys: "zoom-out" },
   { id: "zoom-reset", title: "Actual Size", iconName: "zoom-original-symbolic", keys: "zoom-reset", aka: "reset zoom" },
+  { id: "reader", title: "Reading Mode", iconName: "text-x-generic-symbolic", keys: "reader", aka: "reader article" },
+  { id: "float", title: "Float Video", iconName: "video-x-generic-symbolic", keys: "float", aka: "picture in picture pip" },
   { id: "site-info", title: "Site Settings", iconName: "channel-secure-symbolic", aka: "permissions security" },
   { id: "downloads-all", title: "Downloads", iconName: "folder-download-symbolic", keys: "downloads" },
   { id: "history", title: "History", iconName: "document-open-recent-symbolic", keys: "history" },
@@ -80,6 +82,10 @@ export const COMMANDS: OmniCommand[] = [
   { id: "layout", title: "Switch Layout", iconName: "sidebar-show-symbolic", keys: "layout", aka: "sidebar compact" },
   { id: "settings", title: "Settings", iconName: "preferences-system-symbolic", keys: "settings", aka: "preferences" },
 ];
+
+/// Commands that need the Chromium engine: extensions, and the reader and the
+/// floating video, which run as page scripts only it accepts.
+const CHROMIUM_ONLY = new Set(["extensions", "extensions-page", "webstore", "reader", "float"]);
 
 const MAC_KEYS: Record<string, string> = { primary: "⌘", shift: "⇧", alt: "⌥", ctrl: "⌃" };
 const NAMED_KEYS: Record<string, string> = {
@@ -157,6 +163,8 @@ export interface OmniInput {
   /// Whether the showing tab can be put to sleep; the command is left out
   /// when it cannot.
   canSleep?: boolean;
+  /// Whether the showing tab is in reading mode, which names the reader command.
+  reading?: boolean;
   favicon: (url: string) => string | undefined;
   mac?: boolean;
 }
@@ -257,9 +265,10 @@ function tabRows(tabs: OmniTab[], lowered: string, cap: number, favicon: (url: s
 function commandRows(input: OmniInput, lowered: string): OmniRow[] {
   const rows: OmniRow[] = [];
   for (const c of COMMANDS) {
-    if (!input.chromium && (c.id === "extensions" || c.id === "extensions-page" || c.id === "webstore")) continue;
+    if (!input.chromium && CHROMIUM_ONLY.has(c.id)) continue;
     if (c.id === "sleep-tab" && !input.canSleep) continue;
-    const title = c.id === "pin-tab" && input.pinned ? "Unpin Tab" : c.title;
+    const title =
+      c.id === "pin-tab" && input.pinned ? "Unpin Tab" : c.id === "reader" && input.reading ? "Leave Reading Mode" : c.title;
     if (lowered && !`${title} ${c.aka ?? ""}`.toLowerCase().includes(lowered)) continue;
     rows.push({
       id: `cmd:${c.id}`,

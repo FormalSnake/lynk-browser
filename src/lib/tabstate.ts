@@ -37,6 +37,8 @@ export interface Runtime {
   /// Bumped whenever zoom changes from a chord or a menu step, which is what
   /// shows the zoom popover for a moment.
   zoomNotice: number;
+  /// Reading mode is up over the page.
+  reading: boolean;
 }
 
 export const IDLE: Runtime = {
@@ -48,6 +50,7 @@ export const IDLE: Runtime = {
   security: "none",
   attempt: 0,
   zoomNotice: 0,
+  reading: false,
 };
 
 export interface FindState {

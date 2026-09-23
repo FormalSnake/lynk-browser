@@ -35,8 +35,8 @@ The commands cover every action:
 - Tabs: new, close, reopen, next, previous, pin, duplicate, move to a new
   window.
 - Navigation: back, forward, reload, copy address.
-- Find, zoom, site settings, downloads, extensions, the web store, layout
-  and settings.
+- Find, zoom, reading mode, floating video, site settings, downloads,
+  extensions, the web store, layout and settings.
 
 ## Keyboard
 
