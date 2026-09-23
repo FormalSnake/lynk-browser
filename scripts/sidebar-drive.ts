@@ -427,16 +427,20 @@ async function geometryLeg(width: number): Promise<void> {
   console.log(`  NB_SIDEBAR_GEOMETRY_OK ${line} sidebar=${sidebar.w} long=${long.w}`);
 }
 
+/// The page beside the sidebar. GTK draws it as a card inset by 8 on the
+/// sidebar's colour; AppKit runs it to the window's edges, where the glass
+/// sidebar reflects it.
 async function cardLeg(tag: string, leading: number | null): Promise<Rect> {
   const card = await settle("content");
   // CEF repaints a resized page on its own thread, a beat after the host has
   // moved and cut its window; a capture before that shows the old size.
   if (!darwin) await Bun.sleep(1200);
   const win = await windowRect();
-  const M = 8;
+  const M = appkit ? 0 : 8;
   const line = `${tag} card=${JSON.stringify(card)} window=${win.w}x${win.h}`;
   if (!near(win.w - (card.x + card.w), M)) fail(`the card's trailing margin is not ${M}: ${line}`);
   if (!near(win.h - (card.y + card.h), M)) fail(`the card's bottom margin is not ${M}: ${line}`);
+  if (appkit && !near(card.y, 0)) fail(`the page does not reach the window's top: ${line}`);
   if (leading !== null && !near(card.x, leading)) fail(`the card's leading edge is not at ${leading}: ${line}`);
   let shot = await capture(`card-${tag}`);
   // The GTK host on macOS has no web engine to draw a page with.
@@ -454,7 +458,17 @@ async function cardLeg(tag: string, leading: number | null): Promise<Rect> {
     const corner = shot!.pixel(card.x + 0.5, card.y + card.h - 1);
     const inside = shot!.pixel(card.x + card.w / 2, card.y + card.h - 40);
     if (!isPageBlue(inside)) fail(`the page does not fill the card (${inside}): ${line}`);
-    if (isPageBlue(corner)) fail(`the page's square corner shows past the card's curve (${corner}): ${line}`);
+    if (appkit) {
+      // The glass sidebar picks the page's blue up along its trailing edge,
+      // and stays neutral away from it.
+      if (card.x > 0) {
+        const edge = shot!.pixel(card.x - 3, card.y + card.h / 2);
+        const middle = shot!.pixel(card.x / 2, card.y + card.h / 2);
+        if (edge[2]! < edge[0]! + 20 || middle[2]! > middle[0]! + 20) {
+          fail(`the sidebar does not reflect the page beside it (edge ${edge}, middle ${middle}): ${line}`);
+        }
+      }
+    } else if (isPageBlue(corner)) fail(`the page's square corner shows past the card's curve (${corner}): ${line}`);
   }
   console.log(`  NB_SIDEBAR_CARD_OK ${line}`);
   return card;
@@ -511,7 +525,7 @@ try {
   // ---- 4: hide, then the edge reveal --------------------------------------
   await app.click("menu-toggle-sidebar");
   await waitFor("the sidebar to hide", () => maybeRect("sidebar"), (r) => r === null || r.x + r.w <= 0);
-  const hidden = await cardLeg("hidden", 8);
+  const hidden = await cardLeg("hidden", appkit ? 0 : 8);
   if (appkit) await pointer("move", 2, 400);
   else await app.click("menu-reveal-sidebar");
   await waitFor("the sidebar to come in", () => maybeRect("sidebar"), (r) => r !== null && r.x >= 0);

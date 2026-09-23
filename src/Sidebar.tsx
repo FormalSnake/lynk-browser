@@ -13,9 +13,9 @@ import type { SessionTab } from "./lib/session.ts";
 export const TAB_ROW_HEIGHT = 28;
 /// The gap between two rows.
 const ROW_GAP = 2;
-/// The page card's inset from the window (the framework's card margin on both
-/// backends). The sidebar pads by the same amount, so its first row and the
-/// card's top edge line up and the gaps around the card read as one.
+/// The sidebar's padding. On GTK it is also the page card's inset from the
+/// window (the framework's card margin), so the first row and the card's top
+/// edge line up and the gaps around the card read as one.
 export const INSET = 8;
 /// A pinned tile's height, and its width while three share a row.
 const PIN_HEIGHT = 34;

@@ -16,15 +16,20 @@ the ones below, set to each platform's own type and colours rather than copied.
 ## Window
 
 - No toolbar and no title bar band. The sidebar runs the window's full height
-  on the left; the page sits in a rounded card beside it
-  (`<splitview contentStyle="card">`).
+  on the left; the page sits beside it, in a rounded card on GTK
+  (`<splitview contentStyle="card">`) and full-bleed on AppKit.
 - On AppKit the sidebar is the split view's own Liquid Glass sidebar item,
-  which reflects the page beside it as a native one does; the margin around
-  the card is the sidebar material. On GTK both are the sidebar colour.
-- The card is inset 8 from the window's top, trailing and bottom edges and 0
-  from the sidebar, whose own 8 of padding is the gap. Radius 10 pt (AppKit) /
-  12 px (GTK, libadwaita's card), a hairline, and the page is clipped to the
-  curve: on X11 the CEF page's own window gets a bounding shape.
+  which reflects the page beside it as a native one does. On GTK the sidebar
+  and the margin around the card are the sidebar colour.
+- GTK: the card is inset 8 from the window's top, trailing and bottom edges
+  and 0 from the sidebar, whose own 8 of padding is the gap; with the sidebar
+  hidden, 8 on all four sides. Radius 12 px, libadwaita's card.
+- AppKit has no card: public API gives no way to make the margin around it
+  Liquid Glass, so the page runs full-bleed to the window's top, trailing and
+  bottom edges beside the sidebar, as in Search, and never under the sidebar.
+  With the sidebar hidden it fills the window.
+- GTK: the page is inset and clipped to the card's curve, with a hairline; on
+  X11 the CEF page's own window gets a bounding shape.
 - Window controls follow the platform:
   - macOS: the traffic lights sit in the sidebar's first row, vertically
     centred on it (`<windowcontrols side="start">`; the framework moves the
@@ -67,7 +72,7 @@ The list scrolls; the controls row, the pinned block and the foot do not.
 
 ## Load bar
 
-A 2 pt line in the secondary ink (not the accent) along the page card's top
+A 2 pt line in the secondary ink (not the accent) along the page's top
 edge, in both layouts, with the row's spinner beside it in the sidebar. It
 slides to each progress value (250 ms ease-out), starts at a sliver the
 moment a load begins, and fades out 200 ms after it reaches the end. It floats
@@ -76,8 +81,8 @@ slide. (`<progressbar cssClasses={["osd", "dimmed"]}>`.)
 
 ## Hiding and edge reveal
 
-- Cmd+S (View > Hide Sidebar) hides it; the card takes the window inside the
-  same 8 margin on all four sides, and the window controls go with the
+- Cmd+S (View > Hide Sidebar) hides it; the GTK card takes the window inside
+  the same 8 margin on all four sides (AppKit's page fills the window), and the window controls go with the
   sidebar. The chord is instant.
 - While hidden, the pointer touching the leading edge slides the sidebar in
   over the page as a floating rounded panel with a shadow, without resizing

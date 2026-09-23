@@ -1276,7 +1276,10 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
           sidebarWidth={0.24}
           collapsed={!compact && sidebarHidden}
           edgeReveal={!compact}
-          contentStyle={compact ? "plain" : "card"}
+          // AppKit's glass sidebar reflects the page beside it, so the page
+          // runs to the window's edges there, as in Search; libadwaita keeps
+          // it in an inset card on the sidebar's colour.
+          contentStyle={compact || !gtk ? "plain" : "card"}
           testID={`${p}split`}
           onRevealChanged={(e) => setRevealed(e.checked)}
         >
