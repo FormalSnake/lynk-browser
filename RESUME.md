@@ -148,6 +148,9 @@ re-focus once focus-return ships. Then relaunch on g815.
   CEF dist `~/.cache/nativedesktop/cef/151.3.23-linux64`, prebuilt npm host does
   not run there (build from source). Display :0 and `~/.local/share/nativebrowser`
   are the owner's. Per-agent dirs `~/Developer/nd-*`; my own are `nd-orch-*`.
+- g815 runs Hyprland with no window controls: the GTK layout must reserve no
+  space for them there (no Zen-style top strip when the decoration layout is
+  empty).
 - e1504g: owner's desktop, unused this round.
 - rsync excludes: `.git node_modules packages/*/dist zig-out .zig-cache` (and
   `dist screenshots` for the app); `--delete` wipes `packages/react/dist` on the
