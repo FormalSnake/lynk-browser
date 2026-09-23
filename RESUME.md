@@ -2,7 +2,11 @@
 
 Goal: a Chromium browser on macOS and Linux with 1:1 Chrome extension
 compatibility, native UI, never a stray Chromium window, tested against the real
-app. To resume, tell Claude: "read RESUME.md and continue".
+app. UI and features follow the Search browser (driceroland/Search, read-only
+clone at `~/Developer/nativebrowser-ref/Search`): Arc-like but minimal, driven
+from a keyboard-first Arc command bar, no buttons needed. Built in: panels
+(bookmarks, history, downloads), pinned tiles, lazy tabs, Search's keyboard
+map, reader (⇧⌘R), floating video (⇧⌘P), uBlock Origin MV2 by default. To resume, tell Claude: "read RESUME.md and continue".
 
 ## How this project is run
 
