@@ -16,6 +16,9 @@ export interface ExtensionRow {
   /// `chrome.action.onClicked` to fire on, so the row says so rather than
   /// offering a click that would do nothing.
   popupUrl: string;
+  /// Where the extension sends a person who has not set it up yet, for an
+  /// action whose popup is switched off. "" when it declares no options page.
+  optionsUrl: string;
 }
 
 export function extensionRows(
@@ -29,6 +32,7 @@ export function extensionRows(
     enabled: e.enabled,
     iconData: e.iconUrl.startsWith("data:") ? e.iconUrl : "",
     popupUrl: byId.get(e.id)?.popupUrl ?? "",
+    optionsUrl: e.optionsUrl,
   }));
 }
 
@@ -41,6 +45,32 @@ export function pinnedRows(rows: ExtensionRow[], pinned: string[]): ExtensionRow
     const row = byId.get(id);
     return row ? [row] : [];
   });
+}
+
+/// The page a hidden view shows so the action's live state can be read: any
+/// page of the extension answers for it, and the popup is the one every
+/// action with something to open declares.
+export function probeUrl(row: ExtensionRow): string {
+  return row.popupUrl || row.optionsUrl;
+}
+
+/// The badge colour an extension asked for, as the nearest of the app's own
+/// badge variants. The pill is the framework's, which takes a variant rather
+/// than a colour, and a grey or a colourless badge is the neutral one.
+export function badgeVariant(rgba: number[]): "neutral" | "accent" | "success" | "warning" | "error" {
+  const [r = 0, g = 0, b = 0] = rgba;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  if (max === 0 || (max - min) / max < 0.25) return "neutral";
+  let hue: number;
+  if (max === r) hue = ((g - b) / (max - min) + 6) % 6;
+  else if (max === g) hue = (b - r) / (max - min) + 2;
+  else hue = (r - g) / (max - min) + 4;
+  hue *= 60;
+  if (hue < 20 || hue >= 330) return "error";
+  if (hue < 70) return "warning";
+  if (hue < 170) return "success";
+  return "accent";
 }
 
 export function togglePinned(pinned: string[], id: string): string[] {

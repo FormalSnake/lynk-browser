@@ -11,6 +11,7 @@ import {
   onToastButtonClicked,
   onToastDismissed,
   openPath,
+  readExtensionAction,
   revealPath,
   sendCommand,
   setContextMenuItems,
@@ -24,6 +25,7 @@ import type {
   ContextMenuItem,
   ContextMenuItemClick,
   ExtensionAction,
+  ExtensionActionState,
   InstalledExtension,
   NdNodeRef,
   SourceTreeAction,
@@ -41,9 +43,11 @@ import { ADDRESS_MIN_WIDTH, CompactTabs, tabRunMetrics } from "./CompactTabs.tsx
 import type { DownloadItem } from "./lib/downloads.ts";
 import { downloadDir, runDownload } from "./lib/downloads.ts";
 import {
+  badgeVariant,
   clampPopup,
   extensionRows,
   pinnedRows,
+  probeUrl,
   togglePinned,
   POPUP_DEFAULT_HEIGHT,
   POPUP_DEFAULT_WIDTH,
@@ -277,6 +281,21 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   const [extensionsOpen, setExtensionsOpen] = useState(false);
   /// The action whose popup is open, "" for none.
   const [popupId, setPopupId] = useState("");
+  /// The address that popup was mounted at: the one Chromium reported at the
+  /// click, which an extension can change at runtime away from the manifest's.
+  const [popupUrl, setPopupUrl] = useState("");
+  /// The action a click is being decided for. Nothing opens until its live
+  /// state is in, because the manifest's popup may be one the extension has
+  /// switched off.
+  const [checkingAction, setCheckingAction] = useState("");
+  const checkingRef = useRef("");
+  /// Each action's live state, as last read for the tab on show.
+  const [actionStates, setActionStates] = useState<Record<string, ExtensionActionState>>({});
+  /// Hidden views on a page of each extension whose state the toolbar needs.
+  /// Chromium answers an action's live state to its own extension's pages and
+  /// to nothing else, so these are the only way to read it.
+  const probes = useRef(new Map<string, NdNodeRef<"webview">>());
+  const probeArmed = useRef(new Map<string, number>());
   const [popupSize, setPopupSize] = useState({ width: POPUP_DEFAULT_WIDTH, height: POPUP_DEFAULT_HEIGHT });
   const [privateOpen, setPrivateOpen] = useState(false);
   /// Bumped when a favicon lands. The cache lives outside React, so this is
@@ -331,10 +350,17 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// the panel's row testIDs readable.
   const downloadSeq = useRef(0);
 
+  /// The active tab's address, for answers that land after a render has moved
+  /// on: a live action state only counts for the tab it was read for.
+  const activeUrl = useRef("");
+  activeUrl.current = active.url;
+  const activeView = useRef<NdNodeRef<"webview"> | null>(null);
+
   const rt = (id: string): Runtime => runtime[id] ?? IDLE;
   const patch = (id: string, part: Partial<Runtime>): void =>
     setRuntime((r) => ({ ...r, [id]: { ...(r[id] ?? IDLE), ...part } }));
   const view = (id: string): NdNodeRef<"webview"> | null => views.current.get(id) ?? null;
+  activeView.current = active.url ? view(active.id) : null;
 
   // A tab navigating or a new search engine both change what a right-click
   // should show, and both land as a render. The push is skipped when the tree
@@ -419,6 +445,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
     setSiteInfoOpen(false);
     session.update((s) => (s.activeId === id ? s : { ...s, activeId: id }));
     applyZoom(id, tabs.find((t) => t.id === id)?.url ?? "");
+    refreshActionStates();
   }
 
   function cycleTab(step: number): void {
@@ -473,6 +500,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
     committed.current.set(id, url);
     setTabUrl(id, url);
     applyZoom(id, url);
+    if (id === active.id) refreshActionStates();
     void recordVisit(url, "").then(refreshHistory);
   }
 
@@ -665,28 +693,108 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
     settings.update((s) => ({ ...s, pinnedExtensions: togglePinned(s.pinnedExtensions, id) }));
   }
 
+  /// One read of an action's live state, retried while the probe's page is
+  /// still loading and while the answer is for some other tab. Chromium reads
+  /// it for the tab of the window that last had focus: with no view focused
+  /// that is a browser it keeps for itself, and a probe view takes the focus
+  /// as its page commits, so its first answers are for its own tab. Neither
+  /// says anything about the tab on show, so the page on show is given the
+  /// focus before each try. Resolves with the last answer either way, and
+  /// `matched` says whether it was for the active tab.
+  async function readActionFor(id: string, tries: number): Promise<{ state: ExtensionActionState; matched: boolean } | null> {
+    let last: ExtensionActionState | null = null;
+    for (let attempt = 0; attempt < tries; attempt++) {
+      if (attempt > 0) await Bun.sleep(400);
+      const page = activeView.current;
+      if (page) sendCommand(page, "focus");
+      const node = probes.current.get(id);
+      if (!node) continue;
+      const state = await readExtensionAction(node).catch(() => null);
+      if (!state) continue;
+      last = state;
+      if (TEST_HOOKS) console.error(`ND_APP ACTIONSTATE ${JSON.stringify(state)} active=${activeUrl.current}`);
+      if (state.tabUrl === activeUrl.current) {
+        setActionStates((m) => ({ ...m, [id]: state }));
+        return { state, matched: true };
+      }
+    }
+    return last ? { state: last, matched: false } : null;
+  }
+
+  /// Badges and titles are per tab, so every change of the tab on show and
+  /// every change the registry reports reads them again.
+  function refreshActionStates(): void {
+    for (const id of probes.current.keys()) void readActionFor(id, 4);
+  }
+
+  async function probeFor(id: string): Promise<NdNodeRef<"webview"> | null> {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const node = probes.current.get(id);
+      if (node) return node;
+      await Bun.sleep(100);
+    }
+    return null;
+  }
+
   /// A second click on the action that is already open closes it, which is
-  /// what Chrome's own toolbar button does.
-  function openExtensionPopup(id: string): void {
+  /// what Chrome's own toolbar button does. Anything else is decided on the
+  /// action's live state: an extension that switched its popup off wants the
+  /// click to reach `chrome.action.onClicked`, which cannot fire without a
+  /// Chromium toolbar, so the nearest thing it would do is open its own
+  /// setup page.
+  function openExtensionPopup(row: ExtensionRow): void {
     setExtensionsOpen(false);
-    if (popupId === id) {
+    if (popupId === row.id) {
       setPopupId("");
       return;
     }
+    if (checkingRef.current === row.id) return;
+    checkingRef.current = row.id;
+    setCheckingAction(row.id);
+    void decideAction(row);
+  }
+
+  async function decideAction(row: ExtensionRow): Promise<void> {
+    await probeFor(row.id);
+    const read = await readActionFor(row.id, 6);
+    if (checkingRef.current !== row.id) return;
+    checkingRef.current = "";
+    setCheckingAction("");
+    // No answer at all is an engine that cannot say, not an extension that
+    // switched its popup off: the manifest is all there is to go on. An
+    // answer for another tab still carries the extension's own default,
+    // which is what a tab with no override of its own gets.
+    const live = read ? read.state.popupUrl : row.popupUrl;
+    if (TEST_HOOKS) console.error(`ND_APP ACTION id=${row.id} matched=${read?.matched ?? false} popup=${JSON.stringify(live)}`);
+    if (live === "") {
+      if (row.optionsUrl) openTab(row.optionsUrl);
+      return;
+    }
     setPopupSize({ width: POPUP_DEFAULT_WIDTH, height: POPUP_DEFAULT_HEIGHT });
-    setPopupId(id);
+    setPopupUrl(live);
+    setPopupId(row.id);
   }
 
   function closeExtensionPopup(): void {
     setPopupId("");
   }
 
-  /// What the button says it will do. An extension with no popup cannot be
-  /// triggered at all here: there is no Chromium toolbar button for
+  /// The live state for the tab on show, or null when the last answer was for
+  /// another one.
+  function actionState(id: string): ExtensionActionState | null {
+    const state = actionStates[id];
+    return state && state.tabUrl === active.url ? state : null;
+  }
+
+  /// What the button says it will do: the title the extension set for this
+  /// tab when there is one. An extension with no popup in its manifest cannot
+  /// be triggered at all here: there is no Chromium toolbar button for
   /// `chrome.action.onClicked` to fire on.
   function popupTooltip(row: ExtensionRow): string {
     if (!row.enabled) return `${row.name} is turned off`;
-    return row.popupUrl ? row.name : `${row.name} has no popup`;
+    if (!row.popupUrl) return `${row.name} has no popup`;
+    return actionState(row.id)?.title || row.name;
   }
 
   /// A popup page is not sized by its document here and does not close on blur,
@@ -742,7 +850,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
             refuses a renderer-initiated navigation to a chrome-extension://
             page, so the key remounts the view when another action is opened. */}
         <webview
-          key={row.popupUrl}
+          key={popupUrl}
           ref={(node) => {
             popupView.current = node as NdNodeRef<"webview"> | null;
             if (!node || popupHooked.current === node.id) return;
@@ -750,7 +858,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
             sendCommand(node as NdNodeRef<"webview">, "registerScriptMessage", { name: "ndPopup" });
             fitPopup(node as NdNodeRef<"webview">);
           }}
-          url={row.popupUrl}
+          url={popupUrl}
           testID={`ext-popup-view-${row.id}`}
           style={{ hexpand: true, vexpand: true }}
           onLoadingChanged={(e) => {
@@ -770,9 +878,8 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   /// Test-only: `launchApp` passes no argv, so a drive cannot hand the host a
   /// `--load-extension`, and the Web Store needs the network. The app's own
   /// install API is the one route left.
-  function installTestExtension(): void {
+  function installTestExtension(dir: string | undefined): void {
     const node = extRegistry.current;
-    const dir = process.env.NB_TEST_EXT;
     if (!node || !dir) return;
     void installExtension(node, dir)
       .then(() => refreshExtensions())
@@ -971,6 +1078,11 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
   const siteDecisions = decisionsFor(prefs.sitePermissions, activeOrigin);
   const rows = extensionRows(registry, extActions);
   const pinnedActions = pinnedRows(rows, prefs.pinnedExtensions);
+  /// The actions whose live state is wanted: every toolbar button, for its
+  /// badge, and the one a click is being decided for.
+  const probeRows = rows.filter(
+    (r) => r.enabled && probeUrl(r) !== "" && (prefs.pinnedExtensions.includes(r.id) || r.id === checkingAction),
+  );
   /// An action opened from the panel rather than from a button of its own has
   /// nowhere to hang, so its popup rides the puzzle piece.
   const openAction = rows.find((r) => r.id === popupId) ?? null;
@@ -1539,15 +1651,27 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                   that was clicked; an unpinned one opens under the puzzle. */}
               {chromium && pinnedActions.map((row) => (
                 <box slot="end" key={row.id} testID={`ext-pin-${row.id}`} orientation="horizontal">
-                  <button
-                    testID={`ext-action-${row.id}`}
-                    iconData={row.iconData || undefined}
-                    iconName="application-x-addon-symbolic"
-                    tooltip={popupTooltip(row)}
-                    cssClasses={["flat"]}
-                    enabled={row.enabled && row.popupUrl !== ""}
-                    onClick={() => openExtensionPopup(row.id)}
-                  />
+                  {/* The badge floats over the icon's top corner, where
+                      Chrome draws it, rather than widening the button. */}
+                  <overlay testID={`ext-action-stack-${row.id}`}>
+                    <button
+                      testID={`ext-action-${row.id}`}
+                      iconData={row.iconData || undefined}
+                      iconName="application-x-addon-symbolic"
+                      tooltip={popupTooltip(row)}
+                      cssClasses={["flat"]}
+                      enabled={row.enabled && row.popupUrl !== ""}
+                      onClick={() => openExtensionPopup(row)}
+                    />
+                    {actionState(row.id)?.badgeText ? (
+                      <badge
+                        testID={`ext-badge-${row.id}`}
+                        label={actionState(row.id)!.badgeText}
+                        variant={badgeVariant(actionState(row.id)!.badgeColor)}
+                        style={{ halign: "end", valign: "start" }}
+                      />
+                    ) : null}
+                  </overlay>
                   <popover
                     testID={`ext-popup-${row.id}`}
                     open={popupId === row.id}
@@ -1604,7 +1728,7 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                             cssClasses={["flat"]}
                             enabled={row.enabled && row.popupUrl !== ""}
                             style={{ hexpand: true }}
-                            onClick={() => openExtensionPopup(row.id)}
+                            onClick={() => openExtensionPopup(row)}
                           />
                           <togglebutton
                             testID={`ext-pin-toggle-${row.id}`}
@@ -1635,7 +1759,15 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                         testID="extensions-install-test"
                         label="Install the test extension"
                         cssClasses={["flat"]}
-                        onClick={installTestExtension}
+                        onClick={() => installTestExtension(process.env.NB_TEST_EXT)}
+                      />
+                    )}
+                    {TEST_HOOKS && (
+                      <button
+                        testID="extensions-install-action-test"
+                        label="Install the action test extension"
+                        cssClasses={["flat"]}
+                        onClick={() => installTestExtension(process.env.NB_TEST_EXT_ACTION)}
                       />
                     )}
                   </box>
@@ -1926,7 +2058,10 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                       // An empty answer means the watcher attached to nothing,
                       // and a Web Store install would then never show up until
                       // the panel was opened by hand.
-                      void watchExtensions(view, () => refreshExtensions())
+                      void watchExtensions(view, () => {
+                        refreshExtensions();
+                        refreshActionStates();
+                      })
                         .then((watched) => {
                           if (watched.length === 0) console.error("ND_APP EXTWATCH attached to nothing");
                           else if (TEST_HOOKS) console.error(`ND_APP EXTWATCH watching ${watched.length}`);
@@ -1945,6 +2080,40 @@ export function App({ initialHistory, initialWidth, initialHeight }: AppProps): 
                     onExtensionsChanged={onExtensionsChanged}
                   />
                 </box>
+
+                {/* One hidden view per action whose live state is wanted,
+                    created at a page of that extension (see probes). 2px for
+                    the same reason as the registry view. */}
+                {chromium &&
+                  probeRows.map((row) => (
+                    <box
+                      key={row.id}
+                      testID={`ext-probe-${row.id}`}
+                      orientation="horizontal"
+                      style={{ halign: "start", valign: "end", minWidth: 2, minHeight: 2 }}
+                    >
+                      <webview
+                        key={probeUrl(row)}
+                        ref={(node) => {
+                          const probe = node as NdNodeRef<"webview"> | null;
+                          if (!probe) {
+                            probes.current.delete(row.id);
+                            probeArmed.current.delete(row.id);
+                            return;
+                          }
+                          probes.current.set(row.id, probe);
+                          if (probeArmed.current.get(row.id) === probe.id) return;
+                          probeArmed.current.set(row.id, probe.id);
+                          void readActionFor(row.id, 10);
+                        }}
+                        url={probeUrl(row)}
+                        testID={`ext-probe-view-${row.id}`}
+                        style={{ minWidth: 2, minHeight: 2 }}
+                        onJavaScriptResult={onJavaScriptResult}
+                        onExtensionActions={onExtensionActions}
+                      />
+                    </box>
+                  ))}
 
                 {/* Chrome's find bar: it floats over the top right of the page
                     rather than taking a row of layout, so opening it never

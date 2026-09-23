@@ -89,6 +89,8 @@ const server = Bun.serve({
           '<script>navigator.requestMIDIAccess({ sysex: true }).then(() => { document.title = "midi:ok"; },' +
             ' () => { document.title = "midi:no"; });</script>',
         );
+      case "/action":
+        return page("action", "Action page", "<h1>Action page</h1>");
       case "/search":
         return page("search", "Search results", "<h1>Search results</h1>");
       case "/setcookie":
@@ -398,6 +400,8 @@ function launch(storeDir: string): Promise<AppHandle> {
       // The unpacked extension the drive installs through the app's own
       // install API: launchApp passes no argv, so --load-extension is out.
       NB_TEST_EXT: resolve(import.meta.dir, "../fixtures/nd-test-ext"),
+      // Declares a popup, switches it off at runtime and sets a badge.
+      NB_TEST_EXT_ACTION: resolve(import.meta.dir, "../fixtures/nd-action-ext"),
       NB_TEST_JS: "document.getElementById('open').click()",
       // What the Debug menu's "Context: save image" hook downloads.
       NB_TEST_IMAGE: `${base}/image.png`,
@@ -419,12 +423,14 @@ function launch(storeDir: string): Promise<AppHandle> {
       // Kept rather than read back from the tail: the engine writes hundreds
       // of lines a second, and the tail has moved on by the time a leg looks.
       if (line.includes("ND_APP PERMISSION")) permissionTraces.push(line.trim());
+      if (line.includes("ND_APP ACTION ")) actionTraces.push(line.trim());
     },
   });
 }
 
 const menuTraces: string[] = [];
 const permissionTraces: string[] = [];
+const actionTraces: string[] = [];
 
 interface MenuTraceItem {
   id?: string;
@@ -1199,6 +1205,58 @@ try {
     await step("close it", () => app.click("menu-close-tab"));
     await waitRows(app, (r) => r.length === extTabsBefore, "the tab count back where it started");
     console.log(`19. extensions: ${extRow.text} installed, pinned, popup ${popupBox.w}x${popupBox.h}, unpinned`);
+
+    // An action is opened on its LIVE state, not its manifest. The fixture
+    // declares a popup and switches it off at runtime, which is what 1Password
+    // does until an account is set up; the owner saw its splash for ever
+    // because the app opened the manifest's popup anyway. A click on such an
+    // action opens the extension's setup page instead, and the badge it sets
+    // is drawn on the button.
+    await step("open the panel for the action fixture", () => app.click("extensions-button"));
+    await step("install the action fixture", () => clickWhenReady(app, "extensions-install-action-test"));
+    const actionId = await step("the action fixture gets a row", async () => {
+      const deadline = Date.now() + PATIENCE;
+      while (Date.now() < deadline) {
+        let found = "";
+        walk((await app.tree(mainWindow)).root, (n) => {
+          if (n.testID?.startsWith("ext-row-") && n.text === "ND Action Extension") found = n.testID.slice(8);
+        });
+        if (found) return found;
+        await Bun.sleep(200);
+      }
+      return fail("no row for ND Action Extension");
+    });
+    await step("pin the action fixture", () => clickWhenReady(app, `ext-pin-toggle-${actionId}`));
+    await step("close the panel", () => app.click("extensions-button"));
+    await goTo(app, `${base}/action`);
+    await waitUrl(app, "/action");
+    const badge = await step("the badge the extension set is on its button", () =>
+      waitText(app, `ext-badge-${actionId}`, (t) => t === "7", "the badge reading 7"),
+    );
+    const actionTabsBefore = (await tabRows(app)).length;
+    await step("click the action", () => app.click(`ext-action-${actionId}`));
+    const onboarding = await waitRows(
+      app,
+      (r) => r.length === actionTabsBefore + 1 && r[r.length - 1] === "ND Action onboarding",
+      "the extension's setup page in a tab of its own",
+    );
+    const decided = actionTraces.find((line) => line.includes(`id=${actionId}`)) ?? "";
+    if (!decided.includes('popup=""')) fail(`the click was decided on ${JSON.stringify(decided)}, want the live popup ""`);
+    if (await app.find(`ext-popup-view-${actionId}`)) fail("the popup the extension switched off was mounted anyway");
+    if (actionTraces.filter((line) => line.includes(`id=${actionId}`)).length !== 1) {
+      fail(`one click decided more than once: ${JSON.stringify(actionTraces)}`);
+    }
+    await step("close the setup page", () => app.click("menu-close-tab"));
+    await waitRows(app, (r) => r.length === actionTabsBefore, "the tab count back where it started");
+    await step("open the panel to unpin", () => app.click("extensions-button"));
+    await step("unpin the action fixture", () => clickWhenReady(app, `ext-pin-toggle-${actionId}`));
+    await step("its button goes", () =>
+      app.waitFor({ testId: `ext-action-${actionId}`, state: "gone" }, { timeoutMs: PATIENCE }),
+    );
+    await step("close the panel", () => app.click("extensions-button"));
+    console.log(
+      `19b. a popup switched off at runtime is not shown: badge ${JSON.stringify(badge)}, click opened ${JSON.stringify(onboarding[onboarding.length - 1])} (${decided.slice(decided.indexOf("ND_APP"))})`,
+    );
   }
 
   // Permissions. Under 0.4.9 Chromium draws no prompt of its own, so the app
