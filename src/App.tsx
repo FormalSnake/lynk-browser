@@ -10,7 +10,14 @@ import {
   onExtensionsList,
   onJavaScriptResult,
   openPath,
+  pauseDownload,
   readExtensionAction,
+  respondDownload,
+  resumeDownload,
+  revealPath,
+  cancelDownload,
+  startDownload as engineStartDownload,
+  dialog,
   sendCommand,
   triggerExtensionAction,
   uninstallExtension as removeExtension,
@@ -25,6 +32,8 @@ import {
 import type {
   ContextMenuItem,
   ContextMenuItemClick,
+  DownloadRequest,
+  DownloadUpdate,
   ExtensionAction,
   ExtensionActionState,
   InstalledExtension,
@@ -45,11 +54,32 @@ import {
   type MoveTarget,
   type WindowController,
 } from "./BrowserWindow.tsx";
-import type { DownloadItem, EngineDownload } from "./lib/downloads.ts";
-import { downloadDir, downloadTarget, runDownload } from "./lib/downloads.ts";
+import { homedir } from "node:os";
+import { basename, dirname, join } from "node:path";
+import { type DownloadActions } from "./Downloads.tsx";
+import {
+  addDownload,
+  clearDownloads,
+  discardDangerous,
+  downloadDir,
+  downloadName,
+  downloads,
+  ensureDir,
+  fetchToFile,
+  isActive,
+  isDangerous,
+  keepDangerous,
+  newDownloadId,
+  patchDownload,
+  removeDownload,
+  reservedPaths,
+  uniquePath,
+  type DownloadItem,
+} from "./lib/downloads.ts";
+import { nativePage } from "./lib/pages.ts";
 import { extensionRows, pinnedRows, probeUrl, togglePinned, type ExtensionRow } from "./lib/extensions.ts";
 import { fetchFavicon, rememberFavicon } from "./lib/favicons.ts";
-import { recentVisits, recordTitle, recordVisit, type Visit } from "./lib/history.ts";
+import { clearVisits, recentVisits, recordTitle, recordVisit, type Visit } from "./lib/history.ts";
 import {
   forgetOrigin,
   rememberDecision,
@@ -120,7 +150,6 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   // ref, so it "arms" visibly for one frame first (see the arming comment
   // below).
   const [armedTabs, setArmedTabs] = useState<Record<string, boolean>>({});
-  const [downloads, setDownloads] = useState<DownloadItem[]>([]);
   const [history, setHistory] = useState<Visit[]>(initialHistory);
   const [finds, setFinds] = useState<Record<string, FindState>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -193,11 +222,13 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// against a host that cannot start CEF falls back to the system engine and
   /// says so only on stderr, and everything chrome:// is a dead end there.
   const [engine, setEngine] = useState<"unknown" | "chromium" | "system">("unknown");
-  /// Download ids only have to be unique within a run, and a short one keeps
-  /// the panel's row testIDs readable.
-  const downloadSeq = useRef(0);
-  /// Engine download id to the app's own, while Chromium runs the transfer.
+  /// The engine's id for a download, per run, to the app's own, which lasts.
   const engineDownloads = useRef(new Map<string, string>());
+  /// A retry restarts the download from its URL; the request that comes back
+  /// for that URL takes over the row it came from.
+  const retrying = useRef(new Map<string, string>());
+  /// Tabs left on a download's address until it ends, by engine id.
+  const downloadTabs = useRef(new Map<string, string[]>());
 
   const rt = (id: string): Runtime => runtime[id] ?? IDLE;
   const patch = (id: string, part: Partial<Runtime>): void =>
@@ -268,7 +299,13 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   // ---------------------------------------------------------------- tabs ---
 
   /// Returns the new tab's id: chrome.tabs.create has to answer with a tab.
-  function openTab(windowId: string, url: string, background = false, index?: number): string {
+  function openTab(windowId: string, rawUrl: string, background = false, index?: number): string {
+    const page = nativePage(rawUrl);
+    if (page && page !== "newtab") {
+      openNativePage(page);
+      return "";
+    }
+    const url = page === "newtab" ? "" : rawUrl;
     if (url !== "" && !reachable(url)) return "";
     let created = "";
     session.update((s) => {
@@ -300,6 +337,15 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     openTab(windowOfTab(session.get(), fromTab)?.id ?? focusedWindowId, target, true);
   }
 
+  /// Where a native page's routes land: its panel in the focused window, the
+  /// command bar for tab search. The new tab page is a tab with no address,
+  /// so its routes never reach here.
+  function openNativePage(page: "downloads" | "history" | "bookmarks" | "tabSearch"): void {
+    const controller = controllers.current.get(focusedWindowId);
+    if (page === "tabSearch") controller?.openSwitcher();
+    else controller?.openPanel(page);
+  }
+
   /// A Chrome shortcut the page had the keyboard for (cmd+shift+N, cmd+Y, …).
   /// The engine refuses Chromium's own window or panel for it and names the
   /// command instead; this runs the app's equivalent, and drops the ones the
@@ -324,9 +370,11 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
       case "previousTab":
         return cycleTab(windowId, -1);
       case "downloads":
-        return controller?.openDownloads();
       case "history":
-        return controller?.openPalette("");
+      case "bookmarks":
+        return controller?.openPanel(name);
+      case "bookmarkPage":
+        return controller?.bookmarkPage();
       case "settings":
         return setSettingsOpen(true);
       case "extensions":
@@ -513,7 +561,11 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
 
   function navigate(id: string, raw: string): void {
     const target = toUrl(raw);
-    if (!target || !reachable(target)) return;
+    if (!target) return;
+    const page = nativePage(target);
+    if (page === "newtab") return setTabUrl(id, "");
+    if (page) return openNativePage(page);
+    if (!reachable(target)) return;
     patch(id, { error: null });
     // Entering the address you are already on reloads, like every browser. The
     // url prop alone cannot express that: it is unchanged, so nothing commits.
@@ -546,6 +598,17 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     // nothing happened, not the user going somewhere, and writing it into the
     // tab would put about:blank in the restored session.
     if (url === "about:blank" && (tabOf(id)?.url ?? "") !== "") return;
+    // A link, a redirect or a restored tab reaching one of Chromium's pages the
+    // app draws itself: the tab goes back to what it was showing (the new tab
+    // page when that is nothing) and the native surface opens instead.
+    const page = nativePage(url);
+    if (page) {
+      if (page !== "newtab") openNativePage(page);
+      const back = committed.current.get(id);
+      if (page !== "newtab" && rt(id).canGoBack && back) command(id, "goBack");
+      else setTabUrl(id, "");
+      return;
+    }
     // A page that navigated away is not waiting for its own answer any more,
     // and the id would otherwise stay in the queue for ever.
     denyPromptsFor(id);
@@ -1091,59 +1154,255 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     }
   }
 
-  function startDownload(url: string, suggested?: string, engine?: EngineDownload): void {
-    // A download is not a navigation: whichever tab aimed at this URL goes back
-    // to the page it was showing, so the restored session never points at it.
+  // ----------------------------------------------------------- downloads ---
+  //
+  // Chromium runs every download: the page's cookies, POST bodies, blob: URLs
+  // and the download attribute all behave as they do in Chrome. The app
+  // decides where each one goes, draws every surface for it and keeps the
+  // list. On the system engine the transfer is Bun's instead (fetchToFile).
+
+  /// Any live Chromium view carries a download command: a download is the
+  /// engine's, not the tab's.
+  function engineView(): NdNodeRef<"webview"> | null {
+    for (const t of allTabs) {
+      const node = views.current.get(t.id);
+      if (node) return node;
+    }
+    return extRegistry.current;
+  }
+
+  function showDownloads(): void {
+    controllers.current.get(focusedWindowId)?.openDownloads();
+  }
+
+  /// A download is not a navigation: whichever tab aimed at its URL goes back
+  /// to the page it was showing, so the restored session never points at it.
+  /// A tab with no page to go back to keeps its view until the download ends
+  /// (`settleDownloadTabs`): its view is the browser Chromium runs the
+  /// transfer in, and emptying the tab would remove it.
+  function leaveDownloadTab(url: string, engineId?: string): void {
+    const waiting: string[] = [];
     session.update((s) => ({
       ...s,
       windows: s.windows.map((w) => ({
         ...w,
-        tabs: w.tabs.map((t) => (t.url === url ? { ...t, url: committed.current.get(t.id) ?? "" } : t)),
+        tabs: w.tabs.map((t) => {
+          if (t.url !== url) return t;
+          const back = committed.current.get(t.id);
+          if (back === undefined && engineId) {
+            waiting.push(t.id);
+            return t;
+          }
+          return { ...t, url: back ?? "" };
+        }),
       })),
     }));
+    if (engineId && waiting.length) downloadTabs.current.set(engineId, waiting);
+  }
 
-    const id = `d${downloadSeq.current++}`;
-    const guess = suggested || fileNameFromUrl(url);
-    if (engine) {
-      const path = downloadTarget(guess);
-      const name = path.slice(path.lastIndexOf("/") + 1);
-      engineDownloads.current.set(engine.id, id);
-      setDownloads((d) => [{ id, name, url, path, state: "running" }, ...d]);
-      controllers.current.get(focusedWindowId)?.openDownloads();
-      engine.respond(path);
+  function settleDownloadTabs(engineId: string): void {
+    const ids = downloadTabs.current.get(engineId);
+    if (!ids) return;
+    downloadTabs.current.delete(engineId);
+    for (const id of ids) setTabUrl(id, committed.current.get(id) ?? "");
+  }
+
+  async function onDownloadRequested(node: NdNodeRef<"webview"> | null, req: DownloadRequest): Promise<void> {
+    // One answer per download: a request can reach the app on more than one
+    // view's handler, and a second answer would cancel the first.
+    if (TEST_HOOKS) console.error(`ND_APP DL request ${req.id ?? "-"} ${req.url} known=${req.id ? engineDownloads.current.has(req.id) : false}`);
+    if (req.id && engineDownloads.current.has(req.id)) return;
+    leaveDownloadTab(req.url, req.id);
+    if (!req.id) {
+      void fetchDownload(req.url, req.suggestedFilename);
       return;
     }
-    setDownloads((d) => [{ id, name: guess, url, path: "", state: "running" }, ...d]);
-    controllers.current.get(focusedWindowId)?.openDownloads();
-    runDownload(url, suggested).then(
-      (done) => {
-        setDownloads((d) => d.map((x) => (x.id === id ? { ...x, ...done, state: "done" as const } : x)));
-        toast(`Saved ${done.name}`);
-      },
-      () => {
-        setDownloads((d) => d.map((x) => (x.id === id ? { ...x, state: "failed" as const } : x)));
-        toast(`Unable to download ${guess}`);
-      },
-    );
+    const engineId = req.id;
+    const retryOf = retrying.current.get(req.url);
+    retrying.current.delete(req.url);
+    const id = retryOf ?? newDownloadId();
+    engineDownloads.current.set(engineId, id);
+    const name = downloadName(req.url, req.suggestedFilename);
+    const fresh: DownloadItem = {
+      id,
+      engineId,
+      url: req.url,
+      name,
+      path: "",
+      state: "pending",
+      received: 0,
+      total: 0,
+      speed: 0,
+      startedAt: Date.now(),
+    };
+    if (retryOf) patchDownload(id, { ...fresh, reason: undefined, endedAt: undefined, partPath: undefined });
+    else addDownload(fresh);
+    showDownloads();
+
+    const dir = ensureDir(downloadDir(prefs.downloadDir));
+    let path = uniquePath(dir, name, reservedPaths(downloads.get().items));
+    if (prefs.askWhereToSave) {
+      const chosen = await dialog.saveFile({ defaultPath: path }).catch(() => null);
+      if (!chosen) {
+        const target = engineView() ?? node;
+        if (target) respondDownload(target, engineId);
+        settleDownloadTabs(engineId);
+        engineDownloads.current.delete(engineId);
+        removeDownload(id);
+        return;
+      }
+      path = chosen;
+    }
+    // A file that runs code lands under Chrome's "Unconfirmed" name and only
+    // takes its own once the user keeps it.
+    const partPath = isDangerous(basename(path))
+      ? join(dirname(path), `Unconfirmed ${100000 + Math.floor(Math.random() * 900000)}.crdownload`)
+      : undefined;
+    patchDownload(id, { path, name: basename(path), partPath, state: "inProgress" });
+    // Any live view carries the answer. The one that asked can be gone by now:
+    // a tab that only held the download went back to the new tab page, which
+    // has no view, while the save panel was up.
+    const target = engineView() ?? node;
+    if (target) respondDownload(target, engineId, partPath ?? path);
   }
 
-  function onDownloadUpdated(data: unknown): void {
-    const u = data as { id: string; state: "running" | "done" | "failed" | "cancelled"; received: number; total: number; path: string };
+  function onDownloadUpdated(u: DownloadUpdate): void {
     const id = engineDownloads.current.get(u.id);
+    if (TEST_HOOKS && u.state !== "running") console.error(`ND_APP DL update ${u.id} ${u.state} row=${id ?? "-"}`);
     if (!id) return;
-    if (u.state !== "running") engineDownloads.current.delete(u.id);
-    const state = u.state === "cancelled" ? "failed" : u.state;
-    let name = "";
-    setDownloads((d) =>
-      d.map((x) => {
-        if (x.id !== id) return x;
-        name = x.name;
-        return { ...x, state, received: u.received, total: u.total, path: u.path || x.path };
-      }),
-    );
-    if (state === "done") toast(`Saved ${name || u.path.slice(u.path.lastIndexOf("/") + 1)}`);
-    if (state === "failed") toast(`Unable to download ${name || "the file"}`);
+    const d = downloads.get().items.find((x) => x.id === id);
+    if (!d) return;
+    const total = u.total > 0 ? u.total : 0;
+    switch (u.state) {
+      case "running": {
+        const state = u.paused ? "paused" : "inProgress";
+        const speed = u.paused ? 0 : (u.speed ?? 0);
+        if (d.state === state && d.received === u.received && d.speed === speed && d.total === total) return;
+        patchDownload(id, { received: u.received, total, speed, state });
+        return;
+      }
+      case "failed":
+        if (d.state !== "interrupted") toast(`Unable to download ${d.name}`);
+        patchDownload(id, { received: u.received, total, speed: 0, state: "interrupted", reason: undefined });
+        return;
+      case "cancelled":
+        settleDownloadTabs(u.id);
+        engineDownloads.current.delete(u.id);
+        patchDownload(id, { speed: 0, state: "cancelled", engineId: undefined, endedAt: Date.now() });
+        return;
+      case "done":
+        settleDownloadTabs(u.id);
+        engineDownloads.current.delete(u.id);
+        patchDownload(id, {
+          received: u.received,
+          total: total || u.received,
+          speed: 0,
+          state: d.partPath ? "dangerous" : "complete",
+          path: d.partPath ? d.path : u.path || d.path,
+          engineId: undefined,
+          endedAt: Date.now(),
+        });
+        if (d.partPath) showDownloads();
+        else toast(`Saved ${d.name}`);
+        return;
+    }
   }
+
+  async function fetchDownload(url: string, suggested?: string, retryOf?: string): Promise<void> {
+    const dir = ensureDir(downloadDir(prefs.downloadDir));
+    const name = downloadName(url, suggested);
+    const path = uniquePath(dir, name, reservedPaths(downloads.get().items));
+    const id = retryOf ?? newDownloadId();
+    const item: DownloadItem = {
+      id,
+      url,
+      name: basename(path),
+      path,
+      state: "inProgress",
+      received: 0,
+      total: 0,
+      speed: 0,
+      startedAt: Date.now(),
+    };
+    if (retryOf) patchDownload(id, item);
+    else addDownload(item);
+    showDownloads();
+    let last = 0;
+    try {
+      const received = await fetchToFile(url, path, (r, total) => {
+        const now = Date.now();
+        if (now - last < 250) return;
+        last = now;
+        patchDownload(id, { received: r, total });
+      });
+      patchDownload(id, { received, total: received, state: "complete", endedAt: Date.now() });
+      toast(`Saved ${item.name}`);
+    } catch {
+      patchDownload(id, { state: "interrupted", reason: "network" });
+      toast(`Unable to download ${item.name}`);
+    }
+  }
+
+  const downloadActions: DownloadActions = {
+    pause: (d) => {
+      const node = engineView();
+      if (node && d.engineId) pauseDownload(node, d.engineId);
+    },
+    resume: (d) => {
+      const node = engineView();
+      if (node && d.engineId) resumeDownload(node, d.engineId);
+    },
+    cancel: (d) => {
+      const node = engineView();
+      if (node && d.engineId) cancelDownload(node, d.engineId);
+    },
+    retry: (d) => {
+      // Chromium resumes an interrupted download it still has from where it
+      // stopped; anything else starts over from the URL.
+      const node = chromium ? engineView() : null;
+      if (node && d.engineId && engineDownloads.current.has(d.engineId) && d.state === "interrupted") {
+        resumeDownload(node, d.engineId);
+        return;
+      }
+      if (node) {
+        retrying.current.set(d.url, d.id);
+        patchDownload(d.id, { state: "pending", received: 0, speed: 0, reason: undefined });
+        engineStartDownload(node, d.url);
+        return;
+      }
+      void fetchDownload(d.url, d.name, d.id);
+    },
+    open: (d) => {
+      // A drive proves the open without handing its fixture to another app.
+      if (TEST_HOOKS) return void console.error(`ND_APP DL open ${d.path}`);
+      void openPath(d.path).catch(() => toast(`Unable to open ${d.name}`));
+    },
+    reveal: (d) => void revealPath(d.path).catch(() => {}),
+    remove: (d) => {
+      const node = engineView();
+      if (isActive(d) && node && d.engineId) cancelDownload(node, d.engineId);
+      removeDownload(d.id);
+    },
+    keep: (d) => {
+      try {
+        const kept = keepDangerous(d);
+        patchDownload(d.id, kept);
+      } catch {
+        toast(`Unable to keep ${d.name}`);
+      }
+    },
+    discard: (d) => discardDangerous(d),
+    clear: clearDownloads,
+    openFolder: () => void openPath(ensureDir(downloadDir(prefs.downloadDir))).catch(() => {}),
+    showAll: () => openNativePage("downloads"),
+  };
+
+  /// Spread on every view the app has: the engine raises a download on the
+  /// view it came from while that view lives, and on any other after.
+  const downloadHandlers = (node: () => NdNodeRef<"webview"> | null) => ({
+    onDownloadRequested: (e: { data: unknown }) => void onDownloadRequested(node(), e.data as DownloadRequest),
+    onDownloadUpdated: (e: { data: unknown }) => onDownloadUpdated(e.data as DownloadUpdate),
+  });
 
   // ------------------------------------------------------------- render ---
 
@@ -1220,6 +1479,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
           onExtensionsList={onExtensionsList}
           onExtensionActions={onExtensionActions}
           onExtensionsChanged={onExtensionsChanged}
+          {...downloadHandlers(() => extRegistry.current)}
         />
       </box>
 
@@ -1254,6 +1514,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
               style={{ minWidth: 2, minHeight: 2 }}
               onJavaScriptResult={onJavaScriptResult}
               onExtensionActions={onExtensionActions}
+              {...downloadHandlers(() => probes.current.get(row.id) ?? null)}
             />
           </box>
         ))}
@@ -1265,7 +1526,8 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     prefs,
     chromium,
     history,
-    downloads,
+    downloadActions,
+    clearHistory: () => clearVisits().then(refreshHistory),
     prompts,
     rows,
     pinnedActions,
@@ -1405,13 +1667,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                       setFind(t.id, (f) => (r.done ? { ...f, found: r.matchFound } : { ...f, count: r.matchCount ?? null }));
                     }}
                     onContextMenuItemClicked={(e) => onContextMenuItem(t.id, e.data as ContextMenuItemClick)}
-                    onDownloadRequested={(e) => {
-                      const d = e.data as { id?: string; url: string; suggestedFilename?: string };
-                      const node = view(t.id);
-                      const engine = d.id && node ? { id: d.id, respond: (path: string) => sendCommand(node, "respondDownload", { id: d.id, path }) } : undefined;
-                      startDownload(d.url, d.suggestedFilename, engine);
-                    }}
-                    onDownloadUpdated={(e) => onDownloadUpdated(e.data)}
+                    {...downloadHandlers(() => view(t.id))}
                   />
                 </Activity>,
               )}
@@ -1429,8 +1685,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
           onClose={() => setPrivateOpen(false)}
           onSettings={() => setSettingsOpen(true)}
           onDownloads={() => controllers.current.get(focusedWindowId)?.openDownloads()}
-          onDownload={startDownload}
-          onDownloadUpdated={onDownloadUpdated}
+          downloadHandlers={downloadHandlers}
           moveTargets={moveTargets("private").filter((t) => t.id !== "private")}
           onMoveOut={(url, windowId, index) => openTab(windowId, url, false, index)}
           onAdopt={closeTab}
@@ -1452,7 +1707,7 @@ function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
   const pinStyleIndex = Math.max(0, PIN_STYLES.findIndex((p) => p.id === prefs.pinStyle));
 
   return (
-    <window title="Settings" testID="settings-window" defaultWidth={560} defaultHeight={620} onClosed={onClose}>
+    <window title="Settings" testID="settings-window" defaultWidth={640} defaultHeight={620} onClosed={onClose}>
       <toolbarview testID="settings-toolbar">
         <headerbar testID="settings-header" title="Settings" />
         <scrollview testID="settings-scroll" style={{ hexpand: true, vexpand: true }}>
@@ -1509,7 +1764,7 @@ function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
               </settingsgroup>
 
               <settingsgroup testID="settings-startup" title="Startup">
-                <row testID="settings-homepage-row" title="Homepage" subtitle="Opened by new windows. Leave empty for the new tab page.">
+                <row testID="settings-homepage-row" title="Homepage" subtitle="New windows open here, or on the new tab page">
                   <textinput
                     slot="suffix"
                     testID="settings-homepage"
@@ -1527,20 +1782,31 @@ function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
                 />
               </settingsgroup>
 
-              {/* Read-only: the folder is the OS download folder, or whatever
-                  NB_DOWNLOAD_DIR names for a drive run. The row exists so the
-                  answer to "where did that go" is in the app. */}
               <settingsgroup testID="settings-downloads" title="Downloads">
-                <row testID="settings-download-dir-row" title="Save Files To" subtitle={downloadDir()}>
+                <row testID="settings-download-dir-row" title="Save Files To" subtitle={downloadDir(prefs.downloadDir).replace(homedir(), "~")}>
                   <button
                     slot="suffix"
                     testID="settings-download-dir"
-                    label="Open Folder"
-                    cssClasses={["flat"]}
-                    style={{ halign: "end" }}
-                    onClick={() => void openPath(downloadDir()).catch(() => {})}
+                    label="Change…"
+                    style={{ halign: "end", valign: "center" }}
+                    onClick={() =>
+                      void dialog
+                        .openFile({ directories: true, defaultPath: downloadDir(prefs.downloadDir) })
+                        .then((paths) => {
+                          const dir = paths[0];
+                          if (dir) settings.update((x) => ({ ...x, downloadDir: dir }));
+                        })
+                        .catch(() => {})
+                    }
                   />
                 </row>
+                <switchrow
+                  testID="settings-ask-where"
+                  title="Ask Where to Save Each File"
+                  subtitle="Choose a folder and name every time you download"
+                  checked={prefs.askWhereToSave}
+                  onToggled={(e) => settings.update((x) => ({ ...x, askWhereToSave: e.checked }))}
+                />
               </settingsgroup>
             </box>
           </clamp>

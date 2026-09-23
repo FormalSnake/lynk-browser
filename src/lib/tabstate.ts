@@ -1,8 +1,7 @@
 // Per-tab facts both the app root and each browser window read. They are keyed
 // by tab id and live at the root, so a tab moved to another window takes them
 // with it.
-import type { DownloadItem } from "./downloads.ts";
-import { displayUrl, hostOf } from "./url.ts";
+import { displayUrl } from "./url.ts";
 
 /// What the padlock says. `none` is not a verdict: it is the new-tab page and
 /// anything else that never had a chance to be encrypted, and warning there
@@ -88,19 +87,6 @@ export function findSummary(find: FindState): string {
   if (find.count !== null) return find.count === 1 ? "1 match" : `${find.count} matches`;
   if (find.found === null) return "";
   return find.found ? "Found" : "No matches";
-}
-
-/// One line under a download's name. A transfer in flight and one that failed
-/// each say so; a finished one says where it came from, which is the only
-/// thing about it still worth knowing.
-export function downloadStatus(d: DownloadItem): string {
-  if (d.state === "running") {
-    if (d.total && d.total > 0 && d.received !== undefined) return `Downloading… ${Math.floor((d.received / d.total) * 100)}%`;
-    return "Downloading…";
-  }
-  if (d.state === "failed") return "Download failed";
-  const host = hostOf(d.url);
-  return host ? `From ${host}` : "Saved";
 }
 
 /// Addresses a view has to be CREATED at. Chromium refuses a

@@ -22,6 +22,7 @@ import {
   showToast,
   useRef,
   useState,
+  useStoreValue,
 } from "@nativedesktop/react";
 import { Activity } from "react";
 import type {
@@ -34,8 +35,10 @@ import { INSET, Sidebar } from "./Sidebar.tsx";
 import { ADDRESS_MIN_WIDTH, CompactTabs, LAYOUT_BUTTON_WIDTH, tabRunMetrics } from "./CompactTabs.tsx";
 import { ZoomFootControl, ZoomPopover, useZoomPopover, zoomFieldProps } from "./ZoomControl.tsx";
 import { stepZoom, zoomPercent } from "./lib/zoom.ts";
-import type { DownloadItem } from "./lib/downloads.ts";
-import { downloadDir } from "./lib/downloads.ts";
+import { DownloadRow, type DownloadActions } from "./Downloads.tsx";
+import { addBookmark, bookmarks, isBookmarked, removeBookmark } from "./lib/bookmarks.ts";
+import { downloads } from "./lib/downloads.ts";
+import { BookmarksPanel, DownloadsPanel, HistoryPanel, type Panel } from "./Panels.tsx";
 import {
   badgeVariant,
   clampPopup,
@@ -57,13 +60,12 @@ import {
 } from "./lib/permissions.ts";
 import type { SessionState, SessionWindow } from "./lib/session.ts";
 import { KEYS } from "./lib/keys.ts";
-import { omniRows, type OmniMode, type OmniTarget } from "./lib/omnibox.ts";
+import { omniRows, shortcutLabel, type OmniMode, type OmniTarget } from "./lib/omnibox.ts";
 import { SEARCH_ENGINES, engineOf, type Layout, type SettingsState } from "./lib/settings.ts";
 import { parseTabPayload, tabPayload } from "./lib/tabdrag.ts";
 import {
   SECURITY_ICON,
   SECURITY_TOOLTIP,
-  downloadStatus,
   findFailed,
   findSummary,
   tabLabel,
@@ -92,10 +94,11 @@ const EXTENSIONS_PANEL_WIDTH = 300;
 /// The site-info panel, sized for a permission sentence rather than for the
 /// shortest thing it ever holds.
 const SITE_PANEL_WIDTH = 320;
-/// The downloads panel's width. Its file names ellipsize, and an ellipsizing
-/// label asks for no width of its own, so without a floor the panel shrank
-/// until every name read "…".
-const DOWNLOADS_PANEL_WIDTH = 300;
+/// The downloads popover's width. Its file names ellipsize, and on GTK an
+/// ellipsizing label asks for no width of its own, so this floor is what a
+/// name gets: room for the 44 characters shortName leaves, beside a row's
+/// progress and two buttons.
+const DOWNLOADS_PANEL_WIDTH = 440;
 
 /// What the root asks of a window's own chrome. The menu bar belongs to one
 /// window and acts on whichever window is focused, so it reaches the others'
@@ -114,6 +117,12 @@ export interface WindowController {
   /// Test-only: what Esc in the command bar does.
   closePalette(): void;
   openDownloads(): void;
+  /// Opens a panel, or puts it away when it is the one already open: the
+  /// keystroke that brings a panel up also dismisses it.
+  togglePanel(panel: Panel): void;
+  openPanel(panel: Panel): void;
+  /// Bookmark This Page, or let the page go when it is already kept.
+  bookmarkPage(): void;
   openSiteInfo(): void;
   /// Fires the compact address field's padlock, or the sidebar's.
   pressPadlock(): void;
@@ -140,7 +149,8 @@ export interface BrowserContext {
   prefs: SettingsState;
   chromium: boolean;
   history: Visit[];
-  downloads: DownloadItem[];
+  downloadActions: DownloadActions;
+  clearHistory(): Promise<void>;
   prompts: PermissionPrompt[];
   rows: ExtensionRow[];
   pinnedActions: ExtensionRow[];
@@ -249,6 +259,10 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     recent.current = [active.id, ...recent.current.filter((id) => id !== active.id && tabs.some((t) => t.id === id))];
   }
   const [downloadsOpen, setDownloadsOpen] = useState(false);
+  const [panel, setPanel] = useState<Panel | null>(null);
+  // The Bookmark This Page item reads the store while rendering.
+  useStoreValue(bookmarks);
+  const { items: downloadItems } = useStoreValue(downloads);
   const [siteInfoOpen, setSiteInfoOpen] = useState(false);
   const [extensionsOpen, setExtensionsOpen] = useState(false);
   const windowRef = useRef<NdNodeRef<"window"> | null>(null);
@@ -302,7 +316,17 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     openSwitcher,
     commitAddress: () => commitQuery(typedAddress.current, "current"),
     closePalette,
-    openDownloads: () => openPanel("downloads"),
+    // A download starting while the Downloads panel is up is already in view.
+    openDownloads: () => panel !== "downloads" && openPanel("downloads"),
+    openPanel: (next) => {
+      openPanel(null);
+      setPanel(next);
+    },
+    bookmarkPage: () => toggleBookmark(active),
+    togglePanel: (next) => {
+      openPanel(null);
+      setPanel((cur) => (cur === next ? null : next));
+    },
     toggleSidebar: () => setSidebarHidden((h) => !h),
     revealSidebar: (show) => {
       if (split.current) sendCommand(split.current, show ? "revealSidebar" : "concealSidebar");
@@ -448,6 +472,15 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
         return ctx.openFind(active.id);
       case "downloads":
         return openPanel("downloads");
+      case "downloads-all":
+        openPanel(null);
+        return setPanel("downloads");
+      case "history":
+      case "bookmarks":
+        openPanel(null);
+        return setPanel(id as Panel);
+      case "bookmark-page":
+        return toggleBookmark(active);
       case "layout":
         return ctx.setLayout(compact ? "sidebar" : "compact");
       case "private":
@@ -475,7 +508,8 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// the way a second menu replaces the first. GTK leaves an earlier popover
   /// up when another is opened from code, and AppKit's transient popovers
   /// only close on a click outside them.
-  function openPanel(which: "downloads" | "siteInfo" | "extensions" | "popup"): void {
+  function openPanel(which: "downloads" | "siteInfo" | "extensions" | "popup" | null): void {
+    if (which) setPanel(null);
     setDownloadsOpen(which === "downloads");
     setSiteInfoOpen(which === "siteInfo");
     setExtensionsOpen(which === "extensions");
@@ -634,9 +668,48 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     );
   }
 
+  /// Bookmark This Page keeps the page as it is titled; pressed again on a
+  /// kept page, it lets it go.
+  function toggleBookmark(tab: { url: string; title: string }): void {
+    if (!/^https?:/.test(tab.url)) return;
+    if (isBookmarked(tab.url)) {
+      removeBookmark(tab.url);
+      if (toast.current) void showToast(toast.current, { title: "Bookmark removed" });
+    } else {
+      addBookmark(tab.url, tab.title);
+      if (toast.current) void showToast(toast.current, { title: "Bookmarked" });
+    }
+  }
+
+  /// History, bookmarks and downloads, one at a time, over the window.
+  function panels(): React.ReactNode {
+    const open = (url: string): void => {
+      setPanel(null);
+      ctx.navigate(active.id, url);
+    };
+    if (panel === "history") {
+      return (
+        <HistoryPanel
+          onClose={() => setPanel(null)}
+          onOpen={open}
+          onClearData={() => {
+            setPanel(null);
+            ctx.openTab(win.id, "chrome://settings/clearBrowserData");
+          }}
+          onClearHistory={ctx.clearHistory}
+        />
+      );
+    }
+    if (panel === "bookmarks") {
+      return <BookmarksPanel onClose={() => setPanel(null)} onOpen={open} current={active} onToggleCurrent={() => toggleBookmark(active)} />;
+    }
+    if (panel === "downloads") return <DownloadsPanel onClose={() => setPanel(null)} actions={ctx.downloadActions} />;
+    return null;
+  }
+
   // ------------------------------------------------------------- render ---
 
-  const recentDownloads = ctx.downloads.slice(0, DOWNLOADS_SHOWN);
+  const recentDownloads = downloadItems.slice(0, DOWNLOADS_SHOWN);
   const shownUrl = displayUrl(active.url);
   const pageTitle = tabLabel(active);
   const activeOrigin = originOf(active.url);
@@ -893,7 +966,9 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             {moveItems(`${p}menu-`, win, targets)}
             <menuitem role="separator" testID={`${p}menu-sep`} />
             <menuitem testID={`${p}menu-find`} label="Find in Page" onSelect={() => ctx.openFind(active.id)} />
-            <menuitem testID={`${p}menu-downloads`} label="Downloads" onSelect={() => openPanel("downloads")} />
+            <menuitem testID={`${p}menu-show-history`} label="History" onSelect={() => setPanel("history")} />
+            <menuitem testID={`${p}menu-downloads`} label="Downloads" onSelect={() => setPanel("downloads")} />
+            <menuitem testID={`${p}menu-bookmarks`} label="Bookmarks" onSelect={() => setPanel("bookmarks")} />
             <menuitem testID={`${p}menu-settings`} label="Settings" onSelect={ctx.openSettings} />
           </menubutton>
         )}
@@ -1113,49 +1188,28 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 />
               ) : (
                 recentDownloads.map((d) => (
-                  <box key={d.id} orientation="horizontal" spacing={Spacing.sm}>
-                    <image
-                      iconName={d.state === "failed" ? "dialog-warning-symbolic" : "folder-download-symbolic"}
-                      symbolScale="small"
-                      cssClasses={d.state === "failed" ? ["error"] : ["dimmed"]}
-                    />
-                    <box orientation="vertical" style={{ hexpand: true }}>
-                      <label
-                        testID={`${p}downloads-item-${d.id}`}
-                        text={d.name}
-                        ellipsize
-                        // Filled, not started: an ellipsizing label asks for
-                        // one character on GTK and takes the row's width only
-                        // when it is allowed to fill it.
-                        style={{ halign: "fill" }}
-                      />
-                      <label
-                        testID={`${p}downloads-status-${d.id}`}
-                        text={downloadStatus(d)}
-                        cssClasses={["dimmed", "caption"]}
-                        style={{ halign: "start" }}
-                      />
-                    </box>
-                    {/* Only once the transfer has produced a file. */}
-                    {d.state === "done" && (
-                      <button
-                        testID={`${p}downloads-reveal-${d.id}`}
-                        iconName="folder-symbolic"
-                        tooltip="Show in Folder"
-                        cssClasses={["flat"]}
-                        style={{ halign: "end", valign: "center" }}
-                        onClick={() => void revealPath(d.path).catch(() => {})}
-                      />
-                    )}
-                  </box>
+                  <DownloadRow key={d.id} d={d} actions={ctx.downloadActions} prefix={p} compact />
                 ))
               )}
-              <button
-                testID={`${p}downloads-folder`}
-                label="Open Downloads Folder"
-                cssClasses={["flat"]}
-                onClick={() => void openPath(downloadDir()).catch(() => {})}
-              />
+              <box orientation="horizontal" spacing={Spacing.sm} style={{ hexpand: true }}>
+                <button
+                  testID={`${p}downloads-folder`}
+                  label="Open Downloads Folder"
+                  cssClasses={["flat"]}
+                  onClick={ctx.downloadActions.openFolder}
+                />
+                <box orientation="horizontal" style={{ hexpand: true }} />
+                <button
+                  testID={`${p}downloads-all`}
+                  label="Show All"
+                  tooltip={`Every download (${shortcutLabel(KEYS.downloads)})`}
+                  cssClasses={["flat"]}
+                  onClick={() => {
+                    openPanel(null);
+                    setPanel("downloads");
+                  }}
+                />
+              </box>
             </box>
           </popover>
         </box>
@@ -1277,7 +1331,25 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               accelerator={KEYS.layout}
               onSelect={() => ctx.setLayout(compact ? "sidebar" : "compact")}
             />
-            <menuitem testID="menu-downloads" label="Downloads" onSelect={() => menuTarget()?.openDownloads()} />
+            <menuitem
+              testID="menu-downloads"
+              label="Downloads"
+              accelerator={KEYS.downloads}
+              onSelect={() => menuTarget()?.togglePanel("downloads")}
+            />
+            <menuitem
+              testID="menu-bookmarks"
+              label="Bookmarks"
+              accelerator={KEYS.bookmarks}
+              onSelect={() => menuTarget()?.togglePanel("bookmarks")}
+            />
+            <menuitem
+              testID="menu-bookmark-page"
+              label={isBookmarked(menuActive.url) ? "Remove Bookmark" : "Bookmark This Page"}
+              accelerator={KEYS["bookmark-page"]}
+              enabled={/^https?:/.test(menuActive.url)}
+              onSelect={() => toggleBookmark(menuActive)}
+            />
             <menuitem role="separator" testID="menu-view-sep" />
             <menuitem
               testID="menu-zoom-in"
@@ -1432,6 +1504,13 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             </menu>
           )}
           <menu label="History" testID="menu-history">
+            <menuitem
+              testID="menu-show-history"
+              label="Show All History"
+              accelerator={KEYS.history}
+              onSelect={() => menuTarget()?.togglePanel("history")}
+            />
+            <menuitem role="separator" testID="menu-history-sep" />
             {ctx.history.length === 0 ? (
               <menuitem testID="menu-history-empty" label="No History Yet" enabled={false} />
             ) : (
@@ -1685,6 +1764,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             )}
 
             <box testID={`${p}content`} orientation="vertical" spacing={0} style={{ hexpand: true, vexpand: true }}>
+              {panels()}
               {/* Presents over the active window wherever it is mounted. */}
               <commandpalette
                 testID={`${p}palette`}

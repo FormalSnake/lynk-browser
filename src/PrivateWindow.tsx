@@ -9,7 +9,6 @@
 // address field IS the address bar, which is also the only place in the app
 // that exercises `<searchinput>` on GTK.
 import { Platform, Spacing, executeJavaScript, sendCommand, useRef, useState, useStoreValue } from "@nativedesktop/react";
-import type { EngineDownload } from "./lib/downloads.ts";
 import type {
   NdNodeRef,
   SourceTreeAction,
@@ -65,8 +64,13 @@ export interface PrivateWindowProps {
   onClose: () => void;
   onSettings: () => void;
   onDownloads: () => void;
-  onDownload: (url: string, suggested?: string, engine?: EngineDownload) => void;
-  onDownloadUpdated: (data: unknown) => void;
+  /// The root's download handlers, spread on every private view. Private
+  /// browsing hides the trail, it does not refuse the file: what you download
+  /// is still saved, and it lands in the one downloads list the app has.
+  downloadHandlers: (node: () => NdNodeRef<"webview"> | null) => {
+    onDownloadRequested: (e: { data: unknown }) => void;
+    onDownloadUpdated: (e: { data: unknown }) => void;
+  };
   /// The normal windows a tab can be sent to, and the call that reopens one
   /// there. A private page never moves live into a normal window: its
   /// cookies and storage are this window's and nobody else's.
@@ -81,8 +85,7 @@ export function PrivateWindow({
   onClose,
   onSettings,
   onDownloads,
-  onDownload,
-  onDownloadUpdated,
+  downloadHandlers,
   moveTargets,
   onMoveOut,
   onAdopt,
@@ -533,16 +536,7 @@ export function PrivateWindow({
                           const node = views.current.get(t.id);
                           if (e.text === "print" && node) void executeJavaScript(node, "window.print()").catch(() => {});
                         }}
-                        onDownloadRequested={(e) => {
-                          // Private browsing hides the trail, it does not refuse
-                          // the file: what you download is still saved, and it
-                          // lands in the one downloads list the app has.
-                          const d = e.data as { id?: string; url: string; suggestedFilename?: string };
-                          const node = views.current.get(t.id);
-                          const engine = d.id && node ? { id: d.id, respond: (path: string) => sendCommand(node, "respondDownload", { id: d.id, path }) } : undefined;
-                          onDownload(d.url, d.suggestedFilename, engine);
-                        }}
-                        onDownloadUpdated={(e) => onDownloadUpdated(e.data)}
+                        {...downloadHandlers(() => views.current.get(t.id) ?? null)}
                       />
                     </Activity>
                   ))}

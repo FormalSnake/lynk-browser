@@ -69,3 +69,25 @@ export async function recentVisits(limit = 10): Promise<Visit[]> {
     [limit],
   );
 }
+
+/// Everywhere you have been, newest first, one row per URL, for the History
+/// panel. The query matches the address or the title.
+export async function visitsMatching(query: string, limit = 500): Promise<Visit[]> {
+  if (!db) return [];
+  const like = `%${query.trim()}%`;
+  return db.query<Visit>(
+    "SELECT url, MAX(title) AS title, MAX(ts) AS ts FROM visits WHERE url LIKE ? OR title LIKE ? GROUP BY url ORDER BY ts DESC LIMIT ?",
+    [like, like, limit],
+  );
+}
+
+/// Every visit to one address.
+export async function forgetVisit(url: string): Promise<void> {
+  if (!db) return;
+  await db.mutate("DELETE FROM visits WHERE url = ?", [url]);
+}
+
+export async function clearVisits(): Promise<void> {
+  if (!db) return;
+  await db.mutate("DELETE FROM visits");
+}

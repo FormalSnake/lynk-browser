@@ -56,6 +56,10 @@ export interface SettingsState {
   /// pinned. An id that is no longer installed stays here: reinstalling the
   /// extension is meant to bring its button back.
   pinnedExtensions: string[];
+  /// Where downloads are saved. Empty means the system's Downloads folder.
+  downloadDir: string;
+  /// Put up a save panel for every download instead of saving straight away.
+  askWhereToSave: boolean;
 }
 
 export const DEFAULT_SETTINGS: SettingsState = {
@@ -66,6 +70,8 @@ export const DEFAULT_SETTINGS: SettingsState = {
   pinStyle: "icons",
   pinnedExtensions: [],
   sitePermissions: {},
+  downloadDir: "",
+  askWhereToSave: false,
 };
 
 export const settings = createStore<SettingsState>({
@@ -92,6 +98,8 @@ export function normalizeSettings(state: SettingsState): SettingsState {
       ? [...new Set(state.pinnedExtensions.filter((id) => typeof id === "string" && id !== ""))]
       : [],
     sitePermissions: normalizeSitePermissions(state.sitePermissions),
+    downloadDir: typeof state.downloadDir === "string" ? state.downloadDir : "",
+    askWhereToSave: state.askWhereToSave === true,
   };
 }
 

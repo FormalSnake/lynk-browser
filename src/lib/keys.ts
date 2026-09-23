@@ -30,6 +30,11 @@ export const KEYS = {
   "zoom-reset": "primary+0",
   "next-tab": MAC ? "primary+shift+bracketright" : "primary+tab",
   "prev-tab": MAC ? "primary+shift+bracketleft" : "primary+shift+tab",
+  // The panels take Chrome's own chords on each platform.
+  history: MAC ? "primary+y" : "primary+h",
+  downloads: MAC ? "primary+shift+j" : "primary+j",
+  bookmarks: MAC ? "primary+alt+b" : "primary+shift+o",
+  "bookmark-page": "primary+shift+b",
 } as const;
 
 export type KeyId = keyof typeof KEYS;

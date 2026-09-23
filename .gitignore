@@ -5,3 +5,4 @@ CLAUDE.md
 screenshots/
 *.png
 progress/
+.shots-store-*
