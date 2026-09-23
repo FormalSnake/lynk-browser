@@ -6,13 +6,21 @@
 // Two parts, so any layout that owns an address field can carry it:
 // `zoomFieldProps` goes on the field itself, and `<ZoomPopover>` is portalled
 // into the window and anchored to that field's trailing icon.
-import { Spacing, createPortal, useEffect, useRef, useState } from "@nativedesktop/react";
+import { Platform, Spacing, createPortal, useEffect, useRef, useState } from "@nativedesktop/react";
 import type { NdNodeRef } from "@nativedesktop/react";
 import { ZOOM_MAX, ZOOM_MIN, ZOOM_NOTICE_MS, isDefaultZoom, zoomPercent } from "./lib/zoom.ts";
 
 /// The value label's width, sized for the widest value ("500%") so the
 /// buttons beside it never move as the value changes.
 const VALUE_WIDTH = 48;
+
+/// A magnifier on both platforms. SF Symbols has one with the direction in it;
+/// Adwaita's zoom-in and zoom-out are a boxed plus and minus, which read as
+/// "add" in an address field, so GTK gets the plain magnifier.
+function zoomIcon(factor: number): string {
+  if (Platform.backend !== "appkit") return "system-search-symbolic";
+  return factor < 1 ? "zoom-out-symbolic" : "zoom-in-symbolic";
+}
 
 export interface ZoomFieldProps {
   trailingIconName: string;
@@ -26,7 +34,7 @@ export interface ZoomFieldProps {
 export function zoomFieldProps(factor: number, shown: boolean, onClick: () => void): ZoomFieldProps {
   const visible = shown || !isDefaultZoom(factor);
   return {
-    trailingIconName: visible ? (factor < 1 ? "zoom-out-symbolic" : "zoom-in-symbolic") : "",
+    trailingIconName: visible ? zoomIcon(factor) : "",
     trailingIconTooltip: `Zoom: ${zoomPercent(factor)}`,
     trailingIconLabel: "Page zoom",
     onTrailingIconClicked: onClick,

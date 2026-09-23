@@ -72,7 +72,8 @@ const app = await launchApp({
   entry: "src/main.tsx",
   backend: gtk ? "gtk" : undefined,
   hostBinary: process.env.ND_HOST_BINARY,
-  env: { NB_STORE_DIR: STORE },
+  // Region capture composites the popover window into the screenshot (macOS).
+  env: { NB_STORE_DIR: STORE, ND_AUTOMATION_CAPTURE: "region" },
   logPath: LOG,
 });
 const pid = (app as unknown as { pid: number }).pid;
@@ -94,7 +95,7 @@ function capture(): void {
   for (let attempt = 0; attempt < 3; attempt++) {
     // The popover is a window of its own on both backends, so only a region
     // capture includes it, and a region capture can block: bounded.
-    const shot = Bun.spawnSync(["timeout", "30", NDSHOT, "capture", "--pid", String(pid), "--region", "--out", `${SHOTS}/zoom-${tag}.png`]);
+    const shot = Bun.spawnSync(["timeout", "30", process.env.ND_NDSHOT ?? NDSHOT, "capture", "--pid", String(pid), "--region", "--out", `${SHOTS}/zoom-${tag}.png`]);
     if (shot.exitCode === 0) return;
     err = shot.stderr.toString().trim();
   }
@@ -142,7 +143,7 @@ try {
     }
     if (pop!.y - main.y < field!.y + field!.h - 4) fail(`the zoom popover opened at ${pop!.y - main.y}, over the field instead of under it`);
     console.log(`  NB_ZOOM_ANCHOR_OK ${tag} points at ${mid}, field ${field!.x}..${right}, popover ${pop!.width}x${pop!.height}`);
-    capture();
+    await app.screenshot(`${SHOTS}/zoom-${tag}.png`);
   }
   console.log(`  capture ${SHOTS}/zoom-${tag}.png`);
   console.log(`NB_ZOOM_OK ${tag}`);
