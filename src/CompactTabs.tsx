@@ -44,6 +44,13 @@ export interface TabRunMetrics {
   /// has a way to make that slot expand, the app works out the leftover
   /// itself.
   addressWidth: number;
+  /// How many unpinned tabs the row draws. Every widget in a header bar has a
+  /// minimum, and a row whose minimums add up to more than the window makes
+  /// GTK refuse to allocate it: a tiling compositor keeps the window at its
+  /// width and the header breaks, a stacking one grows the window, and the
+  /// window width this file is fed grows with it. So tabs that no longer fit
+  /// at favicon width are left out of the row rather than squeezed into it.
+  shown: number;
 }
 
 /// How wide one tab may be, given the window and how many tabs share the row.
@@ -59,15 +66,19 @@ export function tabRunMetrics(windowWidth: number, tabs: CompactTab[], trailing:
       width: TAB_MAX_WIDTH,
       titled: true,
       addressWidth: Math.max(ADDRESS_MIN_WIDTH, windowWidth - furniture - pinnedRun),
+      shown: 0,
     };
   }
   const run = windowWidth - furniture - ADDRESS_MIN_WIDTH - pinnedRun;
-  const width = Math.max(ICON_TAB_WIDTH, Math.min(TAB_MAX_WIDTH, Math.floor(run / loose) - TAB_GAP));
-  const used = pinnedRun + loose * (width + TAB_GAP);
+  // The active tab is always drawn, so one is the floor even when nothing fits.
+  const shown = Math.max(1, Math.min(loose, Math.floor(run / (ICON_TAB_WIDTH + TAB_GAP))));
+  const width = Math.max(ICON_TAB_WIDTH, Math.min(TAB_MAX_WIDTH, Math.floor(run / shown) - TAB_GAP));
+  const used = pinnedRun + shown * (width + TAB_GAP);
   return {
     width,
     titled: width >= TITLE_FLOOR,
     addressWidth: Math.max(ADDRESS_MIN_WIDTH, windowWidth - furniture - used),
+    shown,
   };
 }
 
@@ -95,17 +106,19 @@ export interface CompactTabsProps {
   onDragEnd: () => void;
 }
 
-/// The slot a point along the row falls in: before the first tab whose
-/// middle it has not reached. The widths are the ones this file hands out,
-/// which is what makes the row's own coordinates enough to answer.
-function indexAt(x: number, tabs: CompactTab[], metrics: TabRunMetrics): number {
+/// The slot a point along the row falls in: before the first drawn tab whose
+/// middle it has not reached, as an index into every tab. The widths are the
+/// ones this file hands out, which is what makes the row's own coordinates
+/// enough to answer.
+function indexAt(x: number, tabs: CompactTab[], shown: CompactTab[], metrics: TabRunMetrics): number {
   let edge = 0;
-  for (let i = 0; i < tabs.length; i++) {
-    const width = tabs[i]!.pinned ? ICON_TAB_WIDTH : metrics.width;
-    if (x < edge + width / 2) return i;
+  for (const t of shown) {
+    const width = t.pinned ? ICON_TAB_WIDTH : metrics.width;
+    if (x < edge + width / 2) return tabs.indexOf(t);
     edge += width + TAB_GAP;
   }
-  return tabs.length;
+  const last = shown[shown.length - 1];
+  return last ? tabs.indexOf(last) + 1 : tabs.length;
 }
 
 export function CompactTabs({
@@ -128,6 +141,7 @@ export function CompactTabs({
   /// The tab the pointer is on, so its close button can appear. One id rather
   /// than a set, because the pointer is in one place.
   const [hovered, setHovered] = useState("");
+  const shownTabs = visibleTabs(tabs, activeId, metrics.shown);
 
   return (
     // GTK propagates hexpand up from any child that sets it, so the run would
@@ -141,14 +155,15 @@ export function CompactTabs({
       spacing={Spacing.xs}
       style={{ hexpand: false }}
       dropTarget
-      onDragOver={(e) => onDragOverIndex(indexAt(e.data.x, tabs, metrics))}
+      onDragOver={(e) => onDragOverIndex(indexAt(e.data.x, tabs, shownTabs, metrics))}
       onDropped={(e) => {
-        const index = indexAt(e.data.x, tabs, metrics);
+        const index = indexAt(e.data.x, tabs, shownTabs, metrics);
         if (process.env.NB_TEST_HOOKS === "1") console.error(`ND_APP DROP ${prefix}tab-strip x=${e.data.x} index=${index}`);
         onDropAt(e.text, index);
       }}
     >
-      {tabs.flatMap((t, i) => {
+      {shownTabs.flatMap((t) => {
+        const i = tabs.indexOf(t);
         const active = t.id === activeId;
         // A pinned tab is its site's icon and nothing else, the way every
         // browser draws one, and it keeps that width however crowded the row
@@ -215,4 +230,15 @@ export function CompactTabs({
       {dropIndex === tabs.length && <separator testID={`${prefix}tab-drop`} orientation="vertical" />}
     </box>
   );
+}
+
+/// Every pinned tab, then the run of `shown` unpinned tabs that holds the
+/// active one, in the order the tabs are in.
+function visibleTabs(tabs: CompactTab[], activeId: string, shown: number): CompactTab[] {
+  const loose = tabs.filter((t) => !t.pinned);
+  if (loose.length <= shown) return tabs;
+  const active = Math.max(0, loose.findIndex((t) => t.id === activeId));
+  const start = Math.min(Math.max(0, active - Math.floor(shown / 2)), loose.length - shown);
+  const keep = new Set(loose.slice(start, start + shown).map((t) => t.id));
+  return tabs.filter((t) => t.pinned || keep.has(t.id));
 }
