@@ -112,6 +112,9 @@ re-focus once focus-return ships. Then relaunch on g815.
   The cursor moves the owner's mouse: such runs hold the mac CEF lock
   (`scripts/mac/cef-gate-lock.sh`, on `startup-window` until it merges).
   Examples: `scripts/mac/cursor-drive.ts`, `region-capture-drive.ts`.
+- GTK widget layer runs on this mac: `bun run dev -- --backend gtk` (Quartz
+  gdk, brew libadwaita). No CEF, no app.cursor, no mac lock needed. Every
+  Arc-mode surface is captured on AppKit and GTK side by side.
 - The app's mac drive (`scripts/mac-drive.sh`, bundled CEF host) stops at leg 2
   until the AppKit palette gap is fixed.
 
