@@ -729,6 +729,58 @@ try {
   await cardLeg("again", null);
   console.log("  NB_SIDEBAR_SWITCH_OK compact dropped the controls row and the card, and the sidebar layout came back whole");
 
+  // ---- 7c: the switch, over and over ----------------------------------------
+  // Every glyph in the foot has a size once the sidebar is back, each time.
+  // NB_SIDEBAR_SWITCHES sets how many round trips (3 by default).
+  const footIds = async (): Promise<string[]> => {
+    const ids: string[] = [];
+    walk((await app.mustFind("bottom-bar")), (n) => {
+      if (n.type === "Button" && n.testID) ids.push(n.testID);
+    });
+    return ids;
+  };
+  const switches = Number(process.env.NB_SIDEBAR_SWITCHES ?? 3);
+  for (let i = 1; i <= switches; i++) {
+    await app.click("menu-layout");
+    await waitFor("the compact row", testIds, (ids) => ids.has("tab-strip"));
+    await app.setWindowSize(i % 2 ? 720 : 1280, 800);
+    await app.click("menu-layout");
+    await waitFor("the sidebar layout again", () => maybeRect("sidebar"), (r) => r !== null);
+    // The same wait the geometry leg makes before it measures the foot.
+    await settle("sidebar");
+    for (const id of await footIds()) {
+      const g = (await app.mustFind(id)).geometry;
+      if (!g || g.w < 20 || g.h < 20) {
+        let later = g;
+        for (let t = 0; t < 20 && (!later || later.w < 20); t++) {
+          await Bun.sleep(150);
+          later = (await app.mustFind(id)).geometry;
+        }
+        fail(`switch ${i}/${switches}: ${id} is ${JSON.stringify(g)} after the sidebar came back, ${JSON.stringify(later)} 3 s on`);
+      }
+    }
+    // Sized in the tree is not drawn: each glyph has to be in the capture,
+    // where the tree says it is.
+    const shot = appkit ? await capture(`switch-${i}`) : null;
+    if (shot) {
+      const w = (await windowRect()).w;
+      for (const id of await footIds()) {
+        const g = (await app.mustFind(id)).geometry!;
+        const spread = Number(
+          sh("python3", "-c", `from PIL import Image
+im = Image.open(${JSON.stringify(shot.path)}).convert("L"); s = im.width / ${w}
+box = im.crop((int(${g.x + 4} * s), int(${g.y + 4} * s), int(${g.x + g.w - 4} * s), int(${g.y + g.h - 4} * s)))
+lo, hi = box.getextrema(); print(hi - lo)`).trim(),
+        );
+        if (spread < 40) {
+          const parent = JSON.stringify(await app.find(id.replace(/-button$/, "-anchor")));
+          fail(`switch ${i}/${switches}: nothing is drawn where ${id} is (${JSON.stringify(g)}, contrast ${spread}); anchor ${parent.slice(0, 200)}`);
+        }
+      }
+    }
+  }
+  console.log(`  NB_SIDEBAR_SWITCHES_OK ${switches} round trips, every foot glyph sized each time`);
+
   // ---- 7a: the foot's popovers ------------------------------------------------
   // Each opens beside or above the foot and stays inside the window, and
   // opening one puts the other away. A real download gives the list a name.
