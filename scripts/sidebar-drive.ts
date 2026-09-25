@@ -609,6 +609,16 @@ try {
   await Bun.sleep(400);
   const over = await rect("content");
   if (JSON.stringify(over) !== JSON.stringify(hidden)) fail(`the reveal resized the page: ${JSON.stringify(hidden)} -> ${JSON.stringify(over)}`);
+  // The panel is the sidebar floated, not a bigger one: inside the window with
+  // its foot on show.
+  {
+    const panel = await rect("sidebar");
+    const foot = await rect("bottom-bar");
+    const win = await windowRect();
+    if (panel.y + panel.h > win.h + 1 || foot.y + foot.h > win.h + 1 || panel.w > win.w / 2) {
+      fail(`the revealed panel does not fit the window (${JSON.stringify({ panel, foot, win })})`);
+    }
+  }
   await capture("revealed");
   if (appkit || !darwin) await pointer("move", 700, 400);
   else await app.click("menu-conceal-sidebar");
