@@ -291,7 +291,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     openPalette,
     openAddress,
     commitAddress: () => commitQuery(typedAddress.current),
-    openDownloads: () => setDownloadsOpen(true),
+    openDownloads: () => openPanel("downloads"),
     toggleSidebar: () => setSidebarHidden((h) => !h),
     revealSidebar: (show) => {
       if (split.current) sendCommand(split.current, show ? "revealSidebar" : "concealSidebar");
@@ -299,9 +299,9 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     revealStrip: (show) => {
       if (contentBars.current) sendCommand(contentBars.current, show ? "revealTopBars" : "concealTopBars");
     },
-    openSiteInfo: () => setSiteInfoOpen(true),
+    openSiteInfo: () => openPanel("siteInfo"),
     showPopup: (id, url) => {
-      setExtensionsOpen(false);
+      openPanel("popup");
       setPopupSize({ width: POPUP_DEFAULT_WIDTH, height: POPUP_DEFAULT_HEIGHT });
       setPopupUrl(url);
       setPopupId(id);
@@ -380,7 +380,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
       case "find":
         return ctx.openFind(active.id);
       case "downloads":
-        return setDownloadsOpen(true);
+        return openPanel("downloads");
       case "layout":
         return ctx.setLayout(compact ? "sidebar" : "compact");
       case "private":
@@ -402,11 +402,22 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     }
   }
 
+  /// One of the window's panels at a time: opening one puts any other away,
+  /// the way a second menu replaces the first. GTK leaves an earlier popover
+  /// up when another is opened from code, and AppKit's transient popovers
+  /// only close on a click outside them.
+  function openPanel(which: "downloads" | "siteInfo" | "extensions" | "popup"): void {
+    setDownloadsOpen(which === "downloads");
+    setSiteInfoOpen(which === "siteInfo");
+    setExtensionsOpen(which === "extensions");
+    if (which !== "popup") setPopupId("");
+  }
+
   // ------------------------------------------------------ extensions ---
 
   function openExtensionsList(): void {
     ctx.refreshExtensions();
-    setExtensionsOpen(true);
+    openPanel("extensions");
   }
 
   /// A second click on the action that is already open closes it, which is
@@ -414,6 +425,8 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// root, on the action's live state.
   function openExtensionPopup(row: ExtensionRow): void {
     setExtensionsOpen(false);
+    setDownloadsOpen(false);
+    setSiteInfoOpen(false);
     if (popupId === row.id) {
       setPopupId("");
       return;
@@ -652,9 +665,9 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   // The controls a popover hangs off. Both layouts draw them, in the header
   // bar (compact) or the sidebar, so each is built once and handed a slot.
   // Without a slot they sit in the sidebar's foot at the window's bottom, so
-  // their popovers open beside it over the page. Opened downward GTK shrinks
-  // one to the room left under the window and then closes it for being under
-  // its minimum size, which shut an extension's popup the moment it opened.
+  // their popovers open upward and stay inside the window. Opened downward
+  // GTK shrinks one to the room left under the window and then closes it for
+  // being under its minimum size.
 
   function siteInfoControl(slot?: "start"): React.ReactNode {
     return (
@@ -784,7 +797,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             {moveItems(`${p}menu-`, win, targets)}
             <menuitem role="separator" testID={`${p}menu-sep`} />
             <menuitem testID={`${p}menu-find`} label="Find in Page" onSelect={() => ctx.openFind(active.id)} />
-            <menuitem testID={`${p}menu-downloads`} label="Downloads" onSelect={() => setDownloadsOpen(true)} />
+            <menuitem testID={`${p}menu-downloads`} label="Downloads" onSelect={() => openPanel("downloads")} />
             <menuitem testID={`${p}menu-settings`} label="Settings" onSelect={ctx.openSettings} />
           </menubutton>
         )}
