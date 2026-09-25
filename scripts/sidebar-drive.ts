@@ -28,7 +28,7 @@
 // when they trail, and no room kept for them when there are none.
 //
 // Marker: NB_SIDEBAR_OK.
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { launchApp, type JsonNode } from "@nativedesktop/test";
@@ -45,6 +45,7 @@ const darwin = process.platform === "darwin";
 const appkit = darwin && process.env.ND_BACKEND !== "gtk";
 const store = mkdtempSync(join(tmpdir(), "nb-sidebar-"));
 const { openPalette, typeQuery } = paletteDriver({ timeoutMs: PATIENCE });
+const DOWNLOADS = mkdtempSync(join(tmpdir(), "nb-sidebar-dl-"));
 
 // ---------------------------------------------------------------- fixture ---
 
@@ -83,6 +84,11 @@ const serve = (port: number) => Bun.serve({
       await new Promise<void>((done) => {
         held.push(done);
         setTimeout(done, PATIENCE);
+      });
+    }
+    if (key === "report.txt") {
+      return new Response("sidebar drive download\n", {
+        headers: { "content-type": "text/plain", "content-disposition": 'attachment; filename="quarterly-report.txt"' },
       });
     }
     const title = PAGES[key] ?? "Slow page";
@@ -161,7 +167,7 @@ const app = await launchApp({
   entry: "src/main.tsx",
   cwd: ROOT,
   hostBinary: process.env.ND_HOST_BINARY,
-  env: { NB_STORE_DIR: store, NB_TEST_HOOKS: "1", ND_APP_ID: "dev.nativebrowser.sidebar" },
+  env: { NB_STORE_DIR: store, NB_DOWNLOAD_DIR: DOWNLOADS, NB_TEST_HOOKS: "1", ND_APP_ID: "dev.nativebrowser.sidebar" },
   readyTimeoutMs: PATIENCE * 2,
   rpcTimeoutMs: PATIENCE,
   logPath: process.env.NB_SIDEBAR_HOST_LOG,
@@ -216,6 +222,19 @@ function sh(...argv: string[]): string {
 
 /// Captures the window with what is over it, and returns a reader whose
 /// points are window points.
+/// The window's area of the screen, popovers and menus included: a popover is
+/// a surface of its own, which a capture of the window leaves out.
+async function captureScreen(name: string): Promise<void> {
+  const path = `${SHOTS}/${appkit ? "mac" : "gtk"}-${name}.png`;
+  if (darwin) {
+    const win = ndshotWindows(app.pid).find((w) => w.title !== "") ?? fail("ndshot sees no app window");
+    sh("timeout", "30", NDSHOT, "capture", "--window-id", String(win.windowID), "--region", "--no-focus", "--out", path);
+  } else if (process.env.DISPLAY) {
+    sh("import", "-window", "root", "-silent", path);
+  }
+  console.log(`  capture ${path}`);
+}
+
 async function capture(name: string): Promise<{ path: string; pixel: (x: number, y: number) => number[] } | null> {
   const path = `${SHOTS}/${appkit ? "mac" : "gtk"}-${name}.png`;
   let ox = 0;
@@ -708,6 +727,60 @@ try {
   if (!tile.text) fail("the second pinned tile lost its letter after the switch back");
   await cardLeg("again", null);
   console.log("  NB_SIDEBAR_SWITCH_OK compact dropped the controls row and the card, and the sidebar layout came back whole");
+
+  // ---- 7a: the foot's popovers ------------------------------------------------
+  // Each opens beside or above the foot and stays inside the window, and
+  // opening one puts the other away. A real download gives the list a name.
+  if (!(darwin && !appkit)) {
+    await openPalette(app);
+    await typeQuery(app, `${base}/report.txt`);
+    await app.setValue("palette", true);
+    await waitFor("the download to land", async () => readdirSync(DOWNLOADS).filter((f) => !f.endsWith(".crdownload")).length, (n) => n > 0);
+  }
+  const openPopovers = async (): Promise<string[]> => {
+    const ids: string[] = [];
+    walk((await app.tree()).root, (n) => {
+      if (n.type === "Popover" && n.visible && (n.geometry?.w ?? 0) > 4) ids.push(n.testID ?? String(n.ref));
+    });
+    return ids;
+  };
+  for (const width of [1280, 720]) {
+    await app.setWindowSize(width, 800);
+    await settle("sidebar");
+    const win = await windowRect();
+    // The extensions controls need the Chromium engine, which the GTK host
+    // on macOS does not have.
+    const pairs = [
+      ["extensions-button", "extensions-panel", "extensions-popover"],
+      ["downloads-button", "downloads-panel", "downloads-popover"],
+    ] as const;
+    const hasExtensions = (await app.find("extensions-button")) !== null;
+    for (const [button, panel, popover] of pairs.filter(([b]) => hasExtensions || b !== "extensions-button")) {
+      await app.click(button);
+      const box = await waitFor(`${panel} to show`, () => maybeRect(panel), (r) => r !== null);
+      await Bun.sleep(500);
+      const up = await openPopovers();
+      if (up.length !== 1 || up[0] !== popover) fail(`width=${width}: after ${button} the open popovers are ${JSON.stringify(up)}`);
+      const pr = await rect(popover);
+      if (pr.x < -1 || pr.y < -1 || pr.x + pr.w > win.w + 1 || pr.y + pr.h > win.h + 1) {
+        fail(`width=${width}: ${popover} ${JSON.stringify(pr)} leaves the window ${win.w}x${win.h}`);
+      }
+      if (panel === "downloads-panel" && !(darwin && !appkit)) {
+        let item: JsonNode | null = null;
+        walk((await app.tree()).root, (n) => {
+          if (!item && n.testID?.startsWith("downloads-item-")) item = n;
+        });
+        const it = item as JsonNode | null;
+        if (!it || it.text !== "quarterly-report.txt" || (it.geometry?.w ?? 0) < 120) {
+          fail(`width=${width}: the download reads ${JSON.stringify(it?.text)} in ${it?.geometry?.w}px`);
+        }
+      }
+      await captureScreen(`popover-${panel}-${width}`);
+      console.log(`  NB_SIDEBAR_POPOVER_OK width=${width} ${popover}=${JSON.stringify(pr)} panel=${JSON.stringify(box)}`);
+    }
+    await app.click("downloads-button");
+    await waitFor("the downloads panel to go", () => maybeRect("downloads-panel"), (r) => r === null);
+  }
 
   // ---- 7b: right-click on each sidebar surface -------------------------------
   // With the real cursor. Whatever menu comes up is captured on its own (a
