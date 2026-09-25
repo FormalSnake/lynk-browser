@@ -252,6 +252,20 @@ async function clickWhenReady(app: AppHandle, testId: string): Promise<void> {
   }
 }
 
+/// A setValue retried until the widget will take it (see clickWhenReady).
+async function setValueWhenReady(testId: string, value: string | boolean): Promise<void> {
+  const deadline = Date.now() + PATIENCE;
+  for (;;) {
+    try {
+      await app.setValue(testId, value);
+      return;
+    } catch (e) {
+      if (Date.now() > deadline) throw e;
+      await Bun.sleep(200);
+    }
+  }
+}
+
 /// Tab row testIDs, polled until they satisfy `check`. A row's title is
 /// whatever its page last called itself, and a page that redirects keeps
 /// changing it; the testID is the tab.
@@ -426,6 +440,13 @@ async function pageInk(app: AppHandle, box: { x: number; y: number; w: number; h
   if (stats.exitCode !== 0) return null;
   const sd = Number(stats.stdout.toString().trim());
   return Number.isFinite(sd) ? sd : null;
+}
+
+/// The whole screen, popovers included: they are surfaces of their own, which
+/// a capture of the window leaves out. X11 only.
+function rootShot(name: string): void {
+  if (!process.env.DISPLAY) return;
+  Bun.spawnSync(["import", "-window", "root", "-silent", `${SHOTS}/${name}.png`]);
 }
 
 // ------------------------------------------------------------------ drive ---
@@ -1269,6 +1290,7 @@ try {
       }
       return fail(`the popup is ${JSON.stringify(box)}, want it fitted under the 360x520 default`);
     });
+    rootShot("19-extension-popup");
     await step("a second click closes it", () => app.click(`ext-action-${extId}`));
     await step("the popup view goes", () =>
       app.waitFor({ testId: `ext-popup-view-${extId}`, state: "gone" }, { timeoutMs: PATIENCE }),
@@ -1293,6 +1315,8 @@ try {
     // action opens the extension's setup page instead, and the badge it sets
     // is drawn on the button.
     await step("open the panel for the action fixture", () => app.click("extensions-button"));
+    await Bun.sleep(500);
+    rootShot("19-extensions-panel");
     await step("install the action fixture", () => clickWhenReady(app, "extensions-install-action-test"));
     const actionId = await step("the action fixture gets a row", async () => {
       const deadline = Date.now() + PATIENCE;
@@ -1310,9 +1334,12 @@ try {
     await step("close the panel", () => app.click("extensions-button"));
     await goTo(app, `${base}/action`);
     await waitUrl(app, "/action");
-    const badge = await step("the badge the extension set is on its button", () =>
-      waitText(app, `ext-badge-${actionId}`, (t) => t === "7", "the badge reading 7"),
-    );
+    // The badge is drawn once the action's state has been read for this tab,
+    // which follows the page load rather than coming with it.
+    const badge = await step("the badge the extension set is on its button", async () => {
+      await app.waitFor({ testId: `ext-badge-${actionId}`, state: "present" }, { timeoutMs: PATIENCE });
+      return waitText(app, `ext-badge-${actionId}`, (t) => t === "7", "the badge reading 7");
+    });
     const actionTabsBefore = (await tabRows(app)).length;
     await step("click the action", () => app.click(`ext-action-${actionId}`));
     const onboarding = await waitRows(
@@ -1740,8 +1767,18 @@ try {
     }
     return fail(`the store lists ${JSON.stringify(stored())}`);
   });
-  await step("type an address into the new window", () => app.setValue(`${secondId}-omnibox`, `${base}/b`));
-  await step("commit it", () => app.click("menu-commit-address"));
+  if (await app.find(`${secondId}-omnibox`)) {
+    await step("type an address into the new window", () => app.setValue(`${secondId}-omnibox`, `${base}/b`));
+    await step("commit it", () => app.click("menu-commit-address"));
+  } else {
+    // The sidebar layout has no address field: the new window's command bar
+    // is where its address is typed.
+    const bar = `${secondId}-palette`;
+    await step("open the new window's command bar", () => app.click("menu-palette"));
+    await app.waitFor({ testId: bar, state: "visible" }, { timeoutMs: PATIENCE });
+    await step("type an address into the new window", () => setValueWhenReady(bar, `${base}/b`));
+    await step("commit it", () => setValueWhenReady(bar, true));
+  }
   await waitRowsIn(`${secondId}-tab-list`, (r) => r[0]?.startsWith("Page B") ?? false, "page B in the new window");
   await step("open settings", () => app.click("menu-settings"));
   await step("turn reopen-on-launch back on", async () => {
