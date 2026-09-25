@@ -1006,9 +1006,10 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
               key={probeUrl(row)}
               ref={(node) => {
                 const probe = node as NdNodeRef<"webview"> | null;
+                // The null call comes on every render too, so the armed id
+                // survives it; a rebuilt probe arrives with a new id.
                 if (!probe) {
                   probes.current.delete(row.id);
-                  probeArmed.current.delete(row.id);
                   return;
                 }
                 probes.current.set(row.id, probe);

@@ -1468,10 +1468,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                         // again.
                         key={active.id}
                         ref={(node) => {
-                          if (!node) {
-                            newTabFocused.current = 0;
-                            return;
-                          }
+                          if (!node) return;
                           if (newTabFocused.current === node.id) return;
                           newTabFocused.current = node.id;
                           sendCommand(node as NdNodeRef<"searchinput">, "focus");
@@ -1538,10 +1535,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                             rather than absent, so the class comes back off. */}
                         <searchinput
                           ref={(node) => {
-                            if (!node) {
-                              findFocused.current = 0;
-                              return;
-                            }
+                            if (!node) return;
                             if (findFocused.current === node.id) return;
                             findFocused.current = node.id;
                             sendCommand(node as NdNodeRef<"searchinput">, "focus");
