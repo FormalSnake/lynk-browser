@@ -104,6 +104,10 @@ const EXTENSIONS_PANEL_WIDTH = 300;
 /// The site-info panel, sized for a permission sentence rather than for the
 /// shortest thing it ever holds.
 const SITE_PANEL_WIDTH = 320;
+/// The downloads panel's width. Its file names ellipsize, and an ellipsizing
+/// label asks for no width of its own, so without a floor the panel shrank
+/// until every name read "…".
+const DOWNLOADS_PANEL_WIDTH = 300;
 
 /// The new tab page's field. Wide enough to read a long address back in,
 /// narrow enough to stay a field rather than a banner across the window.
@@ -965,7 +969,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               testID={`${p}downloads-panel`}
               orientation="vertical"
               spacing={Spacing.sm}
-              style={{ padding: Spacing.sm }}
+              style={{ padding: Spacing.sm, minWidth: DOWNLOADS_PANEL_WIDTH }}
             >
               <label text="Downloads" cssClasses={["heading"]} style={{ halign: "start" }} />
               {recentDownloads.length === 0 ? (
