@@ -18,13 +18,23 @@ const ROW_GAP = 2;
 /// window (the framework's card margin), so the first row and the card's top
 /// edge line up and the gaps around the card read as one.
 export const INSET = 8;
+/// AppKit: the column's leading and trailing margin, and the traffic lights'
+/// gap from the window's left edge and from its top, which a toolbar window
+/// gives them (Search's 19 pt). The first row is 32 tall and the close button
+/// 14, so a top padding of 10 puts its top edge the same 19 down.
+const MAC_MARGIN = 19;
+const MAC_TOP = MAC_MARGIN + 7 - 16;
 /// A pinned tile's height, and its width while three share a row.
 const PIN_HEIGHT = 34;
 const PIN_GAP = 4;
 /// A floor above any tile's natural width, given to tiles and to the fillers
 /// of a short last row alike: expanding boxes share the spare width equally
-/// on top of their natural width, so equal floors make equal tiles.
-const PIN_FLOOR = 52;
+/// on top of their natural width, so equal floors make equal tiles. Adwaita's
+/// flat button measures close to 50 with its padding; AppKit's tile is well
+/// under 40, which is what lets three fit in a narrow column inside its
+/// wider margin. A function: the backend is not known yet when this module
+/// loads.
+const pinFloor = (): number => (Platform.backend === "gtk" ? 52 : 40);
 /// The width the row's trailing glyph (close, or the load spinner) takes,
 /// reserved on every row so a title does not reflow as the pointer crosses
 /// the list.
@@ -132,7 +142,7 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
         testID={`${p}tab-slot-${t.id}`}
         orientation="horizontal"
         cssClasses={["view"]}
-        style={{ hexpand: true, minHeight: PIN_HEIGHT, minWidth: PIN_FLOOR }}
+        style={{ hexpand: true, minHeight: PIN_HEIGHT, minWidth: pinFloor() }}
       >
         <button
           testID={`${p}tab-${t.id}`}
@@ -213,7 +223,12 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
       testID={`${p}sidebar`}
       orientation="vertical"
       spacing={0}
-      style={{ vexpand: true, padding: { top: INSET, left: INSET, right: INSET, bottom: INSET } }}
+      style={{
+        vexpand: true,
+        padding: gtk
+          ? { top: INSET, left: INSET, right: INSET, bottom: INSET }
+          : { top: MAC_TOP, left: MAC_MARGIN, right: MAC_MARGIN, bottom: MAC_TOP },
+      }}
     >
       {/* The window's controls, where the desktop puts them on the leading
           side (all three on macOS); the rest of the row moves the window.
@@ -249,7 +264,7 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
                 {line.map(pin)}
                 {/* A short last row keeps every tile the same width. */}
                 {Array.from({ length: cols - line.length }, (_, i) => (
-                  <box key={`fill-${i}`} orientation="horizontal" style={{ hexpand: true, minWidth: PIN_FLOOR }} />
+                  <box key={`fill-${i}`} orientation="horizontal" style={{ hexpand: true, minWidth: pinFloor() }} />
                 ))}
               </box>
             ))}

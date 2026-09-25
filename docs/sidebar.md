@@ -32,7 +32,7 @@ the ones below, set to each platform's own type and colours rather than copied.
   X11 the CEF page's own window gets a bounding shape.
 - Window controls follow the platform:
   - macOS: the traffic lights sit in the sidebar's first row, vertically
-    centred on it, their leading edge on the same 8 pt margin as the tiles
+    centred on it, the close button as far from the window's left edge as from its top (19 pt, Search's), on the same leading margin as the tiles
     and rows under them (`<windowcontrols side="start">`; the framework moves
     the window's own buttons onto the slot).
   - GTK: the desktop's `gtk-decoration-layout` decides. Buttons it puts on the

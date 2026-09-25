@@ -437,10 +437,10 @@ async function geometryLeg(width: number): Promise<void> {
     const slot = await rect("controls-start");
     const scale = Number(sh("python3", "-c", `from PIL import Image;print(Image.open(${JSON.stringify(shot.path)}).width/${(await windowRect()).w})`).trim());
     const red = redCentroid(shot.path, scale, { x: slot.x - 4, y: 0, w: slot.w + 8, h: row!.y + row!.h + 8 });
-    // The close button's centre is half a button in from the slot's edge,
-    // which is the tiles' edge.
-    if (red.n < 20 || !near(red.y, mid(slot).y) || !near(red.x, slot.x + 7, 1.5)) {
-      fail(`${line}: the close button is at ${red.x.toFixed(1)},${red.y.toFixed(1)} (${red.n} px), not on its slot ${JSON.stringify(slot)}`);
+    // The close button (14 pt) sits as far from the window's left edge as
+    // from its top, and its left edge is the tiles' left edge.
+    if (red.n < 20 || !near(red.y, mid(slot).y) || !near(red.x, red.y, 1) || !near(red.x - 7, firstTile.x, 1)) {
+      fail(`${line}: the close button's centre is ${red.x.toFixed(1)},${red.y.toFixed(1)} (${red.n} px): left gap ${(red.x - 7).toFixed(1)}, top gap ${(red.y - 7).toFixed(1)}, tiles at ${firstTile.x}`);
     }
   }
   console.log(`  NB_SIDEBAR_GEOMETRY_OK ${line} sidebar=${sidebar.w} long=${long.w}`);
@@ -664,12 +664,20 @@ try {
   const plain = await settle("content");
   const win = await windowRect();
   if (!near(plain.x, 0) || !near(plain.x + plain.w, win.w)) fail(`compact's page is still inset: ${JSON.stringify(plain)}`);
-  const compactShot = await capture("compact");
-  if (compactShot && appkit) {
-    // The traffic lights are back where AppKit puts them, in the toolbar.
-    const scale = Number(sh("python3", "-c", `from PIL import Image;print(Image.open(${JSON.stringify(compactShot.path)}).width/${win.w})`).trim());
-    const red = redCentroid(compactShot.path, scale, { x: 0, y: 0, w: 80, h: 60 });
-    if (red.n < 20) fail("compact lost the traffic lights");
+  for (const width of [win.w, 1280]) {
+    if (width !== (await windowRect()).w) {
+      await app.setWindowSize(width, 800);
+      await settle("content");
+    }
+    const compactShot = await capture(`compact-${width}`);
+    if (compactShot && appkit) {
+      // The traffic lights sit in the toolbar band, as far in from the left
+      // edge as from the top.
+      const scale = Number(sh("python3", "-c", `from PIL import Image;print(Image.open(${JSON.stringify(compactShot.path)}).width/${width})`).trim());
+      const red = redCentroid(compactShot.path, scale, { x: 0, y: 0, w: 80, h: 60 });
+      if (red.n < 20) fail("compact lost the traffic lights");
+      if (!near(red.x, red.y, 1)) fail(`compact's close button is ${(red.x - 7).toFixed(1)} from the left edge and ${(red.y - 7).toFixed(1)} from the top`);
+    }
   }
   // Compact's load bar runs along the page's top edge, over the page.
   if (!(darwin && !appkit)) {
