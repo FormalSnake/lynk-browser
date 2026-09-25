@@ -66,7 +66,7 @@ import {
   type SessionState,
   type SessionTab,
 } from "./lib/session.ts";
-import { LAYOUTS, SEARCH_ENGINES, engineOf, settings, type Layout } from "./lib/settings.ts";
+import { LAYOUTS, PIN_STYLES, SEARCH_ENGINES, engineOf, settings, type Layout } from "./lib/settings.ts";
 import { parseTabPayload } from "./lib/tabdrag.ts";
 import {
   IDLE,
@@ -1262,6 +1262,7 @@ function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
   const prefs = useStoreValue(settings);
   const engineIndex = Math.max(0, SEARCH_ENGINES.findIndex((e) => e.id === prefs.searchEngine));
   const layoutIndex = Math.max(0, LAYOUTS.findIndex((l) => l.id === prefs.layout));
+  const pinStyleIndex = Math.max(0, PIN_STYLES.findIndex((p) => p.id === prefs.pinStyle));
 
   return (
     <window title="Settings" testID="settings-window" defaultWidth={560} defaultHeight={620} onClosed={onClose}>
@@ -1288,6 +1289,18 @@ function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
                     onSelectionChanged={(e) => {
                       const layout = LAYOUTS[e.index]?.id ?? "sidebar";
                       settings.update((s) => ({ ...s, layout }));
+                    }}
+                  />
+                </row>
+                <row testID="settings-pins-row" title="Pinned Tabs" subtitle="Icons show each site's favicon; letters are quieter">
+                  <segmentedcontrol
+                    slot="suffix"
+                    testID="settings-pins"
+                    options={PIN_STYLES.map((p) => p.name)}
+                    selectedIndex={pinStyleIndex}
+                    onSelectionChanged={(e) => {
+                      const pinStyle = PIN_STYLES[e.index]?.id ?? "icons";
+                      settings.update((s) => ({ ...s, pinStyle }));
                     }}
                   />
                 </row>

@@ -1292,6 +1292,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               labelFor={tabLabel}
               addressFor={(t) => displayUrl(t.url) || "New Tab"}
               iconFor={faviconFor}
+              pinStyle={ctx.prefs.pinStyle}
               siteInfo={siteInfoControl()}
               extensions={extensionControls()}
               downloads={downloadsControl()}

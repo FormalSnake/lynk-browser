@@ -8,6 +8,7 @@ import { Platform, useState } from "@nativedesktop/react";
 import { Activity } from "react";
 
 import type { SessionTab } from "./lib/session.ts";
+import type { PinStyle } from "./lib/settings.ts";
 
 /// One tab row: a 16 pt favicon and a line of body text with air around it.
 export const TAB_ROW_HEIGHT = 28;
@@ -54,6 +55,8 @@ export interface SidebarProps {
   labelFor: (tab: SessionTab) => string;
   addressFor: (tab: SessionTab) => string;
   iconFor: (url: string) => string | undefined;
+  /// Whether a tile shows the site's icon or only its first letter.
+  pinStyle: PinStyle;
   /// The small glyphs at the foot: the padlock with its site-info popover,
   /// the extension actions, downloads.
   siteInfo: React.ReactNode;
@@ -122,7 +125,7 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
 
   function pin(t: SessionTab): React.ReactNode {
     const live = t.id === activeId;
-    const icon = props.iconFor(t.url);
+    const icon = props.pinStyle === "icons" ? props.iconFor(t.url) : undefined;
     return (
       <box
         key={t.id}

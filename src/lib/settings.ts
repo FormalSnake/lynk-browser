@@ -31,12 +31,22 @@ export const LAYOUTS: { id: Layout; name: string }[] = [
   { id: "compact", name: "Compact" },
 ];
 
+/// How a pinned tab's tile reads: the site's icon (its letter until there is
+/// one), or only the letter, the quieter column.
+export type PinStyle = "icons" | "letters";
+
+export const PIN_STYLES: { id: PinStyle; name: string }[] = [
+  { id: "icons", name: "Icons" },
+  { id: "letters", name: "Letters" },
+];
+
 export interface SettingsState {
   searchEngine: SearchEngineId;
   /// Empty means the new-tab page rather than a site.
   homepage: string;
   restoreOnLaunch: boolean;
   layout: Layout;
+  pinStyle: PinStyle;
   /// What each site may do, by origin and then by permission type. Only the
   /// Allow and Block buttons write here: a prompt dismissed without an answer
   /// is a deny for that request alone, the way Chrome treats it.
@@ -52,6 +62,7 @@ export const DEFAULT_SETTINGS: SettingsState = {
   homepage: "",
   restoreOnLaunch: true,
   layout: "sidebar",
+  pinStyle: "icons",
   pinnedExtensions: [],
   sitePermissions: {},
 };
@@ -71,6 +82,7 @@ export function normalizeSettings(state: SettingsState): SettingsState {
     ...DEFAULT_SETTINGS,
     ...state,
     layout: LAYOUTS.some((l) => l.id === state.layout) ? state.layout : DEFAULT_SETTINGS.layout,
+    pinStyle: PIN_STYLES.some((p) => p.id === state.pinStyle) ? state.pinStyle : DEFAULT_SETTINGS.pinStyle,
     pinnedExtensions: Array.isArray(state.pinnedExtensions)
       ? [...new Set(state.pinnedExtensions.filter((id) => typeof id === "string" && id !== ""))]
       : [],
