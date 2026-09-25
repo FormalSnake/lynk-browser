@@ -709,6 +709,39 @@ try {
   await cardLeg("again", null);
   console.log("  NB_SIDEBAR_SWITCH_OK compact dropped the controls row and the card, and the sidebar layout came back whole");
 
+  // ---- 7b: right-click on each sidebar surface -------------------------------
+  // With the real cursor. Whatever menu comes up is captured on its own (a
+  // menu is a window of its own) for a look at its items, then dismissed.
+  if (appkit) {
+    const targets: [string, string][] = [
+      ["tab-t5", "tab-row"],
+      ["tab-t2", "pinned-tile"],
+      ["new-tab", "new-tab-row"],
+      ["sidebar-settings", "foot"],
+      ["content", "page"],
+    ];
+    const found: string[] = [];
+    for (const [id, name] of targets) {
+      const at = mid(await rect(id));
+      const before = new Set(ndshotWindows(app.pid).map((w) => w.windowID));
+      await app.cursor.click(at, { button: "right" });
+      await Bun.sleep(800);
+      const main = ndshotWindows(app.pid).find((w) => w.title !== "");
+      const menus = ndshotWindows(app.pid).filter((w) => !before.has(w.windowID) && w.windowID !== main?.windowID && w.width < 600);
+      // The screen under the window, menu on top; focusing the window first
+      // would put the menu away.
+      if (menus.length && main) {
+        sh("timeout", "30", NDSHOT, "capture", "--window-id", String(main.windowID), "--region", "--no-focus", "--out", `${SHOTS}/mac-ctx-${name}.png`);
+      }
+      found.push(`${name}=${menus.map((m) => `${m.width}x${m.height}`).join("+") || "none"}`);
+      // Escape puts a menu away; a menu tracks the mouse in its own loop,
+      // which holds the automation socket until it closes.
+      if (menus.length) Bun.spawnSync(["osascript", "-e", 'tell application "System Events" to key code 53']);
+      await Bun.sleep(600);
+    }
+    console.log(`  NB_SIDEBAR_CTX_OK menus opened: ${found.join(" ")}`);
+  }
+
   // ---- 8: the two tile styles ----------------------------------------------
   // Icons by default: the site with a cached favicon shows it, the rest their
   // letter. Letters, chosen in Settings, drop the icon for every tile. Linux
