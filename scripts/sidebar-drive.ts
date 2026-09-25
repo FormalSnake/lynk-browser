@@ -224,15 +224,16 @@ function sh(...argv: string[]): string {
 /// points are window points.
 /// The window's area of the screen, popovers and menus included: a popover is
 /// a surface of its own, which a capture of the window leaves out.
-async function captureScreen(name: string): Promise<void> {
+async function captureScreen(name: string): Promise<string | null> {
   const path = `${SHOTS}/${appkit ? "mac" : "gtk"}-${name}.png`;
   if (darwin) {
     const win = ndshotWindows(app.pid).find((w) => w.title !== "") ?? fail("ndshot sees no app window");
     sh("timeout", "30", NDSHOT, "capture", "--window-id", String(win.windowID), "--region", "--no-focus", "--out", path);
   } else if (process.env.DISPLAY) {
     sh("import", "-window", "root", "-silent", path);
-  }
+  } else return null;
   console.log(`  capture ${path}`);
+  return path;
 }
 
 async function capture(name: string): Promise<{ path: string; pixel: (x: number, y: number) => number[] } | null> {
@@ -775,7 +776,32 @@ try {
           fail(`width=${width}: the download reads ${JSON.stringify(it?.text)} in ${it?.geometry?.w}px`);
         }
       }
-      await captureScreen(`popover-${panel}-${width}`);
+      const shotPath = await captureScreen(`popover-${panel}-${width}`);
+      if (appkit && shotPath) {
+        // The arrow is the popover's only drawing below its body: find its
+        // lowest rows under the body and where they are centred.
+        const btn = await rect(button);
+        const tip = Number(
+          sh(
+            "python3",
+            "-c",
+            `from PIL import Image
+im = Image.open(${JSON.stringify(shotPath)}).convert("RGB"); s = im.width / ${win.w}
+lum = lambda x, y: sum(im.getpixel((int(x * s), int(y * s)))) / 3
+best = None
+lo, hi = ${Math.round(btn.x - 20)}, ${Math.round(btn.x + btn.w + 20)}
+# The row just under the arrow, above the button's glyph, is what the arrow
+# is drawn over: each column is compared with it, so the column's gradient
+# toward the page drops out.
+ref = ${Math.round(btn.y + 2)}
+for y in range(${Math.round(pr.y + pr.h - 14)}, ${Math.round(btn.y)}):
+    xs = [x / 4 for x in range(lo * 4, hi * 4) if lum(x / 4, y) > lum(x / 4, ref) + 10]
+    if 0 < len(xs) and xs[-1] - xs[0] <= 24: best = (xs[0] + xs[-1]) / 2
+print(best if best is not None else -1)`,
+          ).trim(),
+        );
+        if (!near(tip, mid(btn).x, 2)) fail(`width=${width}: ${popover}'s arrow points at x=${tip}, its button's centre is ${mid(btn).x}`);
+      }
       console.log(`  NB_SIDEBAR_POPOVER_OK width=${width} ${popover}=${JSON.stringify(pr)} panel=${JSON.stringify(box)}`);
     }
     await app.click("downloads-button");
