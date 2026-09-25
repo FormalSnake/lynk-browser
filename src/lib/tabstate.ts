@@ -90,7 +90,10 @@ export function findSummary(find: FindState): string {
 /// each say so; a finished one says where it came from, which is the only
 /// thing about it still worth knowing.
 export function downloadStatus(d: DownloadItem): string {
-  if (d.state === "running") return "Downloading…";
+  if (d.state === "running") {
+    if (d.total && d.total > 0 && d.received !== undefined) return `Downloading… ${Math.floor((d.received / d.total) * 100)}%`;
+    return "Downloading…";
+  }
   if (d.state === "failed") return "Download failed";
   const host = hostOf(d.url);
   return host ? `From ${host}` : "Saved";

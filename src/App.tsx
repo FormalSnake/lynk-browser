@@ -43,8 +43,8 @@ import {
   type MoveTarget,
   type WindowController,
 } from "./BrowserWindow.tsx";
-import type { DownloadItem } from "./lib/downloads.ts";
-import { downloadDir, runDownload } from "./lib/downloads.ts";
+import type { DownloadItem, EngineDownload } from "./lib/downloads.ts";
+import { downloadDir, downloadTarget, runDownload } from "./lib/downloads.ts";
 import { extensionRows, pinnedRows, probeUrl, togglePinned, type ExtensionRow } from "./lib/extensions.ts";
 import { fetchFavicon, rememberFavicon } from "./lib/favicons.ts";
 import { recentVisits, recordTitle, recordVisit, type Visit } from "./lib/history.ts";
@@ -184,6 +184,8 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// Download ids only have to be unique within a run, and a short one keeps
   /// the panel's row testIDs readable.
   const downloadSeq = useRef(0);
+  /// Engine download id to the app's own, while Chromium runs the transfer.
+  const engineDownloads = useRef(new Map<string, string>());
 
   const rt = (id: string): Runtime => runtime[id] ?? IDLE;
   const patch = (id: string, part: Partial<Runtime>): void =>
@@ -908,7 +910,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     }
   }
 
-  function startDownload(url: string, suggested?: string): void {
+  function startDownload(url: string, suggested?: string, engine?: EngineDownload): void {
     // A download is not a navigation: whichever tab aimed at this URL goes back
     // to the page it was showing, so the restored session never points at it.
     session.update((s) => ({
@@ -921,6 +923,15 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
 
     const id = `d${downloadSeq.current++}`;
     const guess = suggested || fileNameFromUrl(url);
+    if (engine) {
+      const path = downloadTarget(guess);
+      const name = path.slice(path.lastIndexOf("/") + 1);
+      engineDownloads.current.set(engine.id, id);
+      setDownloads((d) => [{ id, name, url, path, state: "running" }, ...d]);
+      controllers.current.get(focusedWindowId)?.openDownloads();
+      engine.respond(path);
+      return;
+    }
     setDownloads((d) => [{ id, name: guess, url, path: "", state: "running" }, ...d]);
     controllers.current.get(focusedWindowId)?.openDownloads();
     runDownload(url, suggested).then(
@@ -933,6 +944,24 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
         toast(`Unable to download ${guess}`);
       },
     );
+  }
+
+  function onDownloadUpdated(data: unknown): void {
+    const u = data as { id: string; state: "running" | "done" | "failed" | "cancelled"; received: number; total: number; path: string };
+    const id = engineDownloads.current.get(u.id);
+    if (!id) return;
+    if (u.state !== "running") engineDownloads.current.delete(u.id);
+    const state = u.state === "cancelled" ? "failed" : u.state;
+    let name = "";
+    setDownloads((d) =>
+      d.map((x) => {
+        if (x.id !== id) return x;
+        name = x.name;
+        return { ...x, state, received: u.received, total: u.total, path: u.path || x.path };
+      }),
+    );
+    if (state === "done") toast(`Saved ${name || u.path.slice(u.path.lastIndexOf("/") + 1)}`);
+    if (state === "failed") toast(`Unable to download ${name || "the file"}`);
   }
 
   // ------------------------------------------------------------- render ---
@@ -1190,9 +1219,12 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                     }}
                     onContextMenuItemClicked={(e) => onContextMenuItem(t.id, e.data as ContextMenuItemClick)}
                     onDownloadRequested={(e) => {
-                      const d = e.data as { url: string; suggestedFilename?: string };
-                      startDownload(d.url, d.suggestedFilename);
+                      const d = e.data as { id?: string; url: string; suggestedFilename?: string };
+                      const node = view(t.id);
+                      const engine = d.id && node ? { id: d.id, respond: (path: string) => sendCommand(node, "respondDownload", { id: d.id, path }) } : undefined;
+                      startDownload(d.url, d.suggestedFilename, engine);
                     }}
+                    onDownloadUpdated={(e) => onDownloadUpdated(e.data)}
                   />
                 </Activity>,
               )}
@@ -1211,6 +1243,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
           onSettings={() => setSettingsOpen(true)}
           onDownloads={() => controllers.current.get(focusedWindowId)?.openDownloads()}
           onDownload={startDownload}
+          onDownloadUpdated={onDownloadUpdated}
           moveTargets={moveTargets("private").filter((t) => t.id !== "private")}
           onMoveOut={(url, windowId, index) => openTab(windowId, url, false, index)}
           onAdopt={closeTab}

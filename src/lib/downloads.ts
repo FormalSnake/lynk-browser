@@ -9,6 +9,22 @@ export interface DownloadItem {
   url: string;
   path: string;
   state: "running" | "done" | "failed";
+  received?: number;
+  /// -1 while the size is unknown.
+  total?: number;
+}
+
+/// What the engine asks for when it can run a download itself: Chromium does
+/// the transfer to a path the app picks and reports progress, which is the
+/// only way blob:, data:, POST and cookie-bound downloads can land at all.
+export interface EngineDownload {
+  id: string;
+  respond: (path: string) => void;
+}
+
+/// Where a download the engine runs is written, claimed by name up front.
+export function downloadTarget(name: string): string {
+  return uniquePath(ensureDownloadDir(), name);
 }
 
 /// NB_DOWNLOAD_DIR lets a drive run land files somewhere disposable.
@@ -32,8 +48,9 @@ function uniquePath(dir: string, name: string): string {
   return candidate;
 }
 
-/// The engine cancels its own download and hands us the URL, so the Bun side
-/// does the transfer. Content-Disposition wins over the URL for the filename.
+/// The WebKit engine cancels its own download and hands us the URL, so the Bun
+/// side does the transfer. Content-Disposition wins over the URL for the
+/// filename.
 export async function runDownload(url: string, suggested?: string): Promise<{ name: string; path: string }> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
