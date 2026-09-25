@@ -125,6 +125,8 @@ export interface WindowController {
   /// Test-only: what the pointer at the leading edge does, for a backend with
   /// no pointer synthesis.
   revealSidebar(show: boolean): void;
+  /// The auto-hidden window-control strip, for drives without a real pointer.
+  revealStrip(show: boolean): void;
   showPopup(id: string, url: string): void;
   toast(title: string): void;
 }
@@ -256,6 +258,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
 
   const toast = useRef<NdNodeRef<"toastoverlay">>(null);
   const split = useRef<NdNodeRef<"splitview">>(null);
+  const contentBars = useRef<NdNodeRef<"toolbarview">>(null);
   /// The find field the app has already put the caret in. An inline ref
   /// callback runs on every render, and focusing on each one would fight the
   /// user for the caret.
@@ -288,6 +291,9 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     toggleSidebar: () => setSidebarHidden((h) => !h),
     revealSidebar: (show) => {
       if (split.current) sendCommand(split.current, show ? "revealSidebar" : "concealSidebar");
+    },
+    revealStrip: (show) => {
+      if (contentBars.current) sendCommand(contentBars.current, show ? "revealTopBars" : "concealTopBars");
     },
     openSiteInfo: () => setSiteInfoOpen(true),
     showPopup: (id, url) => {
@@ -1208,6 +1214,16 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 onSelect={() => menuTarget()?.revealSidebar(false)}
               />
               <menuitem
+                testID="menu-reveal-strip"
+                label="Reveal the hidden window controls"
+                onSelect={() => menuTarget()?.revealStrip(true)}
+              />
+              <menuitem
+                testID="menu-conceal-strip"
+                label="Conceal the revealed window controls"
+                onSelect={() => menuTarget()?.revealStrip(false)}
+              />
+              <menuitem
                 testID="menu-commit-address"
                 label="Commit the address field"
                 onSelect={() => menuTarget()?.commitAddress()}
@@ -1326,7 +1342,15 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             />
           )}
 
-          <toolbarview slot="content" testID={`${p}content-toolbar`}>
+          {/* With the sidebar hidden the page is immersive: the strip slides
+              away over it and comes back while the pointer is at the top
+              edge, and the page never moves for it (topBarsAutoHide). */}
+          <toolbarview
+            ref={contentBars}
+            slot="content"
+            testID={`${p}content-toolbar`}
+            topBarsAutoHide={!compact && gtk && sidebarHidden && trailingControls}
+          >
             {/* Window controls the desktop puts on the TRAILING side
                 (GNOME's default) do not belong in a leading sidebar: they get
                 a strip of their own over the page card, which starts below

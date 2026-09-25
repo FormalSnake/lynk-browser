@@ -71,8 +71,8 @@ async function slowRelease(): Promise<void> {
   for (const done of held.splice(0)) done();
 }
 const PAGE_BLUE = "#2f6bff";
-const server = Bun.serve({
-  port: Number(process.env.ND_ACCEPT_FIXTURE_PORT ?? 0) || 0,
+const serve = (port: number) => Bun.serve({
+  port,
   hostname: "127.0.0.1",
   // A held page outlives Bun's 10 s idle cut-off while a slow capture runs,
   // and the engine then shows an empty response instead of the page.
@@ -93,13 +93,27 @@ const server = Bun.serve({
     );
   },
 });
+const server = serve(Number(process.env.ND_ACCEPT_FIXTURE_PORT ?? 0) || 0);
 const base = `http://127.0.0.1:${server.port}`;
+/// A second origin, for the one site with a favicon in the cache: the cache is
+/// keyed by origin, and every other fixture page shares the first.
+const iconServer = serve(0);
+const iconBase = `http://127.0.0.1:${iconServer.port}`;
+mkdirSync(join(store, "favicons"), { recursive: true });
+const ICON = sh(
+  "python3",
+  "-c",
+  `import base64,io
+from PIL import Image
+b=io.BytesIO(); Image.new("RGB",(32,32),(255,140,0)).save(b,"PNG"); print(base64.b64encode(b.getvalue()).decode())`,
+).trim();
+writeFileSync(join(store, "favicons", encodeURIComponent(iconBase)), `data:image/png;base64,${ICON}`);
 
 /// The page a tab restores to. Linux CEF never requests a restored tab's
 /// http address (main has the same gap), so there the pages are data URLs,
 /// which it does load at creation.
 function pageUrl(path: string): string {
-  if (darwin) return `${base}/${path}`;
+  if (darwin) return `${path === "mail" ? iconBase : base}/${path}`;
   return (
     "data:text/html," +
     encodeURIComponent(
@@ -360,6 +374,9 @@ async function geometryLeg(width: number): Promise<void> {
   } else if (row) {
     const slot = await rect("controls-start");
     if (!near(mid(slot).y, mid(row).y)) fail(`${line}: window controls off the row's centre (${JSON.stringify({ slot, row })})`);
+    // The buttons share the column's leading margin with the tiles and the
+    // row fills under them.
+    if (!near(slot.x, firstTile.x, 1)) fail(`${line}: window controls start at ${slot.x}, the tiles at ${firstTile.x}`);
     if (slot.x + slot.w > sidebar.x + sidebar.w) fail(`${line}: window controls leave the sidebar`);
     if (!appkit && (await maybeRect("controls-end"))) fail(`${line}: a trailing controls slot is drawn with a leading layout`);
     if (!appkit && (await maybeRect("controls-strip"))) fail(`${line}: a leading layout still draws the trailing strip over the card`);
@@ -420,27 +437,63 @@ async function geometryLeg(width: number): Promise<void> {
     const slot = await rect("controls-start");
     const scale = Number(sh("python3", "-c", `from PIL import Image;print(Image.open(${JSON.stringify(shot.path)}).width/${(await windowRect()).w})`).trim());
     const red = redCentroid(shot.path, scale, { x: slot.x - 4, y: 0, w: slot.w + 8, h: row!.y + row!.h + 8 });
-    if (red.n < 20 || !near(red.y, mid(slot).y) || red.x < slot.x || red.x > slot.x + 16) {
+    // The close button's centre is half a button in from the slot's edge,
+    // which is the tiles' edge.
+    if (red.n < 20 || !near(red.y, mid(slot).y) || !near(red.x, slot.x + 7, 1.5)) {
       fail(`${line}: the close button is at ${red.x.toFixed(1)},${red.y.toFixed(1)} (${red.n} px), not on its slot ${JSON.stringify(slot)}`);
     }
   }
   console.log(`  NB_SIDEBAR_GEOMETRY_OK ${line} sidebar=${sidebar.w} long=${long.w}`);
 }
 
+/// GTK, trailing controls, sidebar hidden: the strip is gone and keeps no
+/// room, slides in over the page while the pointer is at the top edge, and the
+/// page does not move for it. At the drive's current width and at 1280.
+async function stripLeg(page: Rect): Promise<Rect> {
+  const shown = async () => {
+    const r = await maybeRect("controls-strip");
+    return r !== null && r.y + r.h > 1 ? r : null;
+  };
+  const byPointer = !darwin;
+  for (const width of [(await windowRect()).w, 1280]) {
+    if (width !== (await windowRect()).w) {
+      await app.setWindowSize(width, 800);
+      await settle("content");
+      page = await cardLeg(`hidden-${width}`, 0, 0);
+    }
+    await waitFor("the strip to be away", shown, (r) => r === null);
+    await capture(`strip-hidden-${width}`);
+    if (byPointer) await pointer("move", width / 2, 1);
+    else await app.click("menu-reveal-strip");
+    const strip = await waitFor("the strip to slide in", shown, (r) => r !== null && near(r.y, 0));
+    await Bun.sleep(400);
+    const under = await rect("content");
+    if (JSON.stringify(under) !== JSON.stringify(page)) fail(`the strip moved the page: ${JSON.stringify(page)} -> ${JSON.stringify(under)}`);
+    const end = await rect("controls-end");
+    if (!near(end.x + end.w, (await windowRect()).w - 8, 1)) fail(`the revealed controls are not at the strip's trailing end (${JSON.stringify({ end, strip })})`);
+    await capture(`strip-revealed-${width}`);
+    if (byPointer) await pointer("move", width / 2, 400);
+    else await app.click("menu-conceal-strip");
+    await waitFor("the strip to slide away", shown, (r) => r === null);
+    console.log(`  NB_SIDEBAR_STRIP_OK width=${width} strip=${JSON.stringify(strip)} page=${JSON.stringify(page)}`);
+  }
+  return page;
+}
+
 /// The page beside the sidebar. GTK draws it as a card inset by 8 on the
 /// sidebar's colour; AppKit runs it to the window's edges, where the glass
 /// sidebar reflects it.
-async function cardLeg(tag: string, leading: number | null): Promise<Rect> {
+async function cardLeg(tag: string, leading: number | null, margin?: number): Promise<Rect> {
   const card = await settle("content");
   // CEF repaints a resized page on its own thread, a beat after the host has
   // moved and cut its window; a capture before that shows the old size.
   if (!darwin) await Bun.sleep(1200);
   const win = await windowRect();
-  const M = appkit ? 0 : 8;
+  const M = margin ?? (appkit ? 0 : 8);
   const line = `${tag} card=${JSON.stringify(card)} window=${win.w}x${win.h}`;
   if (!near(win.w - (card.x + card.w), M)) fail(`the card's trailing margin is not ${M}: ${line}`);
   if (!near(win.h - (card.y + card.h), M)) fail(`the card's bottom margin is not ${M}: ${line}`);
-  if (appkit && !near(card.y, 0)) fail(`the page does not reach the window's top: ${line}`);
+  if ((appkit || margin === 0) && !near(card.y, 0)) fail(`the page does not reach the window's top: ${line}`);
   if (leading !== null && !near(card.x, leading)) fail(`the card's leading edge is not at ${leading}: ${line}`);
   let shot = await capture(`card-${tag}`);
   // The GTK host on macOS has no web engine to draw a page with.
@@ -468,6 +521,18 @@ async function cardLeg(tag: string, leading: number | null): Promise<Rect> {
           fail(`the sidebar does not reflect the page beside it (edge ${edge}, middle ${middle}): ${line}`);
         }
       }
+      // Nothing of compact's toolbar stays over the page's top edge: its
+      // field text and glyphs are the only light ink on the fixture's blue.
+      // One pass over the strip; a process per pixel would take minutes.
+      const light = sh(
+        "python3",
+        "-c",
+        `from PIL import Image
+im = Image.open(${JSON.stringify(shot!.path)}).convert("RGB"); s = im.width / ${win.w}
+print(sum(1 for y in range(12, 37, 4) for x in range(${Math.round(card.x + card.w / 2)}, ${Math.round(card.x + card.w - 8)}, 2)
+  if min(im.getpixel((int(x * s), int(y * s)))[:2]) > 170))`,
+      ).trim();
+      if (light !== "0") fail(`${light} light pixels are drawn over the page's top edge: ${line}`);
     } else if (isPageBlue(corner)) fail(`the page's square corner shows past the card's curve (${corner}): ${line}`);
   }
   console.log(`  NB_SIDEBAR_CARD_OK ${line}`);
@@ -483,7 +548,7 @@ try {
   await Bun.sleep(1000);
 
   // ---- 1 and 2 ----------------------------------------------------------
-  for (const width of [1280, 860]) {
+  for (const width of [1280, 720]) {
     await geometryLeg(width);
     await cardLeg(`open-${width}`, null);
   }
@@ -495,6 +560,7 @@ try {
   if (!(darwin && !appkit)) await loadBarLeg();
 
   async function loadBarLeg(): Promise<void> {
+  const rowIdle = await rect("tab-slot-t6");
   await step("start a slow load", async () => {
     await openPalette(app);
     slowOpen = false;
@@ -511,9 +577,17 @@ try {
   }
   // No spinner competes with the bar except in the row itself.
   await waitFor("the row's spinner", () => maybeRect("tab-spinner-t6"), (r) => r !== null);
+  const rowLoading = await rect("tab-slot-t6");
+  if (!near(rowLoading.y, rowIdle.y, 0.5) || !near(rowLoading.h, rowIdle.h, 0.5)) {
+    fail(`the spinner moved the row (${JSON.stringify({ rowIdle, rowLoading })})`);
+  }
   // A frame for the host to draw what it was just told.
   await Bun.sleep(400);
-  await capture("loading");
+  const loading = await capture("loading");
+  if (loading) {
+    const ink = loading.pixel(bar.x + 3, bar.y + 1);
+    if (isPageBlue(ink)) fail(`the load bar is not drawn on the page's top edge (${ink} at ${bar.x + 3},${bar.y + 1})`);
+  }
   await slowRelease();
   // The fill reaches the end and fades (0.25 s, then 0.3 s after 0.2 s).
   await Bun.sleep(1500);
@@ -525,15 +599,18 @@ try {
   // ---- 4: hide, then the edge reveal --------------------------------------
   await app.click("menu-toggle-sidebar");
   await waitFor("the sidebar to hide", () => maybeRect("sidebar"), (r) => r === null || r.x + r.w <= 0);
-  const hidden = await cardLeg("hidden", appkit ? 0 : 8);
-  if (appkit) await pointer("move", 2, 400);
+  // Hidden, the page is immersive on both backends: edge to edge, no frame.
+  let hidden = await cardLeg("hidden", 0, 0);
+  if (!appkit && gtkControls === "end") hidden = await stripLeg(hidden);
+  // A real pointer where there is one: on Linux the page is edge to edge under it.
+  if (appkit || !darwin) await pointer("move", 2, 400);
   else await app.click("menu-reveal-sidebar");
   await waitFor("the sidebar to come in", () => maybeRect("sidebar"), (r) => r !== null && r.x >= 0);
   await Bun.sleep(400);
   const over = await rect("content");
   if (JSON.stringify(over) !== JSON.stringify(hidden)) fail(`the reveal resized the page: ${JSON.stringify(hidden)} -> ${JSON.stringify(over)}`);
   await capture("revealed");
-  if (appkit) await pointer("move", 700, 400);
+  if (appkit || !darwin) await pointer("move", 700, 400);
   else await app.click("menu-conceal-sidebar");
   await waitFor("the sidebar to leave", () => maybeRect("sidebar"), (r) => r === null || r.x + r.w <= 0);
   await app.click("menu-toggle-sidebar");
@@ -608,11 +685,52 @@ try {
   if ((await testIds()).has("chrome")) fail("the sidebar layout still draws compact's header bar");
   await waitFor("compact's load to finish", async () => (await app.find("progress"))?.value ?? 1, (v) => Number(v) >= 1);
   await geometryLeg(1280);
+  // A tile with no icon the host can draw keeps its letter.
+  const tile = await app.mustFind("tab-t2");
+  if (!tile.text) fail("the second pinned tile lost its letter after the switch back");
   await cardLeg("again", null);
   console.log("  NB_SIDEBAR_SWITCH_OK compact dropped the controls row and the card, and the sidebar layout came back whole");
+
+  // ---- 8: the two tile styles ----------------------------------------------
+  // Icons by default: the site with a cached favicon shows it, the rest their
+  // letter. Letters, chosen in Settings, drop the icon for every tile. Linux
+  // pages are data URLs, which have no origin to cache an icon under.
+  if (darwin) {
+    const text = async (id: string) => (await app.mustFind(id)).text ?? "";
+    if ((await text("tab-t1")) !== "" || (await text("tab-t2")) === "") {
+      fail(`icon tiles: t1 ${JSON.stringify(await text("tab-t1"))}, t2 ${JSON.stringify(await text("tab-t2"))}`);
+    }
+    const icons = await capture("pins-icons");
+    const t1 = await rect("tab-t1");
+    if (icons && appkit) {
+      const hit = sh(
+        "python3",
+        "-c",
+        `from PIL import Image
+im = Image.open(${JSON.stringify(icons.path)}).convert("RGB"); s = im.width / ${(await windowRect()).w}
+print(sum(1 for y in range(${Math.round(t1.y)}, ${Math.round(t1.y + t1.h)}) for x in range(${Math.round(t1.x)}, ${Math.round(t1.x + t1.w)})
+  if (lambda p: p[0] > 200 and 100 < p[1] < 180 and p[2] < 80)(im.getpixel((int(x * s), int(y * s))))))`,
+      ).trim();
+      if (Number(hit) < 20) fail(`the first tile does not show its favicon (${hit} orange pixels)`);
+    }
+    await app.click("sidebar-settings");
+    await app.waitFor({ testId: "settings-window", state: "present" }, { timeoutMs: PATIENCE });
+    await app.setValue("settings-pins", 1);
+    await waitFor("the letter tiles", () => text("tab-t1"), (t) => t !== "");
+    const letters = await capture("pins-letters");
+    for (const id of ["t1", "t2", "t3", "t4"]) {
+      const tile = await rect(`tab-slot-${id}`);
+      const mark = await rect(`tab-${id}`);
+      if (!near(mid(tile).x, mid(mark).x) || !near(mid(tile).y, mid(mark).y)) fail(`letter tile ${id}'s mark is off its centre`);
+    }
+    await app.setValue("settings-pins", 0);
+    await waitFor("the icon tiles again", () => text("tab-t1"), (t) => t === "");
+    console.log(`  NB_SIDEBAR_PINS_OK icon tiles by default, letters from Settings (${icons?.path ?? "-"}, ${letters?.path ?? "-"})`);
+  }
 
   console.log("NB_SIDEBAR_OK");
 } finally {
   await app.close();
   server.stop(true);
+  iconServer.stop(true);
 }

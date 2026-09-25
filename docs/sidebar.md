@@ -22,8 +22,8 @@ the ones below, set to each platform's own type and colours rather than copied.
   which reflects the page beside it as a native one does. On GTK the sidebar
   and the margin around the card are the sidebar colour.
 - GTK: the card is inset 8 from the window's top, trailing and bottom edges
-  and 0 from the sidebar, whose own 8 of padding is the gap; with the sidebar
-  hidden, 8 on all four sides. Radius 12 px, libadwaita's card.
+  and 0 from the sidebar, whose own 8 of padding is the gap. Radius 12 px,
+  libadwaita's card.
 - AppKit has no card: public API gives no way to make the margin around it
   Liquid Glass, so the page runs full-bleed to the window's top, trailing and
   bottom edges beside the sidebar, as in Search, and never under the sidebar.
@@ -32,8 +32,9 @@ the ones below, set to each platform's own type and colours rather than copied.
   X11 the CEF page's own window gets a bounding shape.
 - Window controls follow the platform:
   - macOS: the traffic lights sit in the sidebar's first row, vertically
-    centred on it (`<windowcontrols side="start">`; the framework moves the
-    window's own buttons onto the slot).
+    centred on it, their leading edge on the same 8 pt margin as the tiles
+    and rows under them (`<windowcontrols side="start">`; the framework moves
+    the window's own buttons onto the slot).
   - GTK: the desktop's `gtk-decoration-layout` decides. Buttons it puts on the
     leading side go in the sidebar's first row like macOS. Buttons on the
     trailing side (GNOME's default) never go in the sidebar: the page area
@@ -53,8 +54,9 @@ the ones below, set to each platform's own type and colours rather than copied.
    forward and reload are Cmd+[, Cmd+] and Cmd+R; the address is Cmd+L.
 2. **Pinned tabs**: tiles in a block, three to a row up to six pins and then
    one column more per two, 34 tall with 4 between them. A tile shows the
-   site's icon, or its first letter until there is one; the tab on show has
-   the letter in full ink, the rest in the secondary ink.
+   site's icon, or its first letter until there is one; Settings > Pinned
+   Tabs > Letters shows the letter only, the quieter column. The tab on show
+   has its letter in full ink, the rest in the secondary ink.
 3. **Tabs**: one flat row each, 28 tall with 2 between them, a 16 pt favicon
    and a title in body text that truncates with an ellipsis. The row on show
    is the one filled row, its title in full ink; the rest are in the secondary
@@ -81,9 +83,15 @@ slide. (`<progressbar cssClasses={["osd", "dimmed"]}>`.)
 
 ## Hiding and edge reveal
 
-- Cmd+S (View > Hide Sidebar) hides it; the GTK card takes the window inside
-  the same 8 margin on all four sides (AppKit's page fills the window), and the window controls go with the
+- Cmd+S (View > Hide Sidebar) hides it; the page is then immersive on both
+  backends, edge to edge with no frame, and the window controls go with the
   sidebar. The chord is instant.
+- GTK with trailing controls: the strip slides away with the sidebar and
+  keeps no room. The pointer at the window's top edge slides it back in over
+  the page (AdwToolbarView's top bar with the content extended under it, so
+  the page never moves), and it slides away 250 ms after the pointer leaves
+  it. Moving the window by the keyboard or the window manager's own chord
+  works throughout.
 - While hidden, the pointer touching the leading edge slides the sidebar in
   over the page as a floating rounded panel with a shadow, without resizing
   the page; it slides out 250 ms after the pointer leaves it. In 200 ms, out
