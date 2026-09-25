@@ -647,6 +647,10 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
 
   // The controls a popover hangs off. Both layouts draw them, in the header
   // bar (compact) or the sidebar, so each is built once and handed a slot.
+  // Without a slot they sit in the sidebar's foot at the window's bottom, so
+  // their popovers open beside it over the page. Opened downward GTK shrinks
+  // one to the room left under the window and then closes it for being under
+  // its minimum size, which shut an extension's popup the moment it opened.
 
   function siteInfoControl(slot?: "start"): React.ReactNode {
     return (
@@ -672,7 +676,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
           <popover
             testID={`${p}site-info-popover`}
             open={siteInfoOpen}
-            position="bottom"
+            position={slot ? "bottom" : "right"}
             onClosed={() => {
               setSiteInfoOpen(false);
               // Escape and a click outside are a dismissal, and a
@@ -820,7 +824,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 <popover
                   testID={`${p}ext-popup-${row.id}`}
                   open={popupId === row.id}
-                  position="bottom"
+                  position={slot ? "bottom" : "right"}
                   onClosed={closeExtensionPopup}
                 >
                   {popupId === row.id ? extensionPopup(row) : <box orientation="horizontal" />}
@@ -840,7 +844,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             <popover
               testID={`${p}extensions-popover`}
               open={extensionsOpen}
-              position="bottom"
+              position={slot ? "bottom" : "right"}
               onClosed={() => setExtensionsOpen(false)}
             >
               <box
@@ -923,7 +927,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             <popover
               testID={`${p}ext-popup-unpinned`}
               open={unpinnedPopup !== null}
-              position="bottom"
+              position={slot ? "bottom" : "right"}
               onClosed={closeExtensionPopup}
             >
               {unpinnedPopup ? extensionPopup(unpinnedPopup) : <box orientation="horizontal" />}
@@ -951,7 +955,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
           <popover
             testID={`${p}downloads-popover`}
             open={downloadsOpen}
-            position="bottom"
+            position={slot ? "bottom" : "right"}
             onClosed={() => setDownloadsOpen(false)}
           >
             {/* Stacked boxes rather than a list widget: a popover sizes
