@@ -61,6 +61,9 @@ export async function fetchFavicon(url: string, iconUrl: string): Promise<boolea
     const response = await fetch(iconUrl);
     if (!response.ok) return false;
     const type = response.headers.get("content-type") ?? "image/png";
+    // Plenty of sites answer a missing icon with a 200 HTML page; kept, it
+    // would stand in for the site's letter with an image nothing can draw.
+    if (!type.startsWith("image/")) return false;
     const bytes = Buffer.from(await response.arrayBuffer());
     return rememberFavicon(url, `data:${type};base64,${bytes.toString("base64")}`);
   } catch {
