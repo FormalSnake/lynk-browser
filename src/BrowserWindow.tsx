@@ -675,12 +675,12 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             iconName={SECURITY_ICON[activeRt.security]}
             tooltip={SECURITY_TOOLTIP[activeRt.security]}
             cssClasses={["flat"]}
-            onClick={() => setSiteInfoOpen(!siteInfoOpen)}
+            onClick={() => (siteInfoOpen ? setSiteInfoOpen(false) : openPanel("siteInfo"))}
           />
           <popover
             testID={`${p}site-info-popover`}
             open={siteInfoOpen}
-            position={slot ? "bottom" : "right"}
+            position={slot ? "bottom" : "top"}
             onClosed={() => {
               setSiteInfoOpen(false);
               // Escape and a click outside are a dismissal, and a
@@ -828,7 +828,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 <popover
                   testID={`${p}ext-popup-${row.id}`}
                   open={popupId === row.id}
-                  position={slot ? "bottom" : "right"}
+                  position={slot ? "bottom" : "top"}
                   onClosed={closeExtensionPopup}
                 >
                   {popupId === row.id ? extensionPopup(row) : <box orientation="horizontal" />}
@@ -848,7 +848,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             <popover
               testID={`${p}extensions-popover`}
               open={extensionsOpen}
-              position={slot ? "bottom" : "right"}
+              position={slot ? "bottom" : "top"}
               onClosed={() => setExtensionsOpen(false)}
             >
               <box
@@ -931,7 +931,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             <popover
               testID={`${p}ext-popup-unpinned`}
               open={unpinnedPopup !== null}
-              position={slot ? "bottom" : "right"}
+              position={slot ? "bottom" : "top"}
               onClosed={closeExtensionPopup}
             >
               {unpinnedPopup ? extensionPopup(unpinnedPopup) : <box orientation="horizontal" />}
@@ -954,12 +954,12 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             iconName="folder-download-symbolic"
             tooltip="Downloads"
             cssClasses={["flat"]}
-            onClick={() => setDownloadsOpen(!downloadsOpen)}
+            onClick={() => (downloadsOpen ? setDownloadsOpen(false) : openPanel("downloads"))}
           />
           <popover
             testID={`${p}downloads-popover`}
             open={downloadsOpen}
-            position={slot ? "bottom" : "right"}
+            position={slot ? "bottom" : "top"}
             onClosed={() => setDownloadsOpen(false)}
           >
             {/* Stacked boxes rather than a list widget: a popover sizes
