@@ -1005,7 +1005,10 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                         testID={`${p}downloads-item-${d.id}`}
                         text={d.name}
                         ellipsize
-                        style={{ halign: "start" }}
+                        // Filled, not started: an ellipsizing label asks for
+                        // one character on GTK and takes the row's width only
+                        // when it is allowed to fill it.
+                        style={{ halign: "fill" }}
                       />
                       <label
                         testID={`${p}downloads-status-${d.id}`}
