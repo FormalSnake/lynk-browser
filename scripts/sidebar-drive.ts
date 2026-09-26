@@ -729,16 +729,21 @@ try {
   await cardLeg("again", null);
   console.log("  NB_SIDEBAR_SWITCH_OK compact dropped the controls row and the card, and the sidebar layout came back whole");
 
+  const footIds = async (): Promise<string[]> => {
+    // The glyphs themselves, not what their closed popovers hold.
+    const ids: string[] = [];
+    const visit = (n: JsonNode): void => {
+      if (n.type === "Popover") return;
+      if (n.type === "Button" && n.testID) ids.push(n.testID);
+      for (const c of n.children ?? []) visit(c);
+    };
+    visit(await app.mustFind("bottom-bar"));
+    return ids;
+  };
+
   // ---- 7c: the switch, over and over ----------------------------------------
   // Every glyph in the foot has a size once the sidebar is back, each time.
   // NB_SIDEBAR_SWITCHES sets how many round trips (3 by default).
-  const footIds = async (): Promise<string[]> => {
-    const ids: string[] = [];
-    walk((await app.mustFind("bottom-bar")), (n) => {
-      if (n.type === "Button" && n.testID) ids.push(n.testID);
-    });
-    return ids;
-  };
   const switches = Number(process.env.NB_SIDEBAR_SWITCHES ?? 3);
   for (let i = 1; i <= switches; i++) {
     await app.click("menu-layout");
@@ -781,6 +786,7 @@ lo, hi = box.getextrema(); print(hi - lo)`).trim(),
   }
   console.log(`  NB_SIDEBAR_SWITCHES_OK ${switches} round trips, every foot glyph sized each time`);
 
+
   // ---- 7a: the foot's popovers ------------------------------------------------
   // Each opens beside or above the foot and stays inside the window, and
   // opening one puts the other away. A real download gives the list a name.
@@ -809,9 +815,16 @@ lo, hi = box.getextrema(); print(hi - lo)`).trim(),
     ] as const;
     const hasExtensions = (await app.find("extensions-button")) !== null;
     for (const [button, panel, popover] of pairs.filter(([b]) => hasExtensions || b !== "extensions-button")) {
+      const footBefore = await Promise.all((await footIds()).map(async (id) => [id, await rect(id)] as const));
       await app.click(button);
       const box = await waitFor(`${panel} to show`, () => maybeRect(panel), (r) => r !== null);
+      // The popover floats: nothing in the foot moves for it.
+      for (const [id, was] of footBefore) {
+        const now = await rect(id);
+        if (!near(now.x, was.x) || !near(now.w, was.w)) fail(`width=${width}: opening ${popover} moved ${id} ${JSON.stringify(was)} -> ${JSON.stringify(now)}`);
+      }
       await Bun.sleep(500);
+      const shotPath = await captureScreen(`popover-${panel}-${width}`);
       const up = await openPopovers();
       if (up.length !== 1 || up[0] !== popover) fail(`width=${width}: after ${button} the open popovers are ${JSON.stringify(up)}`);
       const pr = await rect(popover);
@@ -828,7 +841,6 @@ lo, hi = box.getextrema(); print(hi - lo)`).trim(),
           fail(`width=${width}: the download reads ${JSON.stringify(it?.text)} in ${it?.geometry?.w}px`);
         }
       }
-      const shotPath = await captureScreen(`popover-${panel}-${width}`);
       if (appkit && shotPath) {
         // The arrow is the popover's only drawing below its body: find its
         // lowest rows under the body and where they are centred.
