@@ -705,24 +705,6 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     settings.update((s) => ({ ...s, pinnedExtensions: togglePinned(s.pinnedExtensions, id) }));
   }
 
-  /// The page a window is showing, when it is showing one.
-  function shownView(windowId: string): NdNodeRef<"webview"> | null {
-    const w = session.get().windows.find((x) => x.id === windowId);
-    const tab = w?.tabs.find((t) => t.id === w.activeId);
-    return tab && tab.url ? view(tab.id) : null;
-  }
-
-  /// Chromium reads an action's state for the tab of the window that last had
-  /// focus, and a probe view takes the keyboard focus as its page commits,
-  /// so its answers are for its own tab until a page on show takes the focus
-  /// back. The framework's rule that a view under 32 px never takes the
-  /// keyboard (NativeDesktop `focus-return`) ends that; delete this and its
-  /// one caller once the app is on a release with it.
-  function focusShownPage(windowId: string): void {
-    const page = shownView(windowId);
-    if (page) sendCommand(page, "focus");
-  }
-
   /// One read of an action's live state, retried while the probe's page is
   /// still loading and while the answer is for some other tab: with no view
   /// focused Chromium answers for a browser it keeps for itself, which says
@@ -739,7 +721,6 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     let last: ExtensionActionState | null = null;
     for (let attempt = 0; attempt < tries; attempt++) {
       if (attempt > 0) await Bun.sleep(400);
-      focusShownPage(windowId);
       const node = probes.current.get(id);
       if (!node) continue;
       const state = await readExtensionAction(node).catch(() => null);
