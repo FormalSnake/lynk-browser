@@ -239,6 +239,11 @@ async function captureScreen(name: string): Promise<string | null> {
   if (darwin) {
     const win = ndshotWindows(app.pid).find((w) => w.title !== "") ?? fail("ndshot sees no app window");
     sh("timeout", "30", NDSHOT, "capture", "--window-id", String(win.windowID), "--region", "--no-focus", "--out", path);
+  } else if (process.env.WAYLAND_DISPLAY && !process.env.ND_SIDEBAR_X11) {
+    // XWayland's rootless root window cannot be read back; the compositor's
+    // output can, a few frames after the client drew (as in capture()).
+    await Bun.sleep(1500);
+    sh("grim", path);
   } else if (process.env.DISPLAY) {
     sh("import", "-window", "root", "-silent", path);
   } else return null;
@@ -329,7 +334,19 @@ async function pointer(action: "move" | "click", x: number, y: number): Promise<
     return;
   }
   const w = linuxWindowOrigin();
-  sh("xdotool", "mousemove", String(Math.round(w.x + x * w.scale)), String(Math.round(w.y + y * w.scale)));
+  const px = Math.round(w.x + x * w.scale);
+  const py = Math.round(w.y + y * w.scale);
+  // XWayland drives XTEST motion against its own pointer, which exists only
+  // once the seat has a pointer: headless Hyprland has no input device until
+  // a virtual pointer binds one, and until then the warp is dropped.
+  for (let attempt = 0; ; attempt++) {
+    sh("xdotool", "mousemove", String(px), String(py));
+    const m = sh("xdotool", "getmouselocation").match(/x:(-?\d+)\s+y:(-?\d+)/);
+    if (Math.abs(Number(m?.[1]) - px) <= 1 && Math.abs(Number(m?.[2]) - py) <= 1) break;
+    if (attempt === 4) fail(`the pointer did not reach ${px},${py} (at ${m?.[0]})`);
+    if (process.env.HYPRLAND_INSTANCE_SIGNATURE) sh("wlrctl", "pointer", "move", "0", "0");
+    await Bun.sleep(150);
+  }
   if (action === "click") sh("xdotool", "click", "1");
 }
 
