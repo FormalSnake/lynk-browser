@@ -210,7 +210,21 @@ export function paletteDriver(config: { timeoutMs: number }) {
     const addressIsField = (await app.find("omnibox")) !== null;
     if (process.platform === "darwin" || !addressIsField) {
       await openPalette(app);
-      await typeQuery(app, url);
+      // Opening the bar rebuilds its field, and text typed into the one it
+      // replaces is lost; the submit then went nowhere. The bar's own address
+      // row, built from what it holds, says the text landed.
+      const landed = async (): Promise<boolean> => {
+        const rows = (await app.find("palette"))?.rows ?? [];
+        return rows.some((r) => r.id === "url" && String(r.title ?? "").includes(url));
+      };
+      const deadline = Date.now() + config.timeoutMs;
+      for (;;) {
+        await typeQuery(app, url);
+        const settle = Date.now() + 1500;
+        while (Date.now() < settle && !(await landed())) await Bun.sleep(100);
+        if (await landed()) break;
+        if (Date.now() > deadline) throw new Error(`the command bar never took ${JSON.stringify(url)}`);
+      }
       await whenReady("submit the palette query", () => app.setValue("palette", true));
       return;
     }

@@ -454,6 +454,7 @@ function rootShot(name: string): void {
 function launch(storeDir: string): Promise<AppHandle> {
   return launchApp({
     entry: "src/main.tsx",
+    logPath: process.env.NB_HOST_LOG,
     env: {
       NB_STORE_DIR: storeDir,
       NB_DOWNLOAD_DIR: DOWNLOADS,
@@ -1772,11 +1773,35 @@ try {
     await step("commit it", () => app.click("menu-commit-address"));
   } else {
     // The sidebar layout has no address field: the new window's command bar
-    // is where its address is typed.
+    // is where its address is typed. The row on show opens its window's command bar on its address; the
+    // menu item acts on whichever window has the focus, which a headless
+    // compositor may not hand the new one.
     const bar = `${secondId}-palette`;
-    await step("open the new window's command bar", () => app.click("menu-palette"));
-    await app.waitFor({ testId: bar, state: "visible" }, { timeoutMs: PATIENCE });
-    await step("type an address into the new window", () => setValueWhenReady(bar, `${base}/b`));
+    // Polled with find, which looks in every window; waitFor watches one.
+    let newRow = "";
+    for (const deadline = Date.now() + PATIENCE; !newRow && Date.now() < deadline; await Bun.sleep(200)) {
+      const list = await app.find(`${secondId}-tab-list`);
+      newRow = list ? listActive(list) : "";
+    }
+    if (!newRow) {
+      const wins = (await app.windows()).windows.map((w) => `${w.ref}:${w.title}`);
+      const list = await app.find(`${secondId}-tab-list`);
+      fail(`the new window shows no tab; windows ${JSON.stringify(wins)}; list ${JSON.stringify(list).slice(0, 600)}`);
+    }
+    await step("open the new window's command bar", () => app.click(`${secondId}-tab-${newRow}`));
+    for (const deadline = Date.now() + PATIENCE; !(await app.find(bar))?.visible; await Bun.sleep(200)) {
+      if (Date.now() > deadline) fail("the new window's command bar never presented");
+    }
+    await step("type an address into the new window", async () => {
+      const deadline = Date.now() + PATIENCE;
+      for (;;) {
+        await setValueWhenReady(bar, `${base}/b`);
+        await Bun.sleep(600);
+        const rows = (await app.find(bar))?.rows ?? [];
+        if (rows.some((r) => r.id === "url" && String(r.title ?? "").includes(`${base}/b`))) return;
+        if (Date.now() > deadline) fail(`the new window's command bar never took ${base}/b`);
+      }
+    });
     await step("commit it", () => setValueWhenReady(bar, true));
   }
   await waitRowsIn(`${secondId}-tab-list`, (r) => r[0]?.startsWith("Page B") ?? false, "page B in the new window");
