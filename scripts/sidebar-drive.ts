@@ -167,7 +167,17 @@ const app = await launchApp({
   entry: "src/main.tsx",
   cwd: ROOT,
   hostBinary: process.env.ND_HOST_BINARY,
-  env: { NB_STORE_DIR: store, NB_DOWNLOAD_DIR: DOWNLOADS, NB_TEST_HOOKS: "1", ND_APP_ID: "dev.nativebrowser.sidebar" },
+  // Every profile the app or its engine could open is the run's own: the
+  // engine's cache (and with it installed extensions) defaults to one under
+  // the user's data dir, which is the owner's live profile on a dev machine.
+  env: {
+    NB_STORE_DIR: store,
+    NB_DOWNLOAD_DIR: DOWNLOADS,
+    NB_TEST_HOOKS: "1",
+    ND_APP_ID: "dev.nativebrowser.sidebar",
+    XDG_DATA_HOME: join(store, "data"),
+    ND_CEF_CACHE: process.env.ND_CEF_CACHE || join(store, "cef"),
+  },
   readyTimeoutMs: PATIENCE * 2,
   rpcTimeoutMs: PATIENCE,
   logPath: process.env.NB_SIDEBAR_HOST_LOG,
@@ -830,6 +840,11 @@ lo, hi = box.getextrema(); print(hi - lo)`).trim(),
       const pr = await rect(popover);
       if (pr.x < -1 || pr.y < -1 || pr.x + pr.w > win.w + 1 || pr.y + pr.h > win.h + 1) {
         fail(`width=${width}: ${popover} ${JSON.stringify(pr)} leaves the window ${win.w}x${win.h}`);
+      }
+      // A fresh profile has nothing installed; anything listed was read from
+      // someone else's.
+      if (panel === "extensions-panel" && !(await app.find("extensions-empty"))) {
+        fail(`width=${width}: the extensions panel lists extensions this run never installed`);
       }
       if (panel === "downloads-panel" && !(darwin && !appkit)) {
         let item: JsonNode | null = null;
