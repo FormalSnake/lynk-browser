@@ -38,6 +38,12 @@ if [ "$RIG" = hypr ]; then
   # The rig's config names options this Hyprland no longer has, and the
   # banner reporting them sits over the window's top edge in every capture.
   sed -i -e '/vfr = /d' -e '/blur {/d' -e '/shadow {/d' "$WORK/hypr/hypr.conf"
+  # Blur stays on as Hyprland ships it, except behind the browser's popups: an
+  # XWayland popup is a window to Hyprland, blurred across its whole surface,
+  # and a popover's transparent shadow and arrow margin read as a frosted box.
+  # The same rule line goes in a desktop's own config. The main window has the
+  # same class but carries the page's title.
+  echo 'windowrule = no_blur on, match:class ^(nd-hello)$, match:title ^(nd-hello)$, match:xwayland true, match:float true' >>"$WORK/hypr/hypr.conf"
   hyprctl reload >/dev/null
   sleep 1
   # A reload forgets the rig's runtime monitor rule.
