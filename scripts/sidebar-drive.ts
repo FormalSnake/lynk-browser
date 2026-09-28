@@ -36,6 +36,11 @@
 // there: in the sidebar's first row when they lead, in a strip over the card
 // when they trail, and no room kept for them when there are none.
 //
+// GTK: no icon may be missing from the theme (the host says so on stderr, and
+// GTK draws its missing-image glyph there). The GTK host on macOS finds no
+// Adwaita icons in Homebrew's GTK, so run it with the theme on the data path:
+//   XDG_DATA_DIRS=$(nix build nixpkgs#adwaita-icon-theme --no-link --print-out-paths)/share:/opt/homebrew/share
+//
 // ND_APPEARANCE=light|dark pins the host's appearance for the captures.
 // ND_ANIMATION_SLOWDOWN=<n> stretches the peek's slide n times, and leg 4 then
 // also captures it as a frame sequence and checks the lights against the
@@ -190,6 +195,8 @@ writeFileSync(
 /// are on screen.
 type RevealFrame = { dir: string; t: number; panel: number; close: number; alpha: number; hidden: boolean; at: number };
 const revealFrames: RevealFrame[] = [];
+/// Icon names the GTK host could not find in its theme.
+const missingIcons = new Set<string>();
 const slowdown = Number(process.env.ND_ANIMATION_SLOWDOWN ?? 1);
 const look = process.env.ND_APPEARANCE ?? "system";
 
@@ -213,6 +220,8 @@ const launchOptions = {
   rpcTimeoutMs: PATIENCE,
   logPath: process.env.NB_SIDEBAR_HOST_LOG,
   onStderr: (line: string) => {
+    const icon = /^ND_WARN icon "([^"]+)" is not in the icon theme/.exec(line);
+    if (icon) missingIcons.add(icon[1]!);
     const m = /^ND_REVEAL_FRAME dir=(\w+) t=([\d.]+) panel=(-?[\d.]+) close=(-?[\d.]+) alpha=([\d.]+) hidden=(\d)/.exec(line);
     if (m) revealFrames.push({ dir: m[1]!, t: +m[2]!, panel: +m[3]!, close: +m[4]!, alpha: +m[5]!, hidden: m[6] === "1", at: Date.now() });
   },
@@ -492,6 +501,10 @@ async function geometryLeg(width: number): Promise<void> {
 
   // Pinned tabs: the grid, and each tile's mark in its middle.
   await gridCheck(line);
+
+  // Every icon drawn so far is in the theme: a row with no favicon shows the
+  // globe, never GTK's missing-image glyph.
+  if (missingIcons.size) fail(`${line}: icons missing from the theme: ${[...missingIcons].join(", ")}`);
 
   // The foot: settings leading on macOS, downloads leading and the New Tab
   // plus trailing on GTK, all on one centre line.
@@ -1591,6 +1604,7 @@ print(sum(1 for y in range(${Math.round(t1.y)}, ${Math.round(t1.y + t1.h)}) for 
     }
   }
 
+  if (missingIcons.size) fail(`icons missing from the theme: ${[...missingIcons].join(", ")}`);
   console.log("NB_SIDEBAR_OK");
 } finally {
   if (!closed) await app.close();
