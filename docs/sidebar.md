@@ -120,6 +120,17 @@ Rows and tiles are drag sources. A drop on the list reorders (a line marks
 the slot) and unpins, a drop on the pinned block pins, and a drop from another
 window moves the live page.
 
+A pinned tile pressed and dragged over the others reorders the block as it
+goes: the tile takes the slot under the pointer and the others slide aside
+along the grid (the framework's tile grid slides a reorder, 0.2 s ease-out).
+A drop in the block keeps that order, which the session saves; Escape, or a
+release where nothing takes a drop, puts the tiles back. A plain click still
+selects. On macOS 27 the press is the system's interactive Liquid Glass (the
+pill brightens and swells under the pointer); macOS 26 has no interactive
+AppKit glass, and SwiftUI's interactive glass does not answer presses on the
+AppKit button inside it, so the pill stays still there. GTK has the flat
+tile's own pressed state.
+
 ## Not built
 
 - Search's in-row address editing: the row on show opens the command bar

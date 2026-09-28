@@ -193,7 +193,7 @@ const revealFrames: RevealFrame[] = [];
 const slowdown = Number(process.env.ND_ANIMATION_SLOWDOWN ?? 1);
 const look = process.env.ND_APPEARANCE ?? "system";
 
-const app = await launchApp({
+const launchOptions = {
   entry: "src/main.tsx",
   cwd: ROOT,
   hostBinary: process.env.ND_HOST_BINARY,
@@ -212,7 +212,7 @@ const app = await launchApp({
   readyTimeoutMs: PATIENCE * 2,
   rpcTimeoutMs: PATIENCE,
   logPath: process.env.NB_SIDEBAR_HOST_LOG,
-  onStderr: (line) => {
+  onStderr: (line: string) => {
     const m = /^ND_REVEAL_FRAME dir=(\w+) t=([\d.]+) panel=(-?[\d.]+) close=(-?[\d.]+) alpha=([\d.]+) hidden=(\d)/.exec(line);
     if (m) revealFrames.push({ dir: m[1]!, t: +m[2]!, panel: +m[3]!, close: +m[4]!, alpha: +m[5]!, hidden: m[6] === "1", at: Date.now() });
   },
@@ -220,7 +220,9 @@ const app = await launchApp({
   // which then opens a whole Chromium window of its own: a slow first start
   // must fail the run, not be relaunched over.
   retries: 0,
-});
+};
+const app = await launchApp(launchOptions);
+let closed = false;
 
 // ---------------------------------------------------------------- helpers ---
 
@@ -635,6 +637,130 @@ async function gridLeg(): Promise<void> {
   for (const id of ["t9", "t8", "t7"]) await setPinned(id, false);
   await app.click(`menu-tab-${[...(await pinnedOrder()), ...(await todayOrder())].indexOf("t6")}`);
   console.log(`  NB_SIDEBAR_GRID_OK ${report.join(" ")}`);
+}
+
+/// AppKit, with the real cursor: a pinned tile pressed and dragged over the
+/// others moves them aside while it is held; Escape, and a release where
+/// nothing takes a drop, put them back; a drop on a tile commits the order. A plain
+/// click still selects. The frames of the held drag go in a strip.
+async function reorderLeg(): Promise<void> {
+  await app.setWindowSize(1280, 800);
+  await waitFor("the window at 1280", windowRect, (r) => r.w === 1280);
+  await settle("tab-slot-t4");
+  const start = await pinnedOrder();
+  if (JSON.stringify(start) !== JSON.stringify(["t1", "t2", "t3", "t4"])) fail(`the pins start as ${JSON.stringify(start)}`);
+  const strip: string[] = [];
+  /// Presses on one tile and carries it over another, and leaves it held.
+  async function hold(id: string, over: string, frames = false): Promise<void> {
+    const from = mid(await rect(`tab-slot-${id}`));
+    const to = mid(await rect(`tab-slot-${over}`));
+    await app.cursor.move(from, { steps: 8 });
+    await app.cursor.down();
+    await app.cursor.move({ x: from.x + 10, y: from.y + 3 }, { steps: 6 });
+    if (frames) strip.push((await captureScreen(`reorder-1-lifted`))!);
+    await app.cursor.move(to, { steps: 30 });
+    if (frames) {
+      // The others on their way to their new cells, then settled.
+      strip.push((await captureScreen(`reorder-2-sliding`))!);
+      await Bun.sleep(400);
+      strip.push((await captureScreen(`reorder-3-held`))!);
+    }
+  }
+  const expect = async (what: string, order: string[]) =>
+    waitFor(what, pinnedOrder, (o) => JSON.stringify(o) === JSON.stringify(order));
+
+  // The press on a glass tile: macOS 27's interactive glass brightens and
+  // swells the pill under the pointer (the system's response, nothing the
+  // app animates). Measured on a strip of the tile away from its letter.
+  const pressed = await rect("tab-slot-t3");
+  const glow = async (name: string): Promise<number> => {
+    const path = (await captureScreen(`reorder-glass-${name}`))!;
+    strip.push(path);
+    return Number(
+      sh("python3", "-c", `from PIL import Image, ImageStat
+im = Image.open(${JSON.stringify(path)}).convert("L"); s = im.width / 1280
+print(ImageStat.Stat(im.crop((int(${pressed.x + 4} * s), int(${pressed.y + pressed.h * 0.2} * s), int(${pressed.x + pressed.w * 0.25} * s), int(${pressed.y + pressed.h * 0.8} * s)))).mean[0])`).trim(),
+    );
+  };
+  await app.cursor.move(mid(pressed), { steps: 8 });
+  await Bun.sleep(400);
+  const resting = await glow("0-resting");
+  await app.cursor.down();
+  await Bun.sleep(120);
+  const lit = await glow("1-pressed");
+  await app.cursor.up();
+  await Bun.sleep(600);
+  // And on the last tile, whose swell reaches past the column's edge.
+  await app.cursor.move(mid(await rect("tab-slot-t4")), { steps: 8 });
+  await app.cursor.down();
+  await Bun.sleep(120);
+  strip.push((await captureScreen("reorder-glass-2-pressed-edge"))!);
+  await app.cursor.up();
+  await Bun.sleep(600);
+  const major = Number(sh("sw_vers", "-productVersion").split(".")[0]);
+  if (major >= 27 && lit - resting < 1) fail(`the pressed glass tile did not light up (${resting.toFixed(1)} -> ${lit.toFixed(1)})`);
+  console.log(`  glass press on macOS ${major}: ${resting.toFixed(1)} -> ${lit.toFixed(1)}`);
+
+  // Held over the last tile, the others move aside; Escape puts them back.
+  await hold("t2", "t4");
+  await expect("t2 shown in the last slot while held", ["t1", "t3", "t4", "t2"]);
+  Bun.spawnSync(["osascript", "-e", 'tell application "System Events" to key code 53']);
+  await Bun.sleep(400);
+  await app.cursor.up();
+  await expect("Escape to put the tiles back", start);
+  await Bun.sleep(600);
+
+  // Released where nothing takes a drop (the foot's empty stretch): the
+  // same. Not outside the window, where the release lands on whatever the
+  // desktop has there, and the screen's top edge opens Mission Control.
+  await hold("t2", "t4");
+  const foot = await rect("bottom-bar");
+  await app.cursor.move({ x: foot.x + foot.w - 30, y: foot.y + foot.h / 2 }, { steps: 20 });
+  await app.cursor.up();
+  await expect("a release on the foot to put the tiles back", start);
+  await Bun.sleep(600);
+
+  // Dropped on the third tile: the first moves to the third slot.
+  await hold("t1", "t3", true);
+  await expect("t1 shown in the third slot while held", ["t2", "t3", "t1", "t4"]);
+  await app.cursor.up();
+  await Bun.sleep(600);
+  await expect("the drop to keep t1 in the third slot", ["t2", "t3", "t1", "t4"]);
+  strip.push((await captureScreen(`reorder-4-dropped`))!);
+  await gridCheck("after the reorder");
+
+  // A plain click on a tile still selects its tab.
+  await app.cursor.click(mid(await rect("tab-slot-t2")));
+  await waitFor("t2 on show after a click", () => app.find("tab-live-t2"), (n) => n !== null);
+  if (JSON.stringify(await pinnedOrder()) !== JSON.stringify(["t2", "t3", "t1", "t4"])) fail("a click moved a tile");
+
+  const out = `${SHOTS}/mac-reorder-strip-${look}.png`;
+  const t = await rect("pinned-tabs");
+  // While a drag is on, the capture is the whole screen (the drag image is a
+  // window of its own over the app's), so those frames are offset by where
+  // the window is on it.
+  const at = await windowRect();
+  sh(
+    "python3",
+    "-c",
+    `from PIL import Image, ImageDraw
+import os
+paths = ${JSON.stringify(strip)}
+tiles = []
+for p in paths:
+    im = Image.open(p).convert("RGB")
+    s = 2 if im.width > 2560 else im.width / 1280
+    ox, oy = (${at.x}, ${at.y}) if im.width > 2560 else (0, 0)
+    c = im.crop((int((ox + ${t.x - 12}) * s), int((oy + ${t.y - 12}) * s), int((ox + ${t.x + t.w + 12}) * s), int((oy + ${t.y + t.h + 12}) * s)))
+    canvas = Image.new("RGB", (c.width, c.height + 30), (128, 128, 128)); canvas.paste(c, (0, 30))
+    ImageDraw.Draw(canvas).text((8, 8), os.path.basename(p), fill=(255, 255, 255)); tiles.append(canvas)
+m = Image.new("RGB", (max(i.width for i in tiles), sum(i.height for i in tiles) + 8 * len(tiles)), (128, 128, 128))
+y = 0
+for i in tiles:
+    m.paste(i, (0, y)); y += i.height + 8
+m.save(${JSON.stringify(out)})`,
+  );
+  console.log(`  NB_SIDEBAR_REORDER_OK held drags moved the others aside, Escape and a release on the foot put them back, a drop kept t2,t3,t1,t4; strip ${out}`);
 }
 
 /// AppKit: the sidebar resized by dragging the split's divider with the real
@@ -1398,6 +1524,9 @@ print(worst if worst is not None else -1)`,
     console.log(`  NB_SIDEBAR_CTX_OK menus opened: ${found.join(" ")}`);
   }
 
+  // ---- 7e: reorder the pinned tiles ------------------------------------------
+  if (appkit) await reorderLeg();
+
   // ---- 7d: the divider --------------------------------------------------------
   // Before 8, which leaves the Settings window up.
   if (appkit) await dividerLeg();
@@ -1439,9 +1568,32 @@ print(sum(1 for y in range(${Math.round(t1.y)}, ${Math.round(t1.y + t1.h)}) for 
     console.log(`  NB_SIDEBAR_PINS_OK icon tiles by default, letters from Settings (${icons?.path ?? "-"}, ${letters?.path ?? "-"})`);
   }
 
+  // ---- 9: the reordered pins after a relaunch ---------------------------------
+  if (appkit) {
+    await app.close();
+    closed = true;
+    const again = await launchApp(launchOptions);
+    try {
+      const order = async (): Promise<string[]> => {
+        const ids: string[] = [];
+        const block = await again.find("pinned-tabs");
+        if (block) walk(block, (n) => {
+          const m = /^tab-slot-(.+)$/.exec(n.testID ?? "");
+          if (m) ids.push(m[1]!);
+        });
+        return ids;
+      };
+      const kept = await waitFor("the pins after a relaunch", order, (o) => o.length === 4);
+      if (JSON.stringify(kept) !== JSON.stringify(["t2", "t3", "t1", "t4"])) fail(`after a relaunch the pins are ${JSON.stringify(kept)}`);
+      console.log(`  NB_SIDEBAR_REORDER_KEPT_OK ${kept.join(",")} after a relaunch`);
+    } finally {
+      await again.close();
+    }
+  }
+
   console.log("NB_SIDEBAR_OK");
 } finally {
-  await app.close();
+  if (!closed) await app.close();
   server.stop(true);
   iconServer.stop(true);
 }

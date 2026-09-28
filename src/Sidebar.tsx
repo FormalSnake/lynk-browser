@@ -42,6 +42,15 @@ const TRAIL_WIDTH = 24;
 /// tab's weight is not what marks it selected; the row's fill is.
 const REGULAR = { fontWeight: "normal" } as const;
 
+/// `list` with `id` moved to slot `to`.
+function moveTo<T extends { id: string }>(list: T[], id: string, to: number): T[] {
+  const item = list.find((t) => t.id === id);
+  if (!item) return list;
+  const rest = list.filter((t) => t.id !== id);
+  rest.splice(Math.max(0, Math.min(to, rest.length)), 0, item);
+  return rest;
+}
+
 /// The letter a tile shows when the site has no icon yet.
 function monogram(label: string): string {
   const ch = label.replace(/^www\./, "").trim().charAt(0);
@@ -101,6 +110,28 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
 
   const pinned = tabs.filter((t) => t.pinned);
   const loose = tabs.filter((t) => !t.pinned);
+  /// A pinned tile dragged over the others: the tiles are drawn with it in
+  /// the slot under the pointer, the others moved aside, until a drop in the
+  /// block commits that order or the drag ends anywhere else (Escape, or
+  /// outside the window), which puts them back.
+  const [dragging, setDragging] = useState("");
+  const [reorder, setReorder] = useState<{ id: string; to: number } | null>(null);
+  const shown = reorder ? moveTo(pinned, reorder.id, reorder.to) : pinned;
+
+  /// A drop in the pinned block: a tile dragged within it lands in the slot
+  /// it was shown in, anything else is pinned at the end.
+  function dropPinned(payload: string): void {
+    if (reorder && pinned.some((t) => t.id === reorder.id)) {
+      const from = pinned.findIndex((t) => t.id === reorder.id);
+      const to = Math.min(reorder.to, pinned.length - 1);
+      setReorder(null);
+      if (from === to) return;
+      // An index into the whole list, before which the tab is put back.
+      props.onDropAt(payload, tabs.indexOf(pinned[to]!) + (from < to ? 1 : 0), true);
+      return;
+    }
+    props.onDropAt(payload, pinned.length, true);
+  }
 
   function pick(t: SessionTab): void {
     if (t.id === activeId) props.onOpenAddress();
@@ -125,7 +156,7 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
     };
   }
 
-  function pin(t: SessionTab): React.ReactNode {
+  function pin(t: SessionTab, slot: number): React.ReactNode {
     const live = t.id === activeId;
     const icon = props.pinStyle === "icons" ? props.iconFor(t.url) : undefined;
     return (
@@ -139,6 +170,11 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
         // AppKit: each tile its own glass pill, the one on show raised and
         // brighter. GTK keeps the flat tile.
         cssClasses={gtk ? ["view"] : live ? ["view", "glass", "raised"] : ["view", "glass"]}
+        dropTarget
+        onDragOver={() => {
+          if (dragging && (reorder?.to ?? -1) !== slot) setReorder({ id: dragging, to: slot });
+        }}
+        onDropped={(e) => dropPinned(e.text)}
       >
         <button
           testID={`${p}tab-${t.id}`}
@@ -151,6 +187,15 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
           style={{ hexpand: true, valign: "fill", font: REGULAR, padding: gtk ? { left: 0, right: 0 } : undefined }}
           onClick={() => pick(t)}
           {...drag(t)}
+          onDragStarted={(e: { text: string }) => {
+            setDragging(t.id);
+            props.onDragStart(e.text);
+          }}
+          onDragEnded={() => {
+            setDragging("");
+            setReorder(null);
+            props.onDragEnd();
+          }}
         />
         {/* Draws nothing: the tree's only record of which tile is on show,
             since a tile has no close button to carry it. */}
@@ -256,9 +301,9 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
             tileAspect={PIN_ASPECT}
             style={{ margin: { top: leadingControls ? 8 : 0, bottom: 10 } }}
             dropTarget
-            onDropped={(e) => props.onDropAt(e.text, pinned.length, true)}
+            onDropped={(e) => dropPinned(e.text)}
           >
-            {pinned.map(pin)}
+            {shown.map(pin)}
           </box>
         )}
 
