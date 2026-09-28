@@ -56,7 +56,11 @@ the ones below, set to each platform's own type and colours rather than copied.
    one column more per two, 34 tall with 4 between them. A tile shows the
    site's icon, or its first letter until there is one; Settings > Pinned
    Tabs > Letters shows the letter only, the quieter column. The tab on show
-   has its letter in full ink, the rest in the secondary ink.
+   has its letter in full ink, the rest in the secondary ink. On AppKit each
+   tile is its own Liquid Glass pill (`cssClasses={["view", "glass"]}`), and
+   the tab on show is the raised, brighter pill (`"raised"` too), as in the
+   owner's Arc reference (`~/Developer/nativebrowser-ref/arc-glass-pinned.png`).
+   GTK keeps the flat tile.
 3. **Tabs**: one flat row each, 28 tall with 2 between them, a 16 pt favicon
    and a title in body text that truncates with an ellipsis. The row on show
    is the one filled row, its title in full ink; the rest are in the secondary
@@ -96,6 +100,11 @@ slide. (`<progressbar cssClasses={["osd", "dimmed"]}>`.)
   over the page as a floating rounded panel with a shadow, without resizing
   the page; it slides out 250 ms after the pointer leaves it. In 200 ms, out
   150 ms, ease-out; reduced motion fades instead.
+- macOS: the traffic lights are hidden with the sidebar and ride with the
+  peeking panel, on its first row at the tiles' leading edge (as far in from
+  the window's left as from its top), sliding in and out on the panel's own
+  timing. The drive holds the close button to the tiles' edge on every
+  display frame of both slides (the host's `ND_REVEAL_TRACE`).
 - On GTK the panel is libadwaita's own overlay sidebar, without its dimming.
 
 ## Tabs and drag

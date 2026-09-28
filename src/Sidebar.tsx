@@ -141,7 +141,9 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
         key={t.id}
         testID={`${p}tab-slot-${t.id}`}
         orientation="horizontal"
-        cssClasses={["view"]}
+        // AppKit: each tile its own glass pill, the one on show raised and
+        // brighter. GTK keeps the flat tile.
+        cssClasses={gtk ? ["view"] : live ? ["view", "glass", "raised"] : ["view", "glass"]}
         style={{ hexpand: true, minHeight: PIN_HEIGHT, minWidth: pinFloor() }}
       >
         <button
