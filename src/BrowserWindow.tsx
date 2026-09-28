@@ -8,6 +8,7 @@
 import {
   Platform,
   Spacing,
+  clipboard,
   executeJavaScript,
   onJavaScriptResult,
   onToastButtonClicked,
@@ -39,7 +40,7 @@ import {
   type ExtensionRow,
 } from "./lib/extensions.ts";
 import { faviconFor } from "./lib/favicons.ts";
-import { searchHistory, type Visit } from "./lib/history.ts";
+import { completionCandidates, searchHistory, type Visit } from "./lib/history.ts";
 import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
 import {
   decisionsFor,
@@ -50,6 +51,8 @@ import {
   type PermissionPrompt,
 } from "./lib/permissions.ts";
 import type { SessionState, SessionWindow } from "./lib/session.ts";
+import { KEYS } from "./lib/keys.ts";
+import { omniRows, type OmniMode, type OmniTarget } from "./lib/omnibox.ts";
 import { SEARCH_ENGINES, engineOf, type Layout, type SettingsState } from "./lib/settings.ts";
 import { parseTabPayload, tabPayload } from "./lib/tabdrag.ts";
 import {
@@ -62,7 +65,7 @@ import {
   type FindState,
   type Runtime,
 } from "./lib/tabstate.ts";
-import { displayUrl, hostOf, isSearch, toUrl } from "./lib/url.ts";
+import { displayUrl, hostOf, toUrl, fieldAddress } from "./lib/url.ts";
 
 /// Most recent downloads the toolbar popover lists. Older ones are still on
 /// disk; the panel is a receipt for what just happened, not a file manager.
@@ -70,32 +73,12 @@ const DOWNLOADS_SHOWN = 6;
 
 export const TEST_HOOKS = process.env.NB_TEST_HOOKS === "1";
 
-/// The palette's own shape. @nativedesktop/react exports the widget but not
-/// this type, so it is declared structurally here.
-interface PaletteItem {
-  id: string;
-  title: string;
-  subtitle?: string;
-  iconName?: string;
-}
+/// Characters of the address the sidebar's address button shows.
+const SIDEBAR_ADDRESS_CHARS = 40;
 
-const COMMANDS: { id: string; title: string; hint: string; iconName: string }[] = [
-  { id: "new-tab", title: "New Tab", hint: "Ctrl+T", iconName: "tab-new-symbolic" },
-  { id: "new-window", title: "New Window", hint: "Ctrl+N", iconName: "window-new-symbolic" },
-  { id: "close-tab", title: "Close Tab", hint: "Ctrl+W", iconName: "window-close-symbolic" },
-  { id: "reopen-tab", title: "Reopen Closed Tab", hint: "Ctrl+Shift+T", iconName: "edit-undo-symbolic" },
-  { id: "reload", title: "Reload", hint: "Ctrl+R", iconName: "view-refresh-symbolic" },
-  { id: "find", title: "Find in Page", hint: "Ctrl+F", iconName: "edit-find-symbolic" },
-  { id: "downloads", title: "Downloads", hint: "Toolbar", iconName: "folder-download-symbolic" },
-  { id: "layout", title: "Switch Layout", hint: "Ctrl+Alt+S", iconName: "sidebar-show-symbolic" },
-  { id: "private", title: "New Private Window", hint: "Ctrl+Shift+P", iconName: "view-conceal-symbolic" },
-  { id: "settings", title: "Settings", hint: "Ctrl+Comma", iconName: "preferences-system-symbolic" },
-  { id: "zoom-in", title: "Zoom In", hint: "Ctrl++", iconName: "zoom-in-symbolic" },
-  { id: "zoom-out", title: "Zoom Out", hint: "Ctrl+-", iconName: "zoom-out-symbolic" },
-  { id: "zoom-reset", title: "Reset Zoom", hint: "Ctrl+0", iconName: "zoom-original-symbolic" },
-  { id: "extensions", title: "Extensions", hint: "chrome://extensions", iconName: "application-x-addon-symbolic" },
-  { id: "webstore", title: "Chrome Web Store", hint: "chromewebstore.google.com", iconName: "web-browser-symbolic" },
-];
+function capLabel(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
 
 /// The extensions panel. Wide enough for a name beside its pin toggle, and
 /// fixed so the panel does not resize as extensions come and go.
@@ -109,19 +92,22 @@ const SITE_PANEL_WIDTH = 320;
 /// until every name read "…".
 const DOWNLOADS_PANEL_WIDTH = 300;
 
-/// The new tab page's field. Wide enough to read a long address back in,
-/// narrow enough to stay a field rather than a banner across the window.
-const NEW_TAB_FIELD_WIDTH = 480;
-
 /// What the root asks of a window's own chrome. The menu bar belongs to one
 /// window and acts on whichever window is focused, so it reaches the others'
 /// palette, address field and popovers through these.
 export interface WindowController {
-  openPalette(seed: string): void;
+  /// Opens the command bar holding `seed`. `target` is where Enter sends an
+  /// address: "new-tab" for ⌘T, "current" (the default) otherwise.
+  openPalette(seed: string, target?: OmniTarget): void;
+  /// ⌘L: the command bar seeded with the showing tab's address.
   openAddress(): void;
+  /// ⌘K: the command bar as a tab switcher and command list.
+  openSwitcher(): void;
   /// Test-only: runs what Enter in the address field runs, on what the field
   /// is holding.
   commitAddress(): void;
+  /// Test-only: what Esc in the command bar does.
+  closePalette(): void;
   openDownloads(): void;
   openSiteInfo(): void;
   /// Arc's Cmd+S, for the sidebar layout.
@@ -238,10 +224,16 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   // `paletteQuery` is what the user actually typed, and only feeds ranking.
   const [paletteSeed, setPaletteSeed] = useState("");
   const [paletteQuery, setPaletteQuery] = useState("");
-  /// The palette widget's key; see openPalette for why an unchanged seed has
-  /// to rebuild the widget rather than re-apply a prop.
-  const [paletteEpoch, setPaletteEpoch] = useState(0);
+  const [paletteTarget, setPaletteTarget] = useState<OmniTarget>("current");
   const [historyHits, setHistoryHits] = useState<Visit[]>([]);
+  const [completions, setCompletions] = useState<string[]>([]);
+  const [paletteMode, setPaletteMode] = useState<OmniMode>("address");
+  /// Tab ids of this window, most recently shown first, so the switcher lists
+  /// the page you just left at the top.
+  const recent = useRef<string[]>([]);
+  if (recent.current[0] !== active.id) {
+    recent.current = [active.id, ...recent.current.filter((id) => id !== active.id && tabs.some((t) => t.id === id))];
+  }
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [siteInfoOpen, setSiteInfoOpen] = useState(false);
   const [extensionsOpen, setExtensionsOpen] = useState(false);
@@ -267,16 +259,9 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// callback runs on every render, and focusing on each one would fight the
   /// user for the caret.
   const findFocused = useRef(0);
-  /// The header's address field, so Ctrl+L can put the caret in it without a
-  /// render-time focus that would fight the user for it every frame. Both
-  /// backends select the contents on grab-focus, which is what Ctrl+L means.
-  const omnibox = useRef<NdNodeRef<"searchinput"> | null>(null);
   /// What is in the address field right now. Only a test hook reads it: a
   /// person presses Enter, which carries the text with it.
   const typedAddress = useRef("");
-  /// The new tab page's own field, guarded by widget id so the caret is placed
-  /// once per field rather than on every render.
-  const newTabFocused = useRef(0);
   /// The open popup's view, and the id of the one whose window.close the app
   /// has already hooked.
   const popupView = useRef<NdNodeRef<"webview"> | null>(null);
@@ -290,7 +275,9 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   ctx.registerController(win.id, {
     openPalette,
     openAddress,
-    commitAddress: () => commitQuery(typedAddress.current),
+    openSwitcher,
+    commitAddress: () => commitQuery(typedAddress.current, "current"),
+    closePalette,
     openDownloads: () => openPanel("downloads"),
     toggleSidebar: () => setSidebarHidden((h) => !h),
     revealSidebar: (show) => {
@@ -311,19 +298,41 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     },
   });
 
-  function openPalette(seed: string): void {
-    // Seeding "" over a seed that is already "" changes nothing, and the entry
-    // keeps whatever was last typed into it, so the palette would come up
-    // holding the last query. Bumping the key rebuilds the widget, which is
-    // the only way an unchanged seed can still mean an empty field. It is
-    // also what makes the palette present on AppKit: an `open` update on a
-    // widget that already exists does nothing there, while one created open
-    // presents (measured on the bundled CEF host, legs 2 to 4).
-    if (seed === paletteSeed) setPaletteEpoch((n) => n + 1);
+  /// The one way into the command bar. Each open starts from `seed`: the
+  /// widget presents with its last `query` prop, never with what was typed
+  /// into an earlier open. A blank tab has nothing to keep, so an address
+  /// typed while it shows loads there even from ⌘T.
+  function openPalette(seed: string, target: OmniTarget = "current"): void {
+    present("address", seed, target);
+  }
+
+  /// ⌘K: which open page, or what to do. Only what is open is listed, and
+  /// every command, so no action needs a button.
+  function openSwitcher(): void {
+    present("switcher", "", "current");
+  }
+
+  function present(mode: OmniMode, seed: string, target: OmniTarget): void {
+    setPaletteMode(mode);
     setPaletteSeed(seed);
     setPaletteQuery(seed);
-    void searchHistory(seed).then(setHistoryHits);
-    setPaletteOpen(true);
+    setPaletteTarget(target);
+    refreshHits(seed === active.url ? "" : seed);
+    if (paletteOpen) {
+      // Already open: an unchanged seed is no prop change, so the field would
+      // keep what was typed. Closing and presenting again starts it from the
+      // seed, and it is still one bar, never a second.
+      setPaletteOpen(false);
+      setTimeout(() => setPaletteOpen(true), 0);
+    } else {
+      setPaletteOpen(true);
+    }
+    if (TEST_HOOKS) console.error(`ND_APP PALETTE open mode=${mode} target=${target} seed=${JSON.stringify(seed)}`);
+  }
+
+  function refreshHits(text: string): void {
+    void searchHistory(text).then(setHistoryHits);
+    void completionCandidates(text).then(setCompletions);
   }
 
   function closePalette(): void {
@@ -332,27 +341,34 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     setPaletteQuery("");
   }
 
-  /// Ctrl+L. In the sidebar the address is not an entry: it opens the command
-  /// bar holding the page's full address. In compact, grab-focus selects the
-  /// field's contents on both backends, so the URL comes up ready to be typed
-  /// over.
+  /// ⌘L in both layouts, and a click on the sidebar's address: the command
+  /// bar holding the address, all of it selected, so typing replaces it.
   function openAddress(): void {
-    if (!compact) {
-      // A second Ctrl+L puts the bar away again.
-      if (paletteOpen) return closePalette();
-      openPalette(active.url);
-      if (TEST_HOOKS) console.error("ND_APP FOCUS target=palette");
-      return;
-    }
-    const node = omnibox.current;
-    if (!node) return;
-    sendCommand(node, "focus");
-    if (TEST_HOOKS) console.error("ND_APP FOCUS target=omnibox");
+    // A second ⌘L puts the bar away again.
+    if (paletteOpen) return closePalette();
+    openPalette(active.url, "current");
+    if (TEST_HOOKS) console.error("ND_APP FOCUS target=palette");
   }
 
-  function commitQuery(raw: string): void {
+  function commitQuery(raw: string, target: OmniTarget = paletteTarget): void {
     closePalette();
+    raw = fieldAddress(raw, active.url);
+    if (target === "new-tab" && active.url !== "") {
+      const url = toUrl(raw);
+      if (url) ctx.openTab(win.id, url);
+      return;
+    }
     ctx.navigate(active.id, raw);
+  }
+
+  /// A history or completion row: the address itself, sent where Enter sends
+  /// typed text.
+  function openUrl(url: string): void {
+    if (paletteTarget === "new-tab" && active.url !== "") {
+      ctx.openTab(win.id, url);
+      return;
+    }
+    ctx.navigate(active.id, url);
   }
 
   function selectTab(id: string): void {
@@ -361,20 +377,40 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   }
 
   function runPaletteItem(id: string): void {
-    closePalette();
     if (id === "url") return commitQuery(paletteQuery);
+    closePalette();
     if (id.startsWith("tab:")) return selectTab(id.slice(4));
-    if (id.startsWith("hist:")) return ctx.navigate(active.id, id.slice(5));
+    if (id.startsWith("hist:")) return openUrl(id.slice(5));
+    if (id.startsWith("go:")) return openUrl(id.slice(3));
     switch (id.slice(4)) {
       case "new-tab":
-        ctx.openTab(win.id, "");
-        return;
+        return openPalette("", "new-tab");
       case "new-window":
         return ctx.newWindow();
       case "close-tab":
         return ctx.closeTab(active.id);
       case "reopen-tab":
         return ctx.reopenTab(win.id);
+      case "next-tab":
+        return ctx.cycleTab(win.id, 1);
+      case "prev-tab":
+        return ctx.cycleTab(win.id, -1);
+      case "pin-tab":
+        return ctx.setPinned(active.id, !active.pinned);
+      case "duplicate-tab":
+        if (active.url) ctx.openTab(win.id, active.url);
+        return;
+      case "move-new-window":
+        return ctx.moveTabTo(active.id, "new");
+      case "back":
+        return ctx.command(active.id, "goBack");
+      case "forward":
+        return ctx.command(active.id, "goForward");
+      case "copy-address":
+        if (active.url) void clipboard.writeText(active.url).catch(() => {});
+        return;
+      case "site-info":
+        return setSiteInfoOpen(true);
       case "reload":
         return ctx.command(active.id, "reload");
       case "find":
@@ -394,6 +430,8 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
       case "zoom-reset":
         return ctx.setZoom(active.id, 1);
       case "extensions":
+        return openExtensionsList();
+      case "extensions-page":
         ctx.openTab(win.id, "chrome://extensions");
         return;
       case "webstore":
@@ -559,49 +597,31 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   void ctx.iconEpoch;
 
   // Ranking is entirely the app's job: <commandpalette> renders what it is
-  // given, in order. Address first (that is what a browser bar is for), then
-  // open tabs, then history, then app commands.
-  const query = paletteQuery.trim();
-  const lowered = query.toLowerCase();
-  const paletteItems: PaletteItem[] = [];
-  if (query) {
-    const target = toUrl(query);
-    if (target) {
-      const searching = isSearch(target);
-      const engine = SEARCH_ENGINES.find((e) => e.id === prefs.searchEngine)?.name ?? "the web";
-      paletteItems.push({
-        id: "url",
-        title: searching ? `Search ${engine} for ${query}` : `Go to ${query}`,
-        subtitle: searching ? undefined : hostOf(target) || target,
-        iconName: searching ? "system-search-symbolic" : "web-browser-symbolic",
-      });
-    }
-  }
-  for (const t of tabs) {
-    if (t.id === active.id) continue;
-    const label = tabLabel(t);
-    if (lowered && !`${label} ${t.url}`.toLowerCase().includes(lowered)) continue;
-    paletteItems.push({
-      id: `tab:${t.id}`,
-      title: `Switch to ${label}`,
-      subtitle: displayUrl(t.url) || undefined,
-      iconName: "web-browser-symbolic",
-    });
-  }
-  for (const v of historyHits) {
-    if (v.url === active.url) continue;
-    paletteItems.push({
-      id: `hist:${v.url}`,
-      title: v.title || displayUrl(v.url),
-      subtitle: displayUrl(v.url),
-      iconName: "document-open-recent-symbolic",
-    });
-  }
-  for (const c of COMMANDS) {
-    if (!chromium && (c.id === "extensions" || c.id === "webstore")) continue;
-    if (lowered && !c.title.toLowerCase().includes(lowered)) continue;
-    paletteItems.push({ id: `cmd:${c.id}`, title: c.title, subtitle: c.hint, iconName: c.iconName });
-  }
+  // given, in order (lib/omnibox.ts, docs/omnibox.md). A ⌘L seed nobody has
+  // edited yet ranks like an empty field; the same address typed in full
+  // still gets its own row.
+  const untouchedSeed = paletteQuery !== "" && paletteQuery === paletteSeed && paletteSeed === active.url;
+  const typedQuery = untouchedSeed ? "" : paletteQuery;
+  // History only: the most visited places first (the completion picks from
+  // them in this order), then the newest matches.
+  const places = [...completions.map((url) => ({ url, title: "" })), ...historyHits]
+    .filter((v) => v.url !== active.url)
+    .map((v) => ({ url: v.url, title: v.title || historyHits.find((h) => h.url === v.url)?.title || "" }));
+  const byRecency = (t: { id: string }) => {
+    const at = recent.current.indexOf(t.id);
+    return at < 0 ? Number.MAX_SAFE_INTEGER : at;
+  };
+  const paletteItems = omniRows({
+    mode: paletteMode,
+    query: typedQuery,
+    target: paletteTarget,
+    tabs: tabs.filter((t) => t.id !== active.id).sort((a, b) => byRecency(a) - byRecency(b)),
+    history: places,
+    engineName: SEARCH_ENGINES.find((e) => e.id === prefs.searchEngine)?.name ?? "the web",
+    chromium,
+    pinned: active.pinned,
+    favicon: faviconFor,
+  });
 
   /// The tab-moving items, shared by the menu bar and a window's own menu.
   /// `from` is the window whose active tab they act on.
@@ -790,7 +810,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             to do. */}
         {!first && (
           <menubutton slot={slot} testID={`${p}window-menu`} iconName="open-menu-symbolic" tooltip="Main Menu">
-            <menuitem testID={`${p}menu-new-tab`} label="New Tab" onSelect={() => ctx.openTab(win.id, "")} />
+            <menuitem testID={`${p}menu-new-tab`} label="New Tab" onSelect={() => openPalette("", "new-tab")} />
             <menuitem testID={`${p}menu-new-window`} label="New Window" onSelect={ctx.newWindow} />
             <menuitem testID={`${p}menu-close-tab`} label="Close Tab" onSelect={() => ctx.closeTab(active.id)} />
             <menuitem role="separator" testID={`${p}menu-sep-move`} />
@@ -1070,60 +1090,60 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             <menuitem
               testID="menu-new-tab"
               label="New Tab"
-              accelerator="primary+t"
-              onSelect={() => ctx.openTab(menuWin.id, "")}
+              accelerator={KEYS["new-tab"]}
+              onSelect={() => menuTarget()?.openPalette("", "new-tab")}
             />
-            <menuitem testID="menu-new-window" label="New Window" accelerator="primary+n" onSelect={ctx.newWindow} />
+            <menuitem testID="menu-new-window" label="New Window" accelerator={KEYS["new-window"]} onSelect={ctx.newWindow} />
             <menuitem
               testID="menu-private-window"
               label="New Private Window"
-              accelerator="primary+shift+p"
+              accelerator={KEYS.private}
               onSelect={ctx.openPrivate}
             />
             <menuitem
               testID="menu-address"
               label="Open Address Bar"
-              accelerator="primary+l"
+              accelerator={KEYS.address}
               onSelect={() => menuTarget()?.openAddress()}
             />
             <menuitem
               testID="menu-palette"
-              label="Command Palette"
-              accelerator="primary+k"
-              onSelect={() => menuTarget()?.openPalette("")}
+              label="Switch Tabs"
+              accelerator={KEYS.switcher}
+              onSelect={() => menuTarget()?.openSwitcher()}
             />
             <menuitem
               testID="menu-close-tab"
               label="Close Tab"
-              accelerator="primary+w"
+              accelerator={KEYS["close-tab"]}
               onSelect={() => ctx.closeTab(menuActive.id)}
             />
             <menuitem
               testID="menu-reopen-tab"
               label="Reopen Closed Tab"
-              accelerator="primary+shift+t"
+              accelerator={KEYS["reopen-tab"]}
               onSelect={() => ctx.reopenTab(menuWin.id)}
             />
             <menuitem role="separator" testID="menu-file-sep" />
-            <menuitem testID="menu-settings" label="Settings" accelerator="primary+comma" onSelect={ctx.openSettings} />
+            <menuitem testID="menu-settings" label="Settings" accelerator={KEYS.settings} onSelect={ctx.openSettings} />
           </menu>
           <menu label="Edit" testID="menu-edit">
             <menuitem
               testID="menu-find"
               label="Find in Page"
-              accelerator="primary+f"
+              accelerator={KEYS.find}
               onSelect={() => ctx.openFind(menuActive.id)}
             />
             <menuitem
               testID="menu-find-next"
               label="Find Next"
-              accelerator="primary+g"
+              accelerator={KEYS["find-next"]}
               onSelect={() => ctx.findCommand(menuActive.id, "findNext")}
             />
             <menuitem
               testID="menu-find-previous"
               label="Find Previous"
-              accelerator="primary+shift+g"
+              accelerator={KEYS["find-previous"]}
               onSelect={() => ctx.findCommand(menuActive.id, "findPrevious")}
             />
           </menu>
@@ -1131,14 +1151,14 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             <menuitem
               testID="menu-reload"
               label="Reload"
-              accelerator="primary+r"
+              accelerator={KEYS.reload}
               onSelect={() => ctx.command(menuActive.id, "reload")}
             />
             {!compact && (
               <menuitem
                 testID="menu-toggle-sidebar"
                 label={sidebarHidden && menuWin.id === win.id ? "Show Sidebar" : "Hide Sidebar"}
-                accelerator="primary+s"
+                accelerator={KEYS["toggle-sidebar"]}
                 onSelect={() => menuTarget()?.toggleSidebar()}
               />
             )}
@@ -1149,7 +1169,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             <menuitem
               testID="menu-layout"
               label={compact ? "Use Sidebar Layout" : "Use Compact Layout"}
-              accelerator="primary+alt+s"
+              accelerator={KEYS.layout}
               onSelect={() => ctx.setLayout(compact ? "sidebar" : "compact")}
             />
             <menuitem testID="menu-downloads" label="Downloads" onSelect={() => menuTarget()?.openDownloads()} />
@@ -1157,19 +1177,19 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             <menuitem
               testID="menu-zoom-in"
               label="Zoom In"
-              accelerator="primary+plus"
+              accelerator={KEYS["zoom-in"]}
               onSelect={() => ctx.setZoom(menuActive.id, ctx.zoomFor(menuActive.url) + 0.1)}
             />
             <menuitem
               testID="menu-zoom-out"
               label="Zoom Out"
-              accelerator="primary+minus"
+              accelerator={KEYS["zoom-out"]}
               onSelect={() => ctx.setZoom(menuActive.id, ctx.zoomFor(menuActive.url) - 0.1)}
             />
             <menuitem
               testID="menu-zoom-reset"
               label="Reset Zoom"
-              accelerator="primary+0"
+              accelerator={KEYS["zoom-reset"]}
               onSelect={() => ctx.setZoom(menuActive.id, 1)}
             />
           </menu>
@@ -1177,13 +1197,13 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             <menuitem
               testID="menu-next-tab"
               label="Next Tab"
-              accelerator="primary+tab"
+              accelerator={KEYS["next-tab"]}
               onSelect={() => ctx.cycleTab(menuWin.id, 1)}
             />
             <menuitem
               testID="menu-prev-tab"
               label="Previous Tab"
-              accelerator="primary+shift+tab"
+              accelerator={KEYS["prev-tab"]}
               onSelect={() => ctx.cycleTab(menuWin.id, -1)}
             />
             <menuitem
@@ -1201,14 +1221,14 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             <menuitem
               testID="menu-back"
               label="Back"
-              accelerator="primary+["
+              accelerator={KEYS.back}
               enabled={menuRt.canGoBack}
               onSelect={() => ctx.command(menuActive.id, "goBack")}
             />
             <menuitem
               testID="menu-forward"
               label="Forward"
-              accelerator="primary+]"
+              accelerator={KEYS.forward}
               enabled={menuRt.canGoForward}
               onSelect={() => ctx.command(menuActive.id, "goForward")}
             />
@@ -1251,6 +1271,12 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 testID="menu-commit-address"
                 label="Commit the address field"
                 onSelect={() => menuTarget()?.commitAddress()}
+              />
+              {/* Esc in the command bar, for the same reason. */}
+              <menuitem
+                testID="menu-close-palette"
+                label="Close the command bar"
+                onSelect={() => menuTarget()?.closePalette()}
               />
               {/* The menu itself belongs to the engine now, and no automation can
                   open one: GTK4 synthesises no pointer input, and the engine's
@@ -1454,12 +1480,13 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               )}
 
               {siteInfoControl("start")}
-              {/* One address widget on both backends and in both layouts, and
-                  it takes whatever the row has left: the host promotes a
-                  search entry packed straight into a header bar to the title
-                  widget with hexpand, which is the centre run. Wrapping it in
-                  a box loses that and leaves it at its floor. Typing and Enter
-                  commit from the field; Ctrl+L puts the caret in it.
+              {/* Compact is a standard browser row: the address is an editable
+                  field in it, and it takes whatever the row has left: the
+                  host promotes a search entry packed straight into a header
+                  bar to the title widget with hexpand, which is the centre
+                  run. Wrapping it in a box loses that and leaves it at its
+                  floor. Typing and Enter commit from the field; ⌘L opens the
+                  command bar in both layouts.
 
                   The padlock stays a separate button to its left: the widget
                   has no leading-icon prop on either backend, so putting the
@@ -1467,9 +1494,6 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                   (LEDGER). */}
               <searchinput
                 slot="start"
-                ref={(node) => {
-                  omnibox.current = node as NdNodeRef<"searchinput"> | null;
-                }}
                 testID={`${p}omnibox`}
                 text={shownUrl}
                 placeholder="Search or enter address"
@@ -1480,7 +1504,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 // controlled `text` prop makes the host's set_text race the
                 // entry and blank it.
                 onChanged={(e) => (typedAddress.current = e.text)}
-                onActivate={(e) => commitQuery(e.text)}
+                onActivate={(e) => commitQuery(e.text, "current")}
               />
 
               {compact && (
@@ -1507,15 +1531,14 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             <box testID={`${p}content`} orientation="vertical" spacing={0} style={{ hexpand: true, vexpand: true }}>
               {/* Presents over the active window wherever it is mounted. */}
               <commandpalette
-                key={paletteEpoch}
                 testID={`${p}palette`}
                 open={paletteOpen}
-                placeholder="Search tabs, history and commands"
+                placeholder={paletteMode === "switcher" ? "Switch to a tab or run a command" : "Search or enter address"}
                 query={paletteSeed}
                 items={paletteItems}
                 onQueryChanged={(e) => {
                   setPaletteQuery(e.text);
-                  void searchHistory(e.text).then(setHistoryHits);
+                  refreshHits(e.text);
                 }}
                 onActivate={(e) => runPaletteItem(e.text)}
                 onSubmit={(e) => commitQuery(e.text)}
@@ -1567,21 +1590,14 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                       spacing={Spacing.sm}
                       style={{ halign: "center", valign: "center", vexpand: true }}
                     >
-                      <searchinput
-                        // Keyed on the tab, so opening a second new tab
-                        // builds a new field and the caret lands in it
-                        // again.
-                        key={active.id}
-                        ref={(node) => {
-                          if (!node) return;
-                          if (newTabFocused.current === node.id) return;
-                          newTabFocused.current = node.id;
-                          sendCommand(node as NdNodeRef<"searchinput">, "focus");
-                        }}
+                      {/* Not a second address field: the command bar is the
+                          only place an address is typed, and this opens it. */}
+                      <button
                         testID={`${p}new-tab-search`}
-                        placeholder="Search or enter address"
-                        style={{ minWidth: NEW_TAB_FIELD_WIDTH }}
-                        onActivate={(e) => commitQuery(e.text)}
+                        label="Search or enter address"
+                        iconName="system-search-symbolic"
+                        cssClasses={["pill"]}
+                        onClick={() => openPalette("", "current")}
                       />
                       <box orientation="horizontal" spacing={Spacing.xs} style={{ halign: "center" }}>
                         <image iconName="system-search-symbolic" symbolScale="small" cssClasses={["dimmed"]} />

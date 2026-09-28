@@ -48,6 +48,13 @@ export function displayUrl(url: string): string {
   }
 }
 
+/// What the address field's text means. The field shows the address without
+/// its scheme, so handed back untouched it is the page's own address: an
+/// http:// page is not sent to https.
+export function fieldAddress(raw: string, current: string): string {
+  return current && raw.trim() === displayUrl(current) ? current : raw;
+}
+
 /// Last path segment of a download URL, or a neutral fallback. GTK's
 /// downloadRequested carries no suggested filename (see LEDGER gaps).
 export function fileNameFromUrl(url: string): string {

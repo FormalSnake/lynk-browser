@@ -23,7 +23,7 @@ import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
 import { permissionSentence, splitTypes, type PermissionPrompt } from "./lib/permissions.ts";
 import { settings } from "./lib/settings.ts";
 import { parseTabPayload, tabPayload } from "./lib/tabdrag.ts";
-import { displayUrl, hostOf, toUrl } from "./lib/url.ts";
+import { displayUrl, hostOf, toUrl, fieldAddress } from "./lib/url.ts";
 
 const WINDOW_WIDTH = 1100;
 const WINDOW_HEIGHT = 720;
@@ -239,7 +239,7 @@ export function PrivateWindow({
   }
 
   function navigate(raw: string): void {
-    const target = toUrl(raw);
+    const target = toUrl(fieldAddress(raw, active.url));
     if (!target) return;
     if (active.url === target) return command("reload");
     patch(active.id, { url: target });

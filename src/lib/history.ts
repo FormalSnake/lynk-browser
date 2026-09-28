@@ -46,6 +46,21 @@ export async function searchHistory(query: string, limit = 5): Promise<Visit[]> 
   );
 }
 
+/// Addresses the command bar may complete what was typed to, most visited
+/// first. Only the host is matched here; completionFor picks the one to use.
+export async function completionCandidates(query: string, limit = 8): Promise<string[]> {
+  const q = query.trim().toLowerCase();
+  if (!db || !q || /\s/.test(q)) return [];
+  const p = q.replace(/[\\%_]/g, (c) => `\\${c}`);
+  const rows = await db.query<{ url: string }>(
+    "SELECT url FROM visits WHERE url LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\' " +
+      "OR url LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\' " +
+      "GROUP BY url ORDER BY COUNT(*) DESC, MAX(ts) DESC LIMIT ?",
+    [`http://${p}%`, `https://${p}%`, `http://www.${p}%`, `https://www.${p}%`, limit],
+  );
+  return rows.map((r) => r.url);
+}
+
 /// Newest first, one row per URL.
 export async function recentVisits(limit = 10): Promise<Visit[]> {
   if (!db) return [];
