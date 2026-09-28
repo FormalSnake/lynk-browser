@@ -91,9 +91,10 @@ const serve = (port: number) => Bun.serve({
         headers: { "content-type": "text/plain", "content-disposition": 'attachment; filename="quarterly-report.txt"' },
       });
     }
-    const title = PAGES[key] ?? "Slow page";
+    const title = PAGES[key] ?? (key.startsWith("bg-") ? `Page on ${key.slice(3)}` : "Slow page");
+    const bg = key.startsWith("bg-") ? `#${key.slice(3)}` : PAGE_BLUE;
     return new Response(
-      `<!doctype html><title>${title}</title><style>html,body{margin:0;height:100%;background:${PAGE_BLUE}}` +
+      `<!doctype html><title>${title}</title><style>html,body{margin:0;height:100%;background:${bg}}` +
         `h1{margin:0;padding:24px;color:#fff;font:600 28px system-ui}</style><h1>${title}</h1>`,
       { headers: { "content-type": "text/html; charset=utf-8" } },
     );
@@ -891,7 +892,7 @@ lo, hi = ${Math.round(btn.x - 20)}, ${Math.round(btn.x + btn.w + 20)}
 # toward the page drops out.
 ref = ${Math.round(btn.y + 2)}
 for y in range(${Math.round(pr.y + pr.h - 14)}, ${Math.round(btn.y)}):
-    xs = [x / 4 for x in range(lo * 4, hi * 4) if lum(x / 4, y) > lum(x / 4, ref) + 10]
+    xs = [x / 4 for x in range(lo * 4, hi * 4) if abs(lum(x / 4, y) - lum(x / 4, ref)) > 10]
     if 0 < len(xs) and xs[-1] - xs[0] <= 24: best = (xs[0] + xs[-1]) / 2
 print(best if best is not None else -1)`,
           ).trim(),
@@ -902,6 +903,109 @@ print(best if best is not None else -1)`,
     }
     await app.click("downloads-button");
     await waitFor("the downloads panel to go", () => maybeRect("downloads-panel"), (r) => r === null);
+  }
+
+  // ---- 7c: the foot's popovers read over any page ---------------------------
+  // The panel that keeps a popover inside the window has to be NSPopover's
+  // material, not a glass that lets the page through: over a blue, a white
+  // and a black page every text row keeps 4.5:1 against the panel right
+  // behind it, measured in strips along the row so the half over the page
+  // counts on its own. The compact layout's site-info popover is a real
+  // NSPopover and is captured and measured the same way for comparison.
+  if (appkit) {
+    const contrast = (shotPath: string, box: Rect, winW: number): number =>
+      Number(
+        sh(
+          "python3",
+          "-c",
+          `from PIL import Image
+from collections import Counter
+im = Image.open(${JSON.stringify(shotPath)}).convert("RGB"); s = im.width / ${winW}
+def lum(p):
+    c = [v / 255 for v in p]
+    c = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4 for v in c]
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+ratio = lambda a, b: (max(a, b) + 0.05) / (min(a, b) + 0.05)
+x0, y0, x1, y1 = int(${box.x} * s), int(${box.y} * s), int(${box.x + box.w} * s), int(${box.y + box.h} * s)
+x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, im.width), min(y1, im.height)
+worst = None
+step = int(24 * s)
+for sx in range(x0, x1 - step // 2, step):
+    px = [im.getpixel((x, y)) for x in range(sx, min(sx + step, x1)) for y in range(y0, y1)]
+    if not px: continue
+    bg = Counter((p[0] // 8, p[1] // 8, p[2] // 8) for p in px).most_common(1)[0][0]
+    bgl = lum([v * 8 + 4 for v in bg])
+    best = max(ratio(lum(p), bgl) for p in px)
+    if best < 1.5: continue  # no text in this strip
+    worst = best if worst is None else min(worst, best)
+print(worst if worst is not None else -1)`,
+        ).trim(),
+      );
+    const rowsOf = async (panel: string): Promise<Rect[]> => {
+      const out: Rect[] = [];
+      walk((await app.tree()).root, (n) => {
+        const id = n.testID ?? "";
+        const g = n.geometry;
+        if (!g || g.w <= 0 || g.h <= 0) return;
+        if (panel === "extensions-panel" && ["extensions-empty", "extensions-manage", "extensions-install-action-test"].includes(id)) out.push(g);
+        if (panel === "downloads-panel" && id.startsWith("downloads-item-")) out.push(g);
+      });
+      return out;
+    };
+    const results: string[] = [];
+    const low: string[] = [];
+    for (const bg of ["2f6bff", "ffffff", "000000"]) {
+      await openPalette(app);
+      await typeQuery(app, `${base}/bg-${bg}`);
+      await app.setValue("palette", true);
+      await Bun.sleep(1500);
+      // The comparison: a real NSPopover over the same page.
+      await app.click("menu-layout");
+      await waitFor("the compact row", testIds, (ids) => ids.has("tab-strip"));
+      for (const width of [1280, 720]) {
+        await app.setWindowSize(width, 800);
+        await Bun.sleep(500);
+        let lock = "";
+        walk((await app.tree()).root, (n) => {
+          if (!lock && n.testID?.startsWith("security-")) lock = n.testID;
+        });
+        if (!lock) fail("compact has no site-info button");
+        await app.click(lock);
+        await waitFor("the site-info popover", async () => (await app.find("site-info-popover"))?.visible, (v) => v === true);
+        await Bun.sleep(600);
+        const shotPath = (await captureScreen(`contrast-nspopover-${bg}-${width}`)) ?? fail("no capture");
+        const g = (await app.find("site-info-popover"))?.geometry;
+        // Reported, not asserted: NSPopover is the reference, and it hangs
+        // out of the window, where the capture has no pixels for it.
+        if (g && g.w > 4) results.push(`nspopover/${bg}/${width}=${contrast(shotPath, g, (await windowRect()).w).toFixed(1)}`);
+        await app.click(lock);
+        await Bun.sleep(400);
+      }
+      await app.click("menu-layout");
+      await waitFor("the sidebar layout again", () => maybeRect("sidebar"), (r) => r !== null);
+      for (const width of [1280, 720]) {
+        await app.setWindowSize(width, 800);
+        await settle("sidebar");
+        const win = await windowRect();
+        for (const [button, panel] of [["extensions-button", "extensions-panel"], ["downloads-button", "downloads-panel"]] as const) {
+          await app.click(button);
+          await waitFor(`${panel} to show`, () => maybeRect(panel), (r) => r !== null);
+          // A row is laid out a moment after its panel shows, at 0,0 until then.
+          const rows = await waitFor(`${panel}'s rows`, () => rowsOf(panel), (rs) => rs.length > 0 && rs.every((r) => r.y > 0));
+          await Bun.sleep(600);
+          const shotPath = (await captureScreen(`contrast-${panel}-${bg}-${width}`)) ?? fail("no capture");
+          for (const row of rows) {
+            const c = contrast(shotPath, row, win.w);
+            if (c < 4.5) low.push(`${panel} over #${bg} at ${width}: a row reads at ${c.toFixed(2)}:1 (${JSON.stringify(row)}), ${shotPath}`);
+            results.push(`${panel}/${bg}/${width}=${c.toFixed(1)}`);
+          }
+          await app.click(button);
+          await waitFor(`${panel} to go`, () => maybeRect(panel), (r) => r === null);
+        }
+      }
+    }
+    if (low.length) fail(`${low.join("\n")}\nmeasured: ${results.join(" ")}`);
+    console.log(`  NB_SIDEBAR_POPOVER_CONTRAST_OK ${results.join(" ")}`);
   }
 
   // ---- 7b: right-click on each sidebar surface -------------------------------
