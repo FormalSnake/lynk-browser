@@ -12,7 +12,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { type AppHandle, launchApp } from "@nativedesktop/test";
 
-import { fail, paletteDriver, step } from "./drive-lib.ts";
+import { fail, listRows, paletteDriver, step } from "./drive-lib.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const OUT = `${ROOT}/screenshots/omnibox`;
@@ -217,7 +217,8 @@ try {
     const deadline = Date.now() + PATIENCE;
     let titles: string[] = [];
     while (Date.now() < deadline) {
-      titles = ((await app.find("tab-list"))?.rows ?? []).map((r) => r.title);
+      const list = await app.find("tab-list");
+      titles = list ? listRows(list).map((r) => r.title) : [];
       if (want.every((t) => titles.includes(t))) return;
       await Bun.sleep(200);
     }
