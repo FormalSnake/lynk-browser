@@ -193,54 +193,64 @@ export function paletteDriver(config: { timeoutMs: number }) {
     await whenReady(`type ${JSON.stringify(text)} into the palette`, () => app.type("palette", text));
   }
 
-  /// Navigation goes through the ADDRESS FIELD, not the palette: that is
-  /// where a person types an address, and it is deterministic where the
-  /// palette is not (a palette opened in the same beat as a tab closing has
-  /// come up holding nothing). Enter is a keystroke and GTK synthesises none
-  /// (-32003), so the drive fills the field and then runs the handler Enter
-  /// runs, through a test-only menu item; the key binding itself stays
-  /// uncovered.
-  /// The address field is the route on GTK. On AppKit a SearchInput packed
-  /// into a header bar is not actionable by the tree's rule (-32001), so the
-  /// drive cannot fill it there and the palette is the only field it can both
-  /// fill and submit. Framework gap; the app draws the same field on both.
+  /// Navigation goes through the command bar on both backends: it is the
+  /// only address field the sidebar layout has, and it takes its query and
+  /// its submit over the automation socket where neither backend's header
+  /// field can be submitted (GTK synthesises no Enter).
   async function goTo(app: AppHandle, url: string): Promise<void> {
-    // The sidebar layout has no address field: the address is edited in the
-    // palette there, on every backend.
-    const addressIsField = (await app.find("omnibox")) !== null;
-    if (process.platform === "darwin" || !addressIsField) {
-      await openPalette(app);
-      // Opening the bar rebuilds its field, and text typed into the one it
-      // replaces is lost; the submit then went nowhere. The bar's own address
-      // row, built from what it holds, says the text landed.
-      const landed = async (): Promise<boolean> => {
-        const rows = (await app.find("palette"))?.rows ?? [];
-        return rows.some((r) => r.id === "url" && String(r.title ?? "").includes(url));
-      };
-      const deadline = Date.now() + config.timeoutMs;
-      for (;;) {
-        await typeQuery(app, url);
-        const settle = Date.now() + 1500;
-        while (Date.now() < settle && !(await landed())) await Bun.sleep(100);
-        if (await landed()) break;
-        if (Date.now() > deadline) throw new Error(`the command bar never took ${JSON.stringify(url)}`);
-      }
-      await whenReady("submit the palette query", () => app.setValue("palette", true));
-      return;
+    await openAddressBar(app);
+    // Opening the bar rebuilds its field, and text typed into the one it
+    // replaces is lost; the submit then went nowhere. The bar's own address
+    // row, built from what it holds, says the text landed. Its title is the
+    // address as shown, scheme dropped.
+    const landed = async (): Promise<boolean> => {
+      const rows = (await app.find("palette"))?.rows ?? [];
+      return rows.some((r) => r.id === "url" && String(r.title ?? "") !== "" && url.includes(String(r.title)));
+    };
+    const deadline = Date.now() + config.timeoutMs;
+    for (;;) {
+      await typeQuery(app, url);
+      const settle = Date.now() + 1500;
+      while (Date.now() < settle && !(await landed())) await Bun.sleep(100);
+      if (await landed()) break;
+      if (Date.now() > deadline) throw new Error(`the command bar never took ${JSON.stringify(url)}`);
     }
-    // Read back before committing. `text` on the field is the address the app
-    // last set, so a navigation that lands between the fill and the commit
-    // rewrites the field under the drive, and the commit would then re-enter
-    // the address the tab was already on. A person retyping is the same fix.
-    await whenReady(`type ${JSON.stringify(url)} into the address field`, async () => {
-      await app.setValue("omnibox", url);
-      const held = String((await app.mustFind("omnibox")).value ?? "");
-      if (held !== url) throw new Error(`the field holds ${JSON.stringify(held)} after being set to ${JSON.stringify(url)}`);
-    });
-    await whenReady("commit the address field", () => app.click("menu-commit-address"));
+    await whenReady("submit the palette query", () => app.setValue("palette", true));
   }
 
-  return { openPalette, typeQuery, goTo };
+  /// ⌘L: the command bar as an address bar, seeded with the page's address.
+  async function openAddressBar(app: AppHandle): Promise<void> {
+    await step("click menu-address", () => app.click("menu-address"));
+    await step("wait for the address bar to present", () =>
+      app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: config.timeoutMs }),
+    );
+  }
+
+  /// ⌘T, then an address: the command bar opens for a new tab and Enter
+  /// opens the address in one. No tab exists until Enter.
+  async function newTab(app: AppHandle, url: string): Promise<void> {
+    await step("click menu-new-tab", () => app.click("menu-new-tab"));
+    await step("wait for the command bar to present", () =>
+      app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: config.timeoutMs }),
+    );
+    await typeQuery(app, url);
+    await whenReady("submit the palette query", () => app.setValue("palette", true));
+  }
+
+  /// Esc, which GTK cannot synthesise: the test-only item runs its handler.
+  async function closePalette(app: AppHandle): Promise<void> {
+    await step("close the command bar", () => app.click("menu-close-palette"));
+    await step("wait for the command bar to go", async () => {
+      const deadline = Date.now() + config.timeoutMs;
+      while (Date.now() < deadline) {
+        if (!(await app.find("palette"))?.visible) return;
+        await Bun.sleep(120);
+      }
+      fail("the command bar is still up");
+    });
+  }
+
+  return { openPalette, openAddressBar, typeQuery, goTo, newTab, closePalette };
 }
 
 /// The titles of a SourceTree's item rows, polled until they satisfy `check`.

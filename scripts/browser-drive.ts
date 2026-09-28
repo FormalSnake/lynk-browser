@@ -288,7 +288,7 @@ async function waitRows(app: AppHandle, check: (rows: string[]) => boolean, what
   return rowsMatching(app, "tab-list", check, what, PATIENCE);
 }
 
-const { openPalette, typeQuery, goTo } = paletteDriver({ timeoutMs: PATIENCE });
+const { openPalette, openAddressBar, typeQuery, goTo, newTab, closePalette } = paletteDriver({ timeoutMs: PATIENCE });
 
 /// The index of the first palette row whose id matches. Palette rows carry
 /// their app-side id on the wire, so a drive names the row it wants instead of
@@ -565,9 +565,8 @@ try {
 
   // Acceptance 3 — second tab, then switch back and forth. The server load counters are the
   //    proof that neither page was torn down and reloaded.
-  await app.click("menu-new-tab");
+  await newTab(app, `${base}/b`);
   await waitRows(app, (r) => r.length === 2, "a second tab row");
-  await goTo(app, `${base}/b`);
   await waitRows(app, (r) => r[1] === "Page B load 1", "page B title in the sidebar");
 
   await app.click("menu-tab-0");
@@ -595,73 +594,41 @@ try {
   await shoot(app, "03-two-tabs");
 
 
-  // The command palette has its own shortcut (Ctrl+K) and ranks address, open
-  // tabs, history, then app commands. Ctrl+L is the address field's, and is
-  // asserted on its own below.
-  await step("open the command palette (Ctrl+K path)", () => app.click("menu-palette"));
-  await step("palette presents", () => app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE }));
+  // Ctrl+K is the switcher: open tabs and every command. It is asserted
+  // below; first the address bar, where entering the address already open
+  // reloads it.
+  await step("open the switcher (Ctrl+K)", () => app.click("menu-palette"));
+  await step("switcher presents", () => app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE }));
   await shoot(app, "04-palette");
+  await closePalette(app);
+  await openAddressBar(app);
   await typeQuery(app, `${base}/a`);
-  const sameRow = await paletteRow(app, (id) => id === "url", "the address row for the page already open");
-  await step("activate the address row", () => app.setValue("palette", sameRow));
+  await step("submit the address already open", () => app.setValue("palette", true));
   const reloadedA = Date.now() + 10_000;
   while (Date.now() < reloadedA && loads.a === baseline.a) await Bun.sleep(120);
   if (loads.a !== baseline.a + 1) fail(`entering the address already open should have reloaded page A, loads ${JSON.stringify(loads)}`);
   await waitUrl(app, "/a");
 
-  // Ctrl+L belongs to the address field: it asks for the caret and it does not
-  // open the command palette.
-  //
-  // Where the caret ENDS UP is not the app's to assert on this engine. With a
-  // Chrome-style webview in the window, a grab-focus on any GTK widget is
-  // answered ok and then undone: the focus lands in a browser instead (the
-  // hidden chrome://extensions view, or the active page). Measured on g815,
-  // Xvfb, CEF 151.3.23: `focus` on the omnibox returns {"ok":true} and the
-  // tree then reports WebView/page-t1 focused. The find field is taken the
-  // same way. So this leg covers the app's half (it asked, and it asked for
-  // the right widget) and says so rather than passing on a caret that is not
-  // there.
+  // Ctrl+L opens the command bar holding the page's own address (Arc's
+  // Command Bar, docs/omnibox.md). It is the only address field that comes
+  // up: the sidebar layout's address is a button that opens the same bar.
   await settledLoads();
-  const holder = await focusSettled(app);
-  await step("Ctrl+L asks for the address field", () => app.click("menu-address"));
-  // The sidebar layout has no address field: Cmd+L opens the command bar
-  // holding the page's address.
-  if (!(await app.find("omnibox"))) {
-    await step("Ctrl+L opens the command bar on the address", async () => {
-      const deadline = Date.now() + PATIENCE;
-      while (Date.now() < deadline) {
-        if (app.stderrTail(400).includes("ND_APP FOCUS target=palette")) return;
-        await Bun.sleep(150);
-      }
-      return fail("Ctrl+L never opened the command bar");
-    });
-    await app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE });
-    await step("a second Ctrl+L puts it away", () => app.click("menu-address"));
-    const shut = Date.now() + PATIENCE;
-    while ((await app.find("palette"))?.visible && Date.now() < shut) await Bun.sleep(150);
-    if ((await app.find("palette"))?.visible) fail("a second Ctrl+L left the command bar up");
-    console.log("4a. Ctrl+L opened the command bar on the page's address and put it away again");
-  } else {
-    await step("the app asked for the caret", async () => {
-      const deadline = Date.now() + PATIENCE;
-      while (Date.now() < deadline) {
-        if (app.stderrTail(400).includes("ND_APP FOCUS target=omnibox")) return;
-        await Bun.sleep(150);
-      }
-      return fail("the app never issued a focus command for the address field");
-    });
-    const ctrlLField = await app.mustFind("omnibox");
-    if (String(ctrlLField.text ?? "") !== (await shownUrl(app))) {
-      fail(`the address field holds ${JSON.stringify(ctrlLField.text)}, want the page's own address`);
+  await step("Ctrl+L opens the command bar", () => app.click("menu-address"));
+  await step("the command bar presents", () => app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE }));
+  await step("it was seeded with the page's address", async () => {
+    const deadline = Date.now() + PATIENCE;
+    while (Date.now() < deadline) {
+      if (/ND_APP PALETTE open mode=address target=current seed="[^"]*\/a"/.test(app.stderrTail(800))) return;
+      await Bun.sleep(150);
     }
-    if (await app.find("palette").then((n) => n?.visible)) fail("Ctrl+L opened the command palette instead of focusing the field");
-    const caretLanded = (await app.mustFind("omnibox")).focused;
-    console.log(
-      caretLanded
-        ? `4a. Ctrl+L put the caret in the address field (focus had been on ${holder})`
-        : `4a. Ctrl+L asked for the address field; the engine kept the focus on ${await focusName(app)} (engine gap, see the comment)`,
-    );
-  }
+    return fail("the command bar did not open on the page's address");
+  });
+  await shoot(app, "04a-ctrl-l");
+  await step("a second Ctrl+L puts it away", () => app.click("menu-address"));
+  const shut = Date.now() + PATIENCE;
+  while ((await app.find("palette"))?.visible && Date.now() < shut) await Bun.sleep(150);
+  if ((await app.find("palette"))?.visible) fail("a second Ctrl+L left the command bar up");
+  console.log("4a. Ctrl+L opened the command bar on the page's address and put it away again");
 
   await openPalette(app);
   await typeQuery(app, "Page B");
@@ -679,49 +646,27 @@ try {
   console.log("4. palette: address row, tab switch and app command all ran");
 
   // Owner report: a new tab's launcher has to come up EMPTY. `query` is a
-  // controlled prop the host applies only when its value changes, and the
-  // entry keeps whatever was last typed into it, so seeding "" over a seed
-  // that was already "" left the previous tab's address sitting in the field.
-  // getTree reports the palette's rows and never its text, so the field is
-  // read by typing one character into it and reading the result back.
+  // controlled prop the host applies only when its value changes, so every
+  // present has to start from the app's last `query`, not from what was typed
+  // into the one before. getTree reports the palette's rows and never its
+  // text, so the field is read by typing one character into it and reading
+  // the result back.
   const tabsBeforeLauncher = (await tabRows(app)).length;
-  await step("open a tab and send it somewhere by typing the address", async () => {
-    await app.click("menu-new-tab");
-    await waitRows(app, (r) => r.length === tabsBeforeLauncher + 1, "the first extra tab row");
-    await openPalette(app);
-    await typeQuery(app, `${base}/c`);
-    await app.setValue("palette", true);
-  });
+  await step("Ctrl+T, type an address, Enter: it opens in a new tab", () => newTab(app, `${base}/c`));
+  await waitRows(app, (r) => r.length === tabsBeforeLauncher + 1, "the new tab row");
   await waitUrl(app, "/c");
-  await step("open a second tab on top of it", () => app.click("menu-new-tab"));
-  await waitRows(app, (r) => r.length === tabsBeforeLauncher + 2, "the second extra tab row");
-  await step("the new tab page presents its own field", () =>
-    app.waitFor({ testId: "new-tab-search", state: "present" }, { timeoutMs: PATIENCE }),
-  );
-  const fresh = await app.mustFind("new-tab-search");
-  // `value` is the live entry text; `text` in the tree is the prop the app
-  // last set, which a typed or programmatic edit never touches.
-  const held = String(fresh.value ?? "");
-  if (held !== "") fail(`the new tab's field came up holding ${JSON.stringify(held)}`);
-  const engineLine = await app.mustFind("new-tab-engine");
-  if (!String(engineLine.text ?? "").startsWith("Search with ")) {
-    fail(`the new tab page names no search engine, it says ${JSON.stringify(engineLine.text)}`);
+  await step("Ctrl+T again", () => app.click("menu-new-tab"));
+  await step("the command bar presents", () => app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE }));
+  const typedBack = await step("its field came up empty", () => app.type("palette", "x"));
+  if (String((typedBack as { text?: string }).text ?? "") !== "x") {
+    fail(`the new tab's command bar came up holding ${JSON.stringify((typedBack as { text?: string }).text)}`);
   }
-  if (await app.find("palette").then((n) => n?.visible)) fail("a new tab opened the command palette over the page");
-  // Same engine gap as 4a: the field asks for the caret as it mounts, and a
-  // browser in the window takes it back. At launch, before any page exists,
-  // it holds (screenshot 01-new-tab.png).
-  const newTabCaret = fresh.focused;
-  await shoot(app, "04b-new-tab-page");
-  await step("close both tabs this leg opened", async () => {
-    await app.click("menu-close-tab");
-    await waitRows(app, (r) => r.length === tabsBeforeLauncher + 1, "one extra tab left");
-    await app.click("menu-close-tab");
-  });
+  if ((await tabRows(app)).length !== tabsBeforeLauncher + 1) fail("Ctrl+T made a tab before anything was entered");
+  await closePalette(app);
+
+  await step("close the tab this leg opened", () => app.click("menu-close-tab"));
   await waitRows(app, (r) => r.length === tabsBeforeLauncher, "the tab count back where it started");
-  console.log(
-    `4b. a new tab lands on its own centred field, empty (${engineLine.text})${newTabCaret ? ", caret in it" : "; the engine kept the caret"}`,
-  );
+  console.log("4b. Ctrl+T opens an empty command bar and no tab until Enter");
 
   // Acceptance 2 (continued) — back/forward enable states track real history.
   await app.click("menu-tab-1");
@@ -1002,9 +947,8 @@ try {
   } else {
     const beforeChrome = (await tabRows(app)).length;
     await step("open a tab and send it to chrome://version", async () => {
-      await app.click("menu-new-tab");
+      await newTab(app, "chrome://version");
       await waitRows(app, (r) => r.length === beforeChrome + 1, "the extra tab row");
-      await goTo(app, "chrome://version");
     });
     await waitUrl(app, "version");
     await step("leave it in the background", () => app.click("menu-prev-tab"));
@@ -1105,13 +1049,13 @@ try {
   if (prefs.data?.searchEngine !== "google" || prefs.data?.restoreOnLaunch !== false) {
     fail(`settings did not persist: ${JSON.stringify(prefs.data)}`);
   }
-  await openPalette(app);
+  await openAddressBar(app);
   await typeQuery(app, "native desktop");
   const searchRow = await paletteRow(app, (id) => id === "url", "the search row for a non-address query");
   const rows = (await app.mustFind("palette")).rows ?? [];
-  const searchTitle = rows[searchRow]?.title ?? "";
+  const searchTitle = `${rows[searchRow]?.title ?? ""} ${rows[searchRow]?.subtitle ?? ""}`.trim();
   if (!searchTitle.includes("Google")) fail(`the palette still offers ${JSON.stringify(searchTitle)} after choosing Google`);
-  await step("dismiss the palette", () => app.click("menu-address"));
+  await closePalette(app);
   await shoot(app, "13-settings", (await app.find("settings-window"))?.ref);
   // The layout switch took the width its two labels need rather than the
   // minimum the row would hand it, which ellipsized "Compact".
@@ -1389,9 +1333,10 @@ try {
   // quietly did not happen reads here as a request that never arrived.
   const askFor = (path: string): Promise<void> => goTo(app, `${base}${path}`);
 
-  await step("open a tab for the permission fixtures", () => app.click("menu-new-tab"));
+  await step("open a tab for the permission fixtures and ask for notifications", () =>
+    newTab(app, `${base}/permission`),
+  );
   await waitRows(app, (r) => r.length === permTabs + 1, "a tab for the permission page");
-  await step("ask for notifications", () => askFor("/permission"));
   await step("the site-info bubble opens itself with the request", () =>
     app.waitFor({ testId: "permission-request", state: "present" }, { timeoutMs: PATIENCE }),
   );
@@ -1440,9 +1385,8 @@ try {
   // A tab closed with a prompt open: the request is answered rather than left
   // pending, which is only visible in what the app sent.
   await step("open one more tab and ask from it", async () => {
-    await app.click("menu-new-tab");
+    await newTab(app, `${base}/permission-midi`);
     await waitRows(app, (r) => r.length === permTabs + 2, "the second permission tab");
-    await askFor("/permission-midi");
   });
   await step("its request is on show", () =>
     app.waitFor({ testId: "permission-request", state: "present" }, { timeoutMs: PATIENCE }),
@@ -1679,8 +1623,7 @@ try {
     fail(`${what}: ${await windowCount()} windows, want ${n}`);
   };
 
-  await step("open a tab for the counter page", () => app.click("menu-new-tab"));
-  await goTo(app, `${base}/counter`);
+  await step("open a tab for the counter page", () => newTab(app, `${base}/counter`));
   await waitUrl(app, "/counter");
   // The address is the app's as soon as it is set; the page's script is
   // there once the title is its own.
@@ -1798,7 +1741,8 @@ try {
         await setValueWhenReady(bar, `${base}/b`);
         await Bun.sleep(600);
         const rows = (await app.find(bar))?.rows ?? [];
-        if (rows.some((r) => r.id === "url" && String(r.title ?? "").includes(`${base}/b`))) return;
+        // The address row's title is the address as shown, scheme dropped.
+        if (rows.some((r) => r.id === "url" && String(r.title ?? "") !== "" && `${base}/b`.includes(String(r.title)))) return;
         if (Date.now() > deadline) fail(`the new window's command bar never took ${base}/b`);
       }
     });

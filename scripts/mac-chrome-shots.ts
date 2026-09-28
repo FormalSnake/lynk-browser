@@ -61,7 +61,7 @@ const server = Bun.serve({
 });
 const base = `http://127.0.0.1:${server.port}`;
 
-const { goTo } = paletteDriver({ timeoutMs: PATIENCE });
+const { goTo, newTab } = paletteDriver({ timeoutMs: PATIENCE });
 
 /// ndshot sees popovers and menus as windows of their own. The app's document
 /// window is the biggest one that is not the private window.
@@ -107,8 +107,7 @@ try {
   await goTo(app, `${base}/one`);
   await app.waitFor({ testId: "page-t1", state: "visible" }, { timeoutMs: PATIENCE });
   for (const path of ["/two", "/three", "/four"]) {
-    await step(`open a tab on ${path}`, () => app.click("menu-new-tab"));
-    await goTo(app, `${base}${path}`);
+    await step(`open a tab on ${path}`, () => newTab(app, `${base}${path}`));
     await Bun.sleep(900);
   }
   await Bun.sleep(2000);
