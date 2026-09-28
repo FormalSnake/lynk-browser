@@ -17,7 +17,12 @@
 //      size with their mark centred, the foot's glyphs on one centre line
 //   2  the page card: margins, and a corner pixel outside its curve
 //   3  the load bar along the page's top edge, mid-load and after
-//   4  hide the sidebar, then the edge reveal over an unchanged card
+//   1b AppKit: every pinned tile a Liquid Glass pill, the one on show raised,
+//      captured at both widths beside the owner's reference
+//   4  hide the sidebar, then the edge reveal over an unchanged card; on
+//      AppKit the traffic lights are gone while it is hidden and ride with
+//      the peeking panel, held to the tiles' leading edge on every frame
+//      of the slide in and out
 //   5  a tab dragged within the list (and between the sections)
 //   6  a click on the row on show opens the command bar on its address
 //   7  compact and back: no controls row or card in compact, both back after
@@ -26,6 +31,11 @@
 // gtk-decoration-layout puts the window buttons, and leg 1 asserts they are
 // there: in the sidebar's first row when they lead, in a strip over the card
 // when they trail, and no room kept for them when there are none.
+//
+// ND_APPEARANCE=light|dark pins the host's appearance for the captures.
+// ND_ANIMATION_SLOWDOWN=<n> stretches the peek's slide n times, and leg 4 then
+// also captures it as a frame sequence and checks the lights against the
+// tiles in each frame's pixels.
 //
 // Marker: NB_SIDEBAR_OK.
 import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
@@ -164,6 +174,14 @@ writeFileSync(
   }),
 );
 
+/// The host's reveal trace (ND_REVEAL_TRACE): one line per display frame
+/// while the peeking panel slides, with where the panel and the close button
+/// are on screen.
+type RevealFrame = { dir: string; t: number; panel: number; close: number; alpha: number; hidden: boolean; at: number };
+const revealFrames: RevealFrame[] = [];
+const slowdown = Number(process.env.ND_ANIMATION_SLOWDOWN ?? 1);
+const look = process.env.ND_APPEARANCE ?? "system";
+
 const app = await launchApp({
   entry: "src/main.tsx",
   cwd: ROOT,
@@ -178,10 +196,15 @@ const app = await launchApp({
     ND_APP_ID: "dev.nativebrowser.sidebar",
     XDG_DATA_HOME: join(store, "data"),
     ND_CEF_CACHE: process.env.ND_CEF_CACHE || join(store, "cef"),
+    ND_REVEAL_TRACE: "1",
   },
   readyTimeoutMs: PATIENCE * 2,
   rpcTimeoutMs: PATIENCE,
   logPath: process.env.NB_SIDEBAR_HOST_LOG,
+  onStderr: (line) => {
+    const m = /^ND_REVEAL_FRAME dir=(\w+) t=([\d.]+) panel=(-?[\d.]+) close=(-?[\d.]+) alpha=([\d.]+) hidden=(\d)/.exec(line);
+    if (m) revealFrames.push({ dir: m[1]!, t: +m[2]!, panel: +m[3]!, close: +m[4]!, alpha: +m[5]!, hidden: m[6] === "1", at: Date.now() });
+  },
   // A second host on the first one's CEF profile hands its launch to the first,
   // which then opens a whole Chromium window of its own: a slow first start
   // must fail the run, not be relaunched over.
@@ -300,7 +323,8 @@ function isPageBlue(rgb: number[]): boolean {
   return rgb.every((c, i) => Math.abs(c - want[i]!) < 40);
 }
 
-/// Where the close button's red is, in window points, inside `box`.
+/// Where the close button's red is, in window points, inside `box`. Red by
+/// how far it stands from green and blue: light mode draws it paler.
 function redCentroid(path: string, scale: number, box: Rect): { x: number; y: number; n: number } {
   const out = sh(
     "python3",
@@ -311,7 +335,7 @@ xs=[];ys=[]
 for y in range(int(${box.y}*s),int(${box.y + box.h}*s)):
   for x in range(int(${box.x}*s),int(${box.x + box.w}*s)):
     r,g,b=im.getpixel((x,y))
-    if r>200 and g<120 and b<120: xs.append(x); ys.append(y)
+    if r>180 and r-g>70 and r-b>70 and b>40: xs.append(x); ys.append(y)
 n=len(xs)
 print(sum(xs)/n/s if n else -1, sum(ys)/n/s if n else -1, n)`,
   );
@@ -494,6 +518,167 @@ async function geometryLeg(width: number): Promise<void> {
   console.log(`  NB_SIDEBAR_GEOMETRY_OK ${line} sidebar=${sidebar.w} long=${long.w}`);
 }
 
+/// AppKit: each pinned tile is its own Liquid Glass pill, and the tile on show
+/// the raised one. With a loose tab on show every tile rests; with a pinned
+/// one on show that tile alone is raised. Captured at both widths, and set
+/// beside the owner's reference (`~/Developer/nativebrowser-ref`).
+async function glassLeg(): Promise<void> {
+  const pins = ["t1", "t2", "t3", "t4"];
+  const materials = async () => Promise.all(pins.map(async (id) => (await app.mustFind(`tab-slot-${id}`)).material ?? null));
+  const resting = await materials();
+  if (resting.some((m) => m !== "glass")) fail(`with a loose tab on show the tiles are ${JSON.stringify(resting)}, not all resting glass`);
+  // Every other tile is untouched by a tile coming on show, and the rows are
+  // no glass at all.
+  if ((await app.mustFind("tab-slot-t6")).material === "glass") fail("the tab row on show is drawn as a glass tile");
+  await app.click("tab-t2");
+  const raised = await waitFor("the second tile to rise", materials, (m) => m[1] === "raised-glass");
+  if (raised.filter((m) => m === "glass").length !== 3) fail(`one tile on show, but the tiles are ${JSON.stringify(raised)}`);
+  const crops: string[] = [];
+  for (const width of [1280, 720]) {
+    await app.setWindowSize(width, 800);
+    await settle("sidebar");
+    await Bun.sleep(600);
+    const shot = await capture(`glass-${look}-${width}`);
+    if (!shot) continue;
+    // The raised tile reads brighter than every resting one, in its pixels.
+    const tiles = await Promise.all(pins.map((id) => rect(`tab-slot-${id}`)));
+    const lums = JSON.parse(
+      sh(
+        "python3",
+        "-c",
+        `from PIL import Image
+import json
+im = Image.open(${JSON.stringify(shot.path)}).convert("L"); s = im.width / ${width}
+out = []
+for r in ${JSON.stringify(tiles)}:
+    px = [im.getpixel((int(x * s), int(y * s))) for y in range(int(r["y"]) + 4, int(r["y"] + r["h"]) - 4) for x in range(int(r["x"]) + 4, int(r["x"] + r["w"]) - 4)]
+    px.sort()
+    out.append(px[len(px) // 2])
+print(json.dumps(out))`,
+      ),
+    ) as number[];
+    const others = lums.filter((_, i) => i !== 1);
+    if (lums[1]! < Math.max(...others) + 6) fail(`width=${width}: the raised tile is not brighter than the resting ones (median luminance ${lums.join(",")})`);
+    console.log(`  glass width=${width}: tile luminance ${lums.join(",")} (the second raised)`);
+    const bar = await rect("sidebar");
+    const rows = await rect("tab-slot-t6");
+    // The sidebar's top with a strip of the page beside it: the reference's
+    // framing.
+    crops.push(`${shot.path}|${bar.x + bar.w + 140}|${rows.y + rows.h + 120}`);
+  }
+  if (crops.length) {
+    const out = `${SHOTS}/mac-glass-montage-${look}.png`;
+    sh(
+      "python3",
+      "-c",
+      `from PIL import Image, ImageDraw
+import os
+H = 720
+panes = [("reference (Arc)", Image.open(os.path.expanduser("~/Developer/nativebrowser-ref/arc-glass-pinned.png")).convert("RGB"))]
+for spec in ${JSON.stringify(crops)}:
+    path, w, h = spec.split("|")
+    im = Image.open(path).convert("RGB")
+    s = im.width / (1280 if path.endswith("-1280.png") else 720)
+    panes.append((os.path.basename(path), im.crop((0, 0, min(im.width, int(float(w) * s)), min(im.height, int(float(h) * s))))))
+imgs = []
+for label, im in panes:
+    im = im.resize((int(im.width * H / im.height), H))
+    canvas = Image.new("RGB", (im.width, H + 36), (128, 128, 128))
+    canvas.paste(im, (0, 36))
+    ImageDraw.Draw(canvas).text((10, 10), label, fill=(255, 255, 255))
+    imgs.append(canvas)
+m = Image.new("RGB", (sum(i.width for i in imgs) + 16 * (len(imgs) - 1), H + 36), (128, 128, 128))
+x = 0
+for i in imgs:
+    m.paste(i, (x, 0))
+    x += i.width + 16
+m.save(${JSON.stringify(out)})`,
+    );
+    console.log(`  montage ${out}`);
+  }
+  await app.click("tab-t6");
+  await waitFor("the tiles to rest again", materials, (m) => m.every((x) => x === "glass"));
+  console.log(`  NB_SIDEBAR_GLASS_OK ${look}: resting ${resting.join(",")}, one on show ${raised.join(",")}`);
+}
+
+/// The trace of one slide of the peeking panel, once it has run out. With
+/// ND_ANIMATION_SLOWDOWN the slide is long enough to capture, and each
+/// capture is checked in its pixels too: the close button's red against the
+/// first tile's orange favicon, which sits in the tile's middle.
+async function peekFrames(dir: "in" | "out", tileW: number): Promise<RevealFrame[]> {
+  const shots: string[] = [];
+  const ended = () => {
+    const mine = revealFrames.filter((f) => f.dir === dir);
+    return mine.length > 0 && Date.now() - mine[mine.length - 1]!.at > 300;
+  };
+  const deadline = Date.now() + 5000 * slowdown;
+  let n = 0;
+  while (!ended() && Date.now() < deadline) {
+    if (slowdown > 1) {
+      const win = ndshotWindows(app.pid).find((w) => w.title !== "") ?? fail("ndshot sees no app window");
+      const path = `${SHOTS}/mac-peek-${dir}-${String(++n).padStart(2, "0")}.png`;
+      sh("timeout", "30", NDSHOT, "capture", "--window-id", String(win.windowID), "--no-focus", "--out", path);
+      shots.push(path);
+      // The capture blocks; the host's trace lines are read in between.
+      await Bun.sleep(20);
+    } else await Bun.sleep(50);
+  }
+  const frames = revealFrames.filter((f) => f.dir === dir);
+  if (!frames.length) fail(`no trace of the peek sliding ${dir} (ND_REVEAL_TRACE)`);
+  if (shots.length) {
+    const win = await windowRect();
+    const out = sh(
+      "python3",
+      "-c",
+      `from PIL import Image
+import json
+shots = ${JSON.stringify(shots)}
+res = []
+strip = []
+for path in shots:
+    im = Image.open(path).convert("RGB"); s = im.width / ${win.w}
+    def centroid(y0, y1, want):
+        xs = [x for y in range(int(y0 * s), int(y1 * s)) for x in range(0, int(360 * s)) if want(im.getpixel((x, y)))]
+        return (sum(xs) / len(xs) / s, len(xs)) if xs else (None, 0)
+    red, rn = centroid(0, 60, lambda p: p[0] > 180 and p[0] - p[1] > 70 and p[0] - p[2] > 70 and p[2] > 40)
+    orange, on = centroid(60, 140, lambda p: p[0] > 200 and 100 < p[1] < 180 and p[2] < 80)
+    res.append({"path": path, "close": None if red is None else red - 7, "tile": None if orange is None else orange - ${tileW} / 2, "rn": rn, "on": on})
+    strip.append(im.crop((0, 0, int(360 * s), int(260 * s))))
+w = sum(i.width for i in strip) + 8 * (len(strip) - 1)
+m = Image.new("RGB", (w, strip[0].height), (128, 128, 128))
+x = 0
+for i in strip:
+    m.paste(i, (x, 0)); x += i.width + 8
+m.save(${JSON.stringify(`${SHOTS}/mac-peek-${dir}-strip.png`)})
+print(json.dumps(res))`,
+    );
+    const measured = JSON.parse(out) as { path: string; close: number | null; tile: number | null; rn: number; on: number }[];
+    let checked = 0;
+    for (const f of measured) {
+      // A frame where either mark is cut by the window's edge says nothing.
+      if (f.close === null || f.tile === null || f.close < 1 || f.tile < 1 || f.rn < 20 || f.on < 20) continue;
+      checked++;
+      if (!near(f.close, f.tile, 1)) fail(`peek ${dir}: in ${f.path} the close button starts at ${f.close.toFixed(1)}, the first tile at ${f.tile.toFixed(1)}`);
+    }
+    console.log(`  peek ${dir}: ${shots.length} frames captured, ${checked} with both marks whole held together (${SHOTS}/mac-peek-${dir}-strip.png)`);
+  }
+  return frames;
+}
+
+/// Every traced frame of a slide keeps the close button on the tiles' leading
+/// edge (the panel's edge plus the tiles' offset in it), visible throughout,
+/// and the trace covers the start, the middle and the end of the slide.
+function holdLights(dir: string, frames: RevealFrame[], tileOffset: number): void {
+  const bad = frames.filter((f) => !near(f.close, f.panel + tileOffset, 1) || f.hidden || f.alpha < 0.99);
+  if (bad.length) fail(`peek ${dir}: the lights leave the tiles on ${bad.length} of ${frames.length} frames, first ${JSON.stringify(bad[0])} (tiles ${tileOffset} into the panel)`);
+  const xs = frames.map((f) => f.panel);
+  const rest = dir === "in" ? xs[xs.length - 1]! : xs[0]!;
+  const away = dir === "in" ? xs[0]! : xs[xs.length - 1]!;
+  const mid = xs.filter((x) => Math.abs(x - rest) > 4 && Math.abs(x - away) > 4);
+  if (away > rest - 100 || mid.length < 3) fail(`peek ${dir}: the trace does not cover the slide (${xs.map((x) => x.toFixed(0)).join(" ")})`);
+  console.log(`  NB_SIDEBAR_PEEK_LIGHTS_OK ${dir}: ${frames.length} frames from ${away.toFixed(0)} to ${rest.toFixed(0)}, ${mid.length} mid-slide, close button on the tiles' edge (+${tileOffset}) in every one`);
+}
+
 /// GTK, trailing controls, sidebar hidden: the strip is gone and keeps no
 /// room, slides in over the page while the pointer is at the top edge, and the
 /// page does not move for it. At the drive's current width and at 1280.
@@ -600,6 +785,7 @@ try {
     await geometryLeg(width);
     await cardLeg(`open-${width}`, null);
   }
+  if (appkit) await glassLeg();
 
   // ---- 3: the load bar ----------------------------------------------------
   // The address is edited in the command bar, so the drive types into the
@@ -645,15 +831,28 @@ try {
   }
 
   // ---- 4: hide, then the edge reveal --------------------------------------
+  const tileW = (await rect("tab-slot-t1")).w;
+  // Off the leading edge first: a pointer left there peeks the sidebar
+  // straight back in.
+  if (appkit) await pointer("move", 700, 400);
   await app.click("menu-toggle-sidebar");
   await waitFor("the sidebar to hide", () => maybeRect("sidebar"), (r) => r === null || r.x + r.w <= 0);
   // Hidden, the page is immersive on both backends: edge to edge, no frame.
   let hidden = await cardLeg("hidden", 0, 0);
   if (!appkit && gtkControls === "end") hidden = await stripLeg(hidden);
+  // AppKit: the traffic lights went with the sidebar.
+  if (appkit) {
+    const shot = await capture("peek-collapsed");
+    const scale = Number(sh("python3", "-c", `from PIL import Image;print(Image.open(${JSON.stringify(shot!.path)}).width/${(await windowRect()).w})`).trim());
+    const red = redCentroid(shot!.path, scale, { x: 0, y: 0, w: 160, h: 90 });
+    if (red.n >= 20) fail(`the traffic lights are still drawn with the sidebar hidden (${red.n} red px at ${red.x.toFixed(1)},${red.y.toFixed(1)})`);
+  }
   // A real pointer where there is one: on Linux the page is edge to edge under it.
+  revealFrames.length = 0;
   if (appkit || !darwin) await pointer("move", 2, 400);
   else await app.click("menu-reveal-sidebar");
   await waitFor("the sidebar to come in", () => maybeRect("sidebar"), (r) => r !== null && r.x >= 0);
+  const slide = appkit ? await peekFrames("in", tileW) : [];
   await Bun.sleep(400);
   const over = await rect("content");
   if (JSON.stringify(over) !== JSON.stringify(hidden)) fail(`the reveal resized the page: ${JSON.stringify(hidden)} -> ${JSON.stringify(over)}`);
@@ -668,9 +867,25 @@ try {
     }
   }
   await capture("revealed");
+  // The lights ride with the panel: on every frame of the slide the close
+  // button's leading edge is the tiles' leading edge, as it is at rest.
+  const tileOffset = appkit ? (await rect("tab-slot-t1")).x - (await rect("sidebar")).x : 0;
+  if (appkit) {
+    const rest = await rect("controls-start");
+    if (!near(rest.x, (await rect("tab-slot-t1")).x, 1)) fail(`the peeking panel's controls start at ${rest.x}, its tiles at ${(await rect("tab-slot-t1")).x}`);
+    holdLights("in", slide, tileOffset);
+  }
+  revealFrames.length = 0;
   if (appkit || !darwin) await pointer("move", 700, 400);
   else await app.click("menu-conceal-sidebar");
   await waitFor("the sidebar to leave", () => maybeRect("sidebar"), (r) => r === null || r.x + r.w <= 0);
+  if (appkit) {
+    holdLights("out", await peekFrames("out", tileW), tileOffset);
+    const shot = await capture("peek-concealed");
+    const scale = Number(sh("python3", "-c", `from PIL import Image;print(Image.open(${JSON.stringify(shot!.path)}).width/${(await windowRect()).w})`).trim());
+    const red = redCentroid(shot!.path, scale, { x: 0, y: 0, w: 160, h: 90 });
+    if (red.n >= 20) fail(`the traffic lights stayed behind when the panel slid out (${red.n} red px)`);
+  }
   await app.click("menu-toggle-sidebar");
   await waitFor("the sidebar to come back", () => maybeRect("sidebar"), (r) => r !== null && r.x >= 0);
   console.log("  NB_SIDEBAR_REVEAL_OK hidden, revealed over an unchanged card, concealed, shown");
