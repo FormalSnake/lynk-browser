@@ -52,8 +52,15 @@ the ones below, set to each platform's own type and colours rather than copied.
 1. **Controls row**, 32 tall: the window controls where the platform puts
    them, and nothing else (a secondary window's own menu trails it). Back,
    forward and reload are Cmd+[, Cmd+] and Cmd+R; the address is Cmd+L.
-2. **Pinned tabs**: tiles in a block, three to a row up to six pins and then
-   one column more per two, 34 tall with 4 between them. A tile shows the
+2. **Pinned tabs**: Arc's favourites grid. The tiles span the column's
+   content width, from the rows' leading edge to their trailing edge, 6
+   between them: as many columns as fit at 40 wide, at most four (three in a
+   720 pt window, four from about 900), every tile one cell, and a short last
+   row keeps the column pitch. A tile is 0.74 of its width tall, Arc's
+   proportion (80 x 108 px in the owner's reference), rounded to whole
+   points: 43 x 32 at 720, 63 x 46 at 1280. The framework's box tile grid
+   (`tileMinWidth`, `tileMaxColumns`, `tileAspect`) lays it out, so dragging
+   the split's divider reflows it in the same pass. A tile shows the
    site's icon, or its first letter until there is one; Settings > Pinned
    Tabs > Letters shows the letter only, the quieter column. The tab on show
    has its letter in full ink, the rest in the secondary ink. On AppKit each

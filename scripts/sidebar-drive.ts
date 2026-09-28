@@ -17,6 +17,10 @@
 //      size with their mark centred, the foot's glyphs on one centre line
 //   2  the page card: margins, and a corner pixel outside its curve
 //   3  the load bar along the page's top edge, mid-load and after
+//   1a the pinned grid: 1, 2, 3, 4, 5 and 7 pins at 720 and 1280, and
+//      after the sidebar is resized: the tiles span the rows' inset edge to
+//      edge, one cell size, a short last row on the column pitch, Arc's
+//      height for the width
 //   1b AppKit: every pinned tile a Liquid Glass pill, the one on show raised,
 //      captured at both widths beside the owner's reference
 //   4  hide the sidebar, then the edge reveal over an unchanged card; on
@@ -66,6 +70,9 @@ const PAGES: Record<string, string> = {
   docs: "Project docs",
   long: "Quarterly engineering review and roadmap for the next fiscal year",
   plain: "Example page",
+  news: "Front page",
+  music: "Library",
+  maps: "Directions",
 };
 /// A page that holds its load open, so the load bar can be caught mid-load.
 /// Every held request, since an engine can ask twice for one navigation.
@@ -161,13 +168,17 @@ writeFileSync(
             tab("t4", "docs", { pinned: true }),
             tab("t5", "long"),
             tab("t6", "plain"),
+            // Pinned and unpinned by the grid leg, for five and seven pins.
+            tab("t7", "news"),
+            tab("t8", "music"),
+            tab("t9", "maps"),
           ],
           activeId: "t6",
           width: 1280,
           height: 800,
         },
       ],
-      nextTabId: 7,
+      nextTabId: 10,
       nextWindowId: 2,
       zoomByHost: {},
     },
@@ -477,17 +488,8 @@ async function geometryLeg(width: number): Promise<void> {
   if (long.w < longRow.w - 24 - 8 - 8 - 1) fail(`${line}: the long title has ${long.w} of its row's ${longRow.w}`);
   if (longRow.x + longRow.w > sidebar.x + sidebar.w) fail(`${line}: a tab row overflows the sidebar`);
 
-  // Pinned tabs are tiles of one size, three to a row for four pins, their
-  // mark in the middle.
-  const tiles = await Promise.all(["t1", "t2", "t3", "t4"].map((id) => rect(`tab-slot-${id}`)));
-  for (const [i, tile] of tiles.entries()) {
-    if (!near(tile.w, tiles[0]!.w) || !near(tile.h, tiles[0]!.h)) fail(`${line}: pinned tile ${i + 1} is ${tile.w}x${tile.h}, not ${tiles[0]!.w}x${tiles[0]!.h}`);
-    const mark = await rect(`tab-t${i + 1}`);
-    if (!near(mid(tile).x, mid(mark).x) || !near(mid(tile).y, mid(mark).y)) {
-      fail(`${line}: pinned tile ${i + 1}'s mark is off its centre (${JSON.stringify({ tile, mark })})`);
-    }
-  }
-  if (!near(tiles[0]!.y, tiles[2]!.y) || tiles[3]!.y <= tiles[0]!.y) fail(`${line}: four pins are not three and one (${JSON.stringify(tiles)})`);
+  // Pinned tabs: the grid, and each tile's mark in its middle.
+  await gridCheck(line);
 
   // The foot: settings leading on macOS, downloads leading and the New Tab
   // plus trailing on GTK, all on one centre line.
@@ -516,6 +518,145 @@ async function geometryLeg(width: number): Promise<void> {
     }
   }
   console.log(`  NB_SIDEBAR_GEOMETRY_OK ${line} sidebar=${sidebar.w} long=${long.w}`);
+}
+
+/// The pinned grid (docs/sidebar.md): Arc's favourites. The drive knows the
+/// rule's numbers: 40 pt at least per tile, four columns at most, 6 between
+/// tiles, and Arc's height for the width, measured off the owner's reference
+/// (a tile 108 px wide is 80 tall there).
+const PIN_MIN = 40;
+const PIN_COLUMNS = 4;
+const PIN_GAP = 6;
+const ARC_RATIO = 80 / 108;
+
+/// The pinned tiles in their order in the block.
+async function pinnedOrder(): Promise<string[]> {
+  const block = await app.find("pinned-tabs");
+  const ids: string[] = [];
+  if (block) {
+    walk(block, (n) => {
+      const m = /^tab-slot-(.+)$/.exec(n.testID ?? "");
+      if (m) ids.push(m[1]!);
+    });
+  }
+  return ids;
+}
+
+/// The tiles fill the column's content width exactly: the first column
+/// starts on the tab rows' leading edge, a full row ends on their trailing
+/// edge (the same inset mirrored), every tile is one cell, the last row's
+/// tiles sit on the column pitch, and a tile is Arc's height for its width.
+async function gridCheck(line: string): Promise<{ columns: number; w: number; h: number }> {
+  const ids = await pinnedOrder();
+  if (ids.length === 0) fail(`${line}: no pinned tiles`);
+  const sidebar = await rect("sidebar");
+  const row = await rect("tab-slot-t6");
+  const left = row.x;
+  const right = row.x + row.w;
+  const span = right - left;
+  if (!near(left - sidebar.x, sidebar.x + sidebar.w - right, 1)) {
+    fail(`${line}: the rows are not inset evenly (${left - sidebar.x} leading, ${sidebar.x + sidebar.w - right} trailing)`);
+  }
+  const tiles = await Promise.all(ids.map((id) => rect(`tab-slot-${id}`)));
+  const first = tiles[0]!;
+  // A short single row has fewer tiles than columns, so the count comes
+  // from the cell width, and the first row then has to agree with it.
+  const columns = Math.round((span + PIN_GAP) / (first.w + PIN_GAP));
+  const dump = JSON.stringify({ span, tiles });
+  if (columns < 1 || columns > PIN_COLUMNS) fail(`${line}: ${columns} columns (${dump})`);
+  const firstRow = tiles.filter((t) => near(t.y, first.y, 1)).length;
+  if (firstRow !== Math.min(ids.length, columns)) fail(`${line}: ${firstRow} tiles in the first row, ${columns} columns (${dump})`);
+  // As many columns as fit at the minimum width, unless the cap is hit; the
+  // GTK tile's own minimum can make a column wider than the floor.
+  const fit = Math.min(PIN_COLUMNS, Math.floor((span + PIN_GAP) / (PIN_MIN + PIN_GAP)));
+  if (appkit ? columns !== fit : columns > fit) fail(`${line}: ${columns} columns in ${span} pt, the rule gives ${fit} (${dump})`);
+  const cell = (span - PIN_GAP * (columns - 1)) / columns;
+  const pitch = cell + PIN_GAP;
+  for (const [i, t] of tiles.entries()) {
+    const at = { x: left + (i % columns) * pitch, y: first.y + Math.floor(i / columns) * (first.h + PIN_GAP) };
+    if (!near(t.w, cell, 1) || !near(t.h, first.h, 1)) fail(`${line}: tile ${ids[i]} is ${t.w}x${t.h}, a cell is ${cell.toFixed(1)}x${first.h} (${dump})`);
+    if (!near(t.x, at.x, 1) || !near(t.y, at.y, 1)) fail(`${line}: tile ${ids[i]} is at ${t.x},${t.y}, its cell at ${at.x.toFixed(1)},${at.y.toFixed(1)} (${dump})`);
+    const mark = await rect(`tab-${ids[i]}`);
+    if (!near(mid(t).x, mid(mark).x) || !near(mid(t).y, mid(mark).y)) {
+      fail(`${line}: tile ${ids[i]}'s mark is off its centre (${JSON.stringify({ tile: t, mark })})`);
+    }
+  }
+  if (!near(first.x, left, 1)) fail(`${line}: the tiles start at ${first.x}, the rows at ${left}`);
+  if (ids.length >= columns) {
+    const end = tiles[columns - 1]!;
+    if (!near(end.x + end.w, right, 1)) fail(`${line}: the last column ends at ${end.x + end.w}, the rows at ${right}`);
+  }
+  const ratio = first.h / first.w;
+  if (Math.abs(ratio - ARC_RATIO) / ARC_RATIO > 0.02) fail(`${line}: a tile is ${first.w}x${first.h} (${ratio.toFixed(3)}), Arc's is ${ARC_RATIO.toFixed(3)}`);
+  return { columns, w: first.w, h: first.h };
+}
+
+/// Pins or unpins one tab through the Tabs menu, on the tab itself.
+async function setPinned(id: string, pinned: boolean): Promise<void> {
+  const order = [...(await pinnedOrder()), ...(await todayOrder())];
+  await app.click(`menu-tab-${order.indexOf(id)}`);
+  // A tile on show carries its live marker, a row on show its close button.
+  await waitFor(`${id} on show`, async () => (await app.find(`tab-live-${id}`)) ?? (await app.find(`tab-close-${id}`)), (n) => n !== null);
+  await app.click("menu-pin-tab");
+  await waitFor(`${id} ${pinned ? "pinned" : "unpinned"}`, pinnedOrder, (o) => o.includes(id) === pinned);
+}
+
+async function gridLeg(): Promise<void> {
+  const report: string[] = [];
+  const counts: [number, string[]][] = [
+    [4, []],
+    [3, ["-t4"]],
+    [2, ["-t3"]],
+    [1, ["-t2"]],
+    [5, ["+t2", "+t3", "+t4", "+t7"]],
+    [7, ["+t8", "+t9"]],
+  ];
+  for (const [count, moves] of counts) {
+    for (const m of moves) await setPinned(m.slice(1), m[0] === "+");
+    if ((await pinnedOrder()).length !== count) fail(`expected ${count} pins, have ${JSON.stringify(await pinnedOrder())}`);
+    for (const width of [720, 1280]) {
+      await app.setWindowSize(width, 800);
+      await settle("sidebar");
+      await settle(`tab-slot-${(await pinnedOrder()).at(-1)}`);
+      const g = await gridCheck(`pins=${count} width=${width}`);
+      report.push(`${count}@${width}=${g.columns}x${g.w}x${g.h}`);
+      if (count === 4 || count === 7) await capture(`grid-${look}-${count}-${width}`);
+    }
+  }
+  // The sidebar resized by the window; the divider drag comes late in the
+  // drive (dividerLeg), since the split keeps a dragged width after.
+  for (const width of [900, 1100]) {
+    await app.setWindowSize(width, 800);
+    await settle("sidebar");
+    await settle("tab-slot-t9");
+    const g = await gridCheck(`pins=7 width=${width}`);
+    report.push(`7@${width}=${g.columns}x${g.w}x${g.h}`);
+  }
+  for (const id of ["t9", "t8", "t7"]) await setPinned(id, false);
+  await app.click(`menu-tab-${[...(await pinnedOrder()), ...(await todayOrder())].indexOf("t6")}`);
+  console.log(`  NB_SIDEBAR_GRID_OK ${report.join(" ")}`);
+}
+
+/// AppKit: the sidebar resized by dragging the split's divider with the real
+/// cursor, narrower and then wider, and the grid follows each time. Late in
+/// the drive: the split holds a dragged width from then on.
+async function dividerLeg(): Promise<void> {
+  await app.setWindowSize(1100, 800);
+  await waitFor("the window at 1100", windowRect, (r) => r.w === 1100);
+  await waitFor("the sidebar to widen with it", () => rect("sidebar"), (r) => r.w > 220);
+  const report: string[] = [];
+  for (const by of [-70, 110]) {
+    const before = await settle("sidebar");
+    const at = { x: before.x + before.w, y: before.y + before.h / 2 };
+    await app.cursor.drag(at, { x: at.x + by, y: at.y }, { steps: 24 });
+    const after = await settle("sidebar");
+    if (Math.abs(after.w - before.w) < 20) fail(`the divider drag left the sidebar at ${after.w} (was ${before.w})`);
+    await settle(`tab-slot-${(await pinnedOrder()).at(-1)}`);
+    const g = await gridCheck(`dragged sidebar=${after.w}`);
+    report.push(`${after.w}=${g.columns}x${g.w}x${g.h}`);
+    await capture(`grid-${look}-dragged-${after.w}`);
+  }
+  console.log(`  NB_SIDEBAR_GRID_DRAG_OK ${report.join(" ")}`);
 }
 
 /// AppKit: each pinned tile is its own Liquid Glass pill, and the tile on show
@@ -785,6 +926,7 @@ try {
     await geometryLeg(width);
     await cardLeg(`open-${width}`, null);
   }
+  await gridLeg();
   if (appkit) await glassLeg();
 
   // ---- 3: the load bar ----------------------------------------------------
@@ -1255,6 +1397,10 @@ print(worst if worst is not None else -1)`,
     }
     console.log(`  NB_SIDEBAR_CTX_OK menus opened: ${found.join(" ")}`);
   }
+
+  // ---- 7d: the divider --------------------------------------------------------
+  // Before 8, which leaves the Settings window up.
+  if (appkit) await dividerLeg();
 
   // ---- 8: the two tile styles ----------------------------------------------
   // Icons by default: the site with a cached favicon shows it, the rest their

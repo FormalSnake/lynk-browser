@@ -24,17 +24,16 @@ export const INSET = 8;
 /// 14, so a top padding of 10 puts its top edge the same 19 down.
 const MAC_MARGIN = 19;
 const MAC_TOP = MAC_MARGIN + 7 - 16;
-/// A pinned tile's height, and its width while three share a row.
-const PIN_HEIGHT = 34;
-const PIN_GAP = 4;
-/// A floor above any tile's natural width, given to tiles and to the fillers
-/// of a short last row alike: expanding boxes share the spare width equally
-/// on top of their natural width, so equal floors make equal tiles. Adwaita's
-/// flat button measures close to 50 with its padding; AppKit's tile is well
-/// under 40, which is what lets three fit in a narrow column inside its
-/// wider margin. A function: the backend is not known yet when this module
-/// loads.
-const pinFloor = (): number => (Platform.backend === "gtk" ? 52 : 40);
+/// Pinned tiles are Arc's favourites grid: the row spans the column's
+/// content width, with as many columns as fit at PIN_MIN_WIDTH (three in a
+/// 720 pt window, four from about 900), never more than four, and each tile
+/// as tall as Arc's (80 x 108 px in the owner's reference, 0.74 of its
+/// width). The box lays it out natively, so a resized sidebar reflows it in
+/// the same pass.
+const PIN_MIN_WIDTH = 40;
+const PIN_MAX_COLUMNS = 4;
+const PIN_ASPECT = 0.74;
+const PIN_GAP = 6;
 /// The width the row's trailing glyph (close, or the load spinner) takes,
 /// reserved on every row so a title does not reflow as the pointer crosses
 /// the list.
@@ -42,12 +41,6 @@ const TRAIL_WIDTH = 24;
 /// Row titles are body text. Adwaita sets its button labels bold, and a
 /// tab's weight is not what marks it selected; the row's fill is.
 const REGULAR = { fontWeight: "normal" } as const;
-
-/// Three tiles to a row up to six pins, then one more column per two pins,
-/// so the block stays two rows deep as long as it can.
-function pinColumns(count: number): number {
-  return Math.max(3, Math.ceil(count / 2));
-}
 
 /// The letter a tile shows when the site has no icon yet.
 function monogram(label: string): string {
@@ -108,7 +101,6 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
 
   const pinned = tabs.filter((t) => t.pinned);
   const loose = tabs.filter((t) => !t.pinned);
-  const cols = pinColumns(pinned.length);
 
   function pick(t: SessionTab): void {
     if (t.id === activeId) props.onOpenAddress();
@@ -141,10 +133,12 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
         key={t.id}
         testID={`${p}tab-slot-${t.id}`}
         orientation="horizontal"
+        // No gap for the empty live marker, which would push the mark off
+        // the tile's centre.
+        spacing={0}
         // AppKit: each tile its own glass pill, the one on show raised and
         // brighter. GTK keeps the flat tile.
         cssClasses={gtk ? ["view"] : live ? ["view", "glass", "raised"] : ["view", "glass"]}
-        style={{ hexpand: true, minHeight: PIN_HEIGHT, minWidth: pinFloor() }}
       >
         <button
           testID={`${p}tab-${t.id}`}
@@ -152,7 +146,9 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
           label={icon ? undefined : monogram(props.labelFor(t))}
           tooltip={props.labelFor(t)}
           cssClasses={live ? ["flat"] : ["flat", "dimmed"]}
-          style={{ hexpand: true, valign: "fill", font: REGULAR }}
+          // Adwaita's side padding would make a column wider than a
+          // letter or an icon needs, and cost the grid a column.
+          style={{ hexpand: true, valign: "fill", font: REGULAR, padding: gtk ? { left: 0, right: 0 } : undefined }}
           onClick={() => pick(t)}
           {...drag(t)}
         />
@@ -215,8 +211,6 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
     ];
   }
 
-  const pinRows: SessionTab[][] = [];
-  for (let i = 0; i < pinned.length; i += cols) pinRows.push(pinned.slice(i, i + cols));
   const looseEnd = loose.length === 0 ? -1 : tabs.indexOf(loose[loose.length - 1]!) + 1;
 
   return (
@@ -255,21 +249,16 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
         {pinned.length > 0 && (
           <box
             testID={`${p}pinned-tabs`}
-            orientation="vertical"
+            orientation="horizontal"
             spacing={PIN_GAP}
+            tileMinWidth={PIN_MIN_WIDTH}
+            tileMaxColumns={PIN_MAX_COLUMNS}
+            tileAspect={PIN_ASPECT}
             style={{ margin: { top: leadingControls ? 8 : 0, bottom: 10 } }}
             dropTarget
             onDropped={(e) => props.onDropAt(e.text, pinned.length, true)}
           >
-            {pinRows.map((line, r) => (
-              <box key={r} orientation="horizontal" spacing={PIN_GAP} style={{ hexpand: true }}>
-                {line.map(pin)}
-                {/* A short last row keeps every tile the same width. */}
-                {Array.from({ length: cols - line.length }, (_, i) => (
-                  <box key={`fill-${i}`} orientation="horizontal" style={{ hexpand: true, minWidth: pinFloor() }} />
-                ))}
-              </box>
-            ))}
+            {pinned.map(pin)}
           </box>
         )}
 
