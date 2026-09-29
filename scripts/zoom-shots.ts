@@ -148,13 +148,14 @@ try {
   } else {
     await Bun.sleep(1800);
     const main = (await app.windows()).windows[0]!.geometry!;
-    // The owner's path: a real Cmd+= with the page focused goes to the View
-    // menu's accelerator, and the value steps from 150% to 175%.
+    // The owner's path: a real Cmd with the key that types "+" on this
+    // keyboard layout, the page focused, goes to the View menu's accelerator,
+    // and the value steps from 150% to 175%.
     const view = await geometry("page-t1");
     if (view) await app.cursor.click({ x: view.x + view.w / 2, y: view.y + view.h / 2 });
-    await app.cursor.press("Meta+=");
-    await poll(value, (v) => v === "175%", { timeoutMs: 5000 }).catch(async () => fail(`a real Cmd+= did not step the zoom to 175% (got ${await value()})`));
-    console.log(`  NB_ZOOM_CHORD_OK ${tag} a real Cmd+= stepped the page to 175%`);
+    await app.cursor.press("Meta++");
+    await poll(value, (v) => v === "175%", { timeoutMs: 5000 }).catch(async () => fail(`a real Cmd++ did not step the zoom to 175% (got ${await value()})`));
+    console.log(`  NB_ZOOM_CHORD_OK ${tag} a real Cmd++ stepped the page to 175%`);
     await app.cursor.press("Meta+-");
     await poll(value, (v) => v === "150%", { timeoutMs: 5000 }).catch(async () => fail(`a real Cmd+- did not step the zoom to 150% (got ${await value()})`));
     console.log(`  NB_ZOOM_CHORD_OK ${tag} a real Cmd+- stepped the page back to 150%`);

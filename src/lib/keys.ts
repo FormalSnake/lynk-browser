@@ -25,7 +25,7 @@ export const KEYS = {
   forward: "primary+]",
   "toggle-sidebar": "primary+s",
   layout: "primary+alt+s",
-  "zoom-in": "primary+equal",
+  "zoom-in": "primary+plus",
   "zoom-out": "primary+minus",
   "zoom-reset": "primary+0",
   "next-tab": MAC ? "primary+shift+bracketright" : "primary+tab",
