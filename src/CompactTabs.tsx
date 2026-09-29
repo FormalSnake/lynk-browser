@@ -26,14 +26,18 @@ const ADDRESS_FLOOR = 240;
 const CLOSE_SLOT_WIDTH = 26;
 
 /// What the row spends on everything that is not a tab or the address field,
-/// read off the row at 1440 and 720 px and rounded up, since a guess on the
+/// read off the row at 720 and 1440 px and rounded up, since a guess on the
 /// low side hands the tabs room the field needed: the window's own padding
-/// and controls (the traffic lights on macOS), reload, new tab, and the
-/// layout, downloads and menu buttons. Measured 370 on GTK and 368 on AppKit.
-/// The extensions button and each pinned extension action add
-/// FURNITURE_SLOT.
-const FURNITURE = 380;
+/// and controls (the traffic lights on macOS, three buttons in the row on
+/// GTK), back, forward, reload, new tab, and the layout, downloads and menu
+/// buttons. Measured 408 on GTK under X11 and 368 on AppKit. The layout
+/// button leaves the row below LAYOUT_BUTTON_WIDTH (the View menu and the
+/// chord still switch), which gives back LAYOUT_BUTTON. The extensions
+/// button and each pinned extension action add FURNITURE_SLOT.
+const FURNITURE = { gtk: 412, appkit: 380 } as const;
 const FURNITURE_SLOT = 44;
+const LAYOUT_BUTTON = 40;
+export const LAYOUT_BUTTON_WIDTH = 960;
 /// The gap `spacing` puts between two tabs.
 const TAB_GAP = Spacing.xs;
 
@@ -69,8 +73,10 @@ export function tabRunMetrics(
   tabs: CompactTab[],
   activeId: string,
   trailing: number,
+  backend: "gtk" | "appkit",
 ): TabRunMetrics {
-  const row = windowWidth - FURNITURE - trailing * FURNITURE_SLOT;
+  const layoutButton = windowWidth >= LAYOUT_BUTTON_WIDTH ? 0 : LAYOUT_BUTTON;
+  const row = windowWidth - FURNITURE[backend] + layoutButton - trailing * FURNITURE_SLOT;
   const pinned = tabs.filter((t) => t.pinned);
   const loose = tabs.filter((t) => !t.pinned);
   const icon = ICON_TAB_WIDTH + TAB_GAP;

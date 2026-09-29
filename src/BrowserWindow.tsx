@@ -29,7 +29,7 @@ import type {
 } from "@nativedesktop/react";
 
 import { INSET, Sidebar } from "./Sidebar.tsx";
-import { ADDRESS_MIN_WIDTH, CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
+import { ADDRESS_MIN_WIDTH, CompactTabs, LAYOUT_BUTTON_WIDTH, tabRunMetrics } from "./CompactTabs.tsx";
 import type { DownloadItem } from "./lib/downloads.ts";
 import { downloadDir } from "./lib/downloads.ts";
 import {
@@ -605,7 +605,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// The tab run is sized from the window rather than from hexpand: GTK would
   /// hand every tab an equal share of the whole row, which is what left the
   /// address field nowhere to go and every title at two characters.
-  const tabMetrics = tabRunMetrics(win.width, tabs, active.id, chromium ? pinnedActions.length + 1 : 0);
+  const tabMetrics = tabRunMetrics(win.width, tabs, active.id, chromium ? pinnedActions.length + 1 : 0, gtk ? "gtk" : "appkit");
   const targets = ctx.moveTargets(win.id);
   const dropIndex = ctx.dropHint?.windowId === win.id ? ctx.dropHint.index : null;
 
@@ -1561,7 +1561,9 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 </popover>,
               )}
 
-              {compact && (
+              {/* A narrow row gives this one up first: the View menu and the
+                  chord switch layouts too. */}
+              {compact && win.width >= LAYOUT_BUTTON_WIDTH && (
                 <button
                   slot="end"
                   testID={`${p}layout-toggle`}

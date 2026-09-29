@@ -12,13 +12,13 @@ describe("tabRunMetrics", () => {
       const run = tabs(loose, pinned);
       const active = run[run.length - 1]!.id;
       for (let width = 1440; width >= 720; width -= 40) {
-        const m = tabRunMetrics(width, run, active, 1);
+        const m = tabRunMetrics(width, run, active, 1, "gtk");
         expect(m.shown.some((t) => t.id === active)).toBe(true);
         const used = m.shown.reduce((sum, t) => sum + (t.pinned ? 36 : t.id === active ? m.activeWidth : m.width) + 4, 0);
         // What the row has left for the field once the tabs and the rest of
-        // the row (the 380 px of furniture and one 44 px slot) are counted.
-        expect(width - 380 - 44 - used).toBeGreaterThanOrEqual(ADDRESS_MIN_WIDTH);
-        expect(m.activeWidth).toBeGreaterThanOrEqual(width >= 800 ? 120 : 100);
+        // the row (the 412 px of GTK furniture, less the layout button below 960 px, and one 44 px slot) are counted.
+        expect(width - 412 + (width >= 960 ? 0 : 40) - 44 - used).toBeGreaterThanOrEqual(ADDRESS_MIN_WIDTH);
+        expect(m.activeWidth).toBeGreaterThanOrEqual(width >= 800 ? 120 : 90);
       }
     });
   }

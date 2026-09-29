@@ -66,7 +66,9 @@ if [ "${ND_WEBVIEW_ENGINE:-}" = "chromium" ]; then
   fi
   export DISPLAY="${ND_CEF_DISPLAY:-:96}"
   export GDK_BACKEND=x11
-  Xvfb "$DISPLAY" -screen 0 1280x900x24 -nolisten tcp >/dev/null 2>&1 &
+  # A drive that asks for a window wider than the screen gets one the
+  # screen's width instead; NB_XVFB_SCREEN makes room for it.
+  Xvfb "$DISPLAY" -screen 0 "${NB_XVFB_SCREEN:-1280x900x24}" -nolisten tcp >/dev/null 2>&1 &
   COMPOSITOR_PID=$!
   # Never `kill "${VAR:-0}"`: an empty variable signals the whole process group,
   # which over ssh takes the session down with it.

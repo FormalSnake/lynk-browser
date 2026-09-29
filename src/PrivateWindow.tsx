@@ -8,7 +8,7 @@
 // no command palette (its ranking reads history) and no downloads list; the
 // address field IS the address bar, which is also the only place in the app
 // that exercises `<searchinput>` on GTK.
-import { Spacing, executeJavaScript, sendCommand, useRef, useState, useStoreValue } from "@nativedesktop/react";
+import { Platform, Spacing, executeJavaScript, sendCommand, useRef, useState, useStoreValue } from "@nativedesktop/react";
 import type { EngineDownload } from "./lib/downloads.ts";
 import type {
   NdNodeRef,
@@ -333,7 +333,7 @@ export function PrivateWindow({
               <CompactTabs
                 tabs={runTabs}
                 activeId={active.id}
-                metrics={tabRunMetrics(width, runTabs, active.id, 0)}
+                metrics={tabRunMetrics(width, runTabs, active.id, 0, Platform.backend === "gtk" ? "gtk" : "appkit")}
                 prefix="private-"
                 // A private window shows no favicons: the cache is on disk and
                 // this window writes nothing there.

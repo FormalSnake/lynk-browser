@@ -7,7 +7,7 @@
 // the window. Captures both layouts at 1440, 1024, 800 and 720.
 //
 //   macOS (CEF):  scripts/mac-drive.sh scripts/narrow-drive.ts
-//   Linux:        scripts/headless.sh bun scripts/narrow-drive.ts
+//   Linux:        NB_XVFB_SCREEN=1600x1000x24 scripts/headless.sh bun scripts/narrow-drive.ts
 //
 // ND_APPEARANCE=dark (AppKit) or ADW_DEBUG_COLOR_SCHEME=prefer-dark (GTK) with
 // NB_SHOT_SUFFIX=dark keeps a dark run's captures apart. Prints NB_NARROW_OK.
@@ -154,12 +154,21 @@ function capture(name: string): Promise<void> | void {
   console.log(`  captured ${ndshotCapture(win.windowID, name)}`);
 }
 
+/// Whether the window is the width it was asked for. GTK reports the
+/// window's content without the few pixels its client-side frame takes, so
+/// that much short is the width asked for; anything wider is the window
+/// being held open by its minimum.
+function atWidth(winWidth: number, width: number): boolean {
+  return gtk ? winWidth <= width && winWidth >= width - CSD_FRAME : winWidth === width;
+}
+const CSD_FRAME = 12;
+
 async function compactStep(width: number): Promise<void> {
   const { root, winWidth } = await settleAt(width);
   const at = `compact@${width}`;
   const nodes = byId(root);
   const min = root.children?.[0]?.minSize?.w ?? root.minSize?.w ?? null;
-  check(`${at} window`, winWidth === width, `window ${winWidth} px${min !== null ? `, content needs ${min}` : ""}`);
+  check(`${at} window`, atWidth(winWidth, width), `window ${winWidth} px${min !== null ? `, content needs ${min}` : ""}`);
   if (gtk) check(`${at} minimum`, min !== null && min <= NARROWEST, `the window's minimum is ${min} px`);
 
   const field = drawn(nodes.get("omnibox"));
@@ -202,7 +211,7 @@ async function sidebarStep(width: number): Promise<void> {
   const at = `sidebar@${width}`;
   const nodes = byId(root);
   const min = root.children?.[0]?.minSize?.w ?? root.minSize?.w ?? null;
-  check(`${at} window`, winWidth === width, `window ${winWidth} px${min !== null ? `, content needs ${min}` : ""}`);
+  check(`${at} window`, atWidth(winWidth, width), `window ${winWidth} px${min !== null ? `, content needs ${min}` : ""}`);
   if (gtk) check(`${at} minimum`, min !== null && min <= NARROWEST, `the window's minimum is ${min} px`);
 
   const list = drawn(nodes.get("tab-list"));
