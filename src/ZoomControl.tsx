@@ -101,8 +101,8 @@ export function ZoomPopover({ anchor, open, factor, prefix, onStep, onReset, onC
       <box
         testID={`${prefix}zoom-panel`}
         orientation="horizontal"
-        spacing={Spacing.sm}
-        style={{ padding: Spacing.sm }}
+        spacing={Spacing.xs}
+        style={{ padding: Spacing.xs }}
       >
         <button
           testID={`${prefix}zoom-out`}
@@ -130,6 +130,7 @@ export function ZoomPopover({ anchor, open, factor, prefix, onStep, onReset, onC
           testID={`${prefix}zoom-reset`}
           label="Reset"
           enabled={!isDefaultZoom(factor)}
+          cssClasses={["flat"]}
           onClick={onReset}
         />
       </box>

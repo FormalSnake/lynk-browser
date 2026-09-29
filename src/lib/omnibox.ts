@@ -82,6 +82,8 @@ const MAC_KEYS: Record<string, string> = { primary: "⌘", shift: "⇧", alt: "�
 const NAMED_KEYS: Record<string, string> = {
   comma: ",",
   plus: "+",
+  // Zoom in is bound to the =/+ key unshifted, and every browser writes it ⌘+.
+  equal: "+",
   minus: "-",
   tab: "Tab",
   bracketleft: "[",

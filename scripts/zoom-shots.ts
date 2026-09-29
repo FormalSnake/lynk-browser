@@ -88,14 +88,14 @@ const census = async (): Promise<Win[]> => {
   return text.split("\n").filter((l) => l.trim().startsWith("{")).map((l) => JSON.parse(l) as Win);
 };
 
-function capture(): void {
+function capture(name = `zoom-${tag}`): void {
   // ScreenCaptureKit sometimes drops the request while another capture is in
   // flight on the machine; a retry is cheaper than a failed run.
   let err = "";
   for (let attempt = 0; attempt < 3; attempt++) {
     // The popover is a window of its own on both backends, so only a region
     // capture includes it, and a region capture can block: bounded.
-    const shot = Bun.spawnSync(["timeout", "30", process.env.ND_NDSHOT ?? NDSHOT, "capture", "--pid", String(pid), "--region", "--out", `${SHOTS}/zoom-${tag}.png`]);
+    const shot = Bun.spawnSync(["timeout", "30", process.env.ND_NDSHOT ?? NDSHOT, "capture", "--pid", String(pid), "--region", "--out", `${SHOTS}/${name}.png`]);
     if (shot.exitCode === 0) return;
     err = shot.stderr.toString().trim();
   }
@@ -134,6 +134,15 @@ try {
     // which the census below needs: each read compiles a Swift script.
     await Bun.sleep(1800);
     const main = (await app.windows()).windows[0]!.geometry!;
+    // The owner's path: a real Cmd+= with the page focused goes to the View
+    // menu's accelerator, and the value steps from 150% to 175%.
+    const view = findNode((await app.tree()).root, "page-t1")?.geometry;
+    if (view) await app.cursor.click({ x: view.x + view.w / 2, y: view.y + view.h / 2 });
+    await app.cursor.press("Meta+=");
+    await poll(async () => findNode((await app.tree()).root, "zoom-value")?.text ?? "", (v) => v === "175%", { timeoutMs: 5000 })
+      .catch(async () => fail(`a real Cmd+= did not step the zoom to 175% (got ${findNode((await app.tree()).root, "zoom-value")?.text})`));
+    console.log(`  NB_ZOOM_CHORD_OK ${tag} a real Cmd+= stepped the page to 175%`);
+    await Bun.sleep(1800);
     await app.cursor.click({ x: right - 12, y: field!.y + field!.h / 2 });
     const pop = await poll(async () => (await census()).find((w) => w.alpha > 0 && w.layer === 0 && w.width < main.w && w.height < 200) ?? null,
       (w) => w != null, { timeoutMs: 8000 }).catch(() => fail("no zoom popover window on screen"));
@@ -146,6 +155,17 @@ try {
     await app.screenshot(`${SHOTS}/zoom-${tag}.png`);
   }
   console.log(`  capture ${SHOTS}/zoom-${tag}.png`);
+
+  // The find bar, captured beside it: both float over the page in the same
+  // restrained pill, and both have to stay inside the window at a narrow width.
+  await Bun.sleep(1800);
+  await app.getByTestId("menu-find").click();
+  await app.waitFor({ testId: "find-bar", state: "present" }, { timeoutMs: 5000 });
+  await app.type("find-query", "zoom");
+  await Bun.sleep(700);
+  if (gtk && process.platform === "darwin") capture(`find-${tag}`);
+  else await app.screenshot(`${SHOTS}/find-${tag}.png`);
+  console.log(`  capture ${SHOTS}/find-${tag}.png`);
   console.log(`NB_ZOOM_OK ${tag}`);
 } finally {
   await app.close().catch(() => {});
