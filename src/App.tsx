@@ -474,7 +474,8 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
         if (!tab || tab.pinned === pinned) return w;
         const rest = w.tabs.filter((t) => t.id !== id);
         const boundary = rest.filter((t) => t.pinned).length;
-        return { ...w, tabs: [...rest.slice(0, boundary), { ...tab, pinned }, ...rest.slice(boundary)] };
+        const pinnedUrl = pinned ? tab.url : undefined;
+        return { ...w, tabs: [...rest.slice(0, boundary), { ...tab, pinned, pinnedUrl }, ...rest.slice(boundary)] };
       }),
     }));
   }
@@ -541,6 +542,19 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     scrollMemory.current.delete(id);
     void executeJavaScript(node, `window.scrollTo(${at[0]}, ${at[1]})`).catch(() => {});
     if (TEST_HOOKS) console.error(`ND_APP SCROLLBACK tab=${id} to=${at[0]},${at[1]}`);
+  }
+
+  /// Every other tab in the window that is not pinned: pinned tabs are the
+  /// ones kept on purpose.
+  function closeOtherTabs(id: string): void {
+    const w = session.get().windows.find((x) => x.tabs.some((t) => t.id === id));
+    if (!w) return;
+    for (const t of w.tabs) if (t.id !== id && !t.pinned) closeTab(t.id);
+  }
+
+  function resetPinned(id: string): void {
+    const tab = tabOf(id);
+    if (tab?.pinned && tab.pinnedUrl && tab.pinnedUrl !== tab.url) navigate(id, tab.pinnedUrl);
   }
 
   function reopenTab(windowId: string): void {
@@ -1643,6 +1657,8 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     canSleep,
     sleepTab: (id) => void sleepTab(id),
     asleep: (id) => asleep[id] === true && !isLive(id),
+    closeOtherTabs,
+    resetPinned,
     reopenTab,
     cycleTab,
     navigate,

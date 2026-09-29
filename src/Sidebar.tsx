@@ -7,6 +7,7 @@
 import { Platform, useState } from "@nativedesktop/react";
 import { Activity } from "react";
 
+import type { MenuEntry } from "@nativedesktop/react";
 import type { SessionTab } from "./lib/session.ts";
 import type { PinStyle } from "./lib/settings.ts";
 
@@ -82,6 +83,9 @@ export interface SidebarProps {
 
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
+  /// A tab's right-click menu, and the item picked from it.
+  menuFor: (tab: SessionTab) => MenuEntry[];
+  onMenu: (tab: SessionTab, id: string) => void;
   onNewTab: () => void;
   /// A click on the row already on show opens the command bar on its
   /// address, the one place the address is edited.
@@ -193,6 +197,8 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
           // letter or an icon needs, and cost the grid a column.
           style={{ hexpand: true, valign: "fill", font: REGULAR, padding: gtk ? { left: 0, right: 0 } : undefined }}
           onClick={() => pick(t)}
+          contextMenu={props.menuFor(t)}
+          onContextMenuSelected={(e) => props.onMenu(t, e.text)}
           {...drag(t)}
           onDragStarted={(e: { text: string }) => {
             setDragging(t.id);
@@ -256,6 +262,8 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
           cssClasses={live ? ["flat", "body"] : ["flat", "body", "dimmed"]}
           style={{ hexpand: true, valign: "center", font: REGULAR }}
           onClick={() => pick(t)}
+          contextMenu={props.menuFor(t)}
+          onContextMenuSelected={(e) => props.onMenu(t, e.text)}
           {...drag(t)}
         />
         {trail}

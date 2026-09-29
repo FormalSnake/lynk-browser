@@ -46,6 +46,8 @@ export interface OmniCommand {
   keys?: KeyId;
   /// Also found by these words, which are not in the title.
   aka?: string;
+  /// Only offered for a pinned tab.
+  pinnedOnly?: boolean;
 }
 
 /// Every action the window has, so the bar can stand in for each button.
@@ -54,11 +56,13 @@ export const COMMANDS: OmniCommand[] = [
   { id: "new-window", title: "New Window", iconName: "window-new-symbolic", keys: "new-window" },
   { id: "private", title: "New Private Window", iconName: "view-conceal-symbolic", keys: "private" },
   { id: "close-tab", title: "Close Tab", iconName: "window-close-symbolic", keys: "close-tab" },
+  { id: "close-other-tabs", title: "Close Other Tabs", iconName: "window-close-symbolic" },
   { id: "reopen-tab", title: "Reopen Closed Tab", iconName: "edit-undo-symbolic", keys: "reopen-tab" },
   { id: "next-tab", title: "Next Tab", iconName: "go-next-symbolic", keys: "next-tab" },
   { id: "prev-tab", title: "Previous Tab", iconName: "go-previous-symbolic", keys: "prev-tab" },
   { id: "pin-tab", title: "Pin Tab", iconName: "view-pin-symbolic" },
   { id: "sleep-tab", title: "Put Tab to Sleep", iconName: "weather-clear-night-symbolic", aka: "unload discard memory" },
+  { id: "reset-pinned", title: "Reset to Pinned Page", iconName: "go-home-symbolic", pinnedOnly: true },
   { id: "duplicate-tab", title: "Duplicate Tab", iconName: "edit-copy-symbolic" },
   { id: "move-new-window", title: "Move Tab to New Window", iconName: "window-new-symbolic" },
   { id: "back", title: "Back", iconName: "go-previous-symbolic", keys: "back" },
@@ -86,6 +90,13 @@ export const COMMANDS: OmniCommand[] = [
 /// Commands that need the Chromium engine: extensions, and the reader and the
 /// floating video, which run as page scripts only it accepts.
 const CHROMIUM_ONLY = new Set(["extensions", "extensions-page", "webstore", "reader", "float"]);
+
+/// A command's title for a tab that is or is not pinned: the pin command
+/// names what it will do.
+export function commandTitle(id: string, pinned: boolean): string {
+  if (id === "pin-tab" && pinned) return "Unpin Tab";
+  return COMMANDS.find((c) => c.id === id)?.title ?? id;
+}
 
 const MAC_KEYS: Record<string, string> = { primary: "⌘", shift: "⇧", alt: "⌥", ctrl: "⌃" };
 const NAMED_KEYS: Record<string, string> = {
@@ -267,8 +278,8 @@ function commandRows(input: OmniInput, lowered: string): OmniRow[] {
   for (const c of COMMANDS) {
     if (!input.chromium && CHROMIUM_ONLY.has(c.id)) continue;
     if (c.id === "sleep-tab" && !input.canSleep) continue;
-    const title =
-      c.id === "pin-tab" && input.pinned ? "Unpin Tab" : c.id === "reader" && input.reading ? "Leave Reading Mode" : c.title;
+    if (c.pinnedOnly && !input.pinned) continue;
+    const title = c.id === "reader" && input.reading ? "Leave Reading Mode" : commandTitle(c.id, input.pinned ?? false);
     if (lowered && !`${title} ${c.aka ?? ""}`.toLowerCase().includes(lowered)) continue;
     rows.push({
       id: `cmd:${c.id}`,

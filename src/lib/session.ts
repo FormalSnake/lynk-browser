@@ -8,6 +8,9 @@ export interface SessionTab {
   /// their own heading. The array order mirrors that grouping, so cycling and
   /// the Tabs menu read in the same order the sidebar draws.
   pinned: boolean;
+  /// Where the tab was when it was pinned, which Reset to Pinned Page goes
+  /// back to. Absent on a tab that is not pinned.
+  pinnedUrl?: string;
 }
 
 /// One browser window: its own ordered tabs and the one it is showing. Tab ids

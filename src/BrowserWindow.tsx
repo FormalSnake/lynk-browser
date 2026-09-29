@@ -28,6 +28,7 @@ import { Activity } from "react";
 import type {
   ContextMenuItemClick,
   ExtensionActionState,
+  MenuEntry,
   NdNodeRef,
 } from "@nativedesktop/react";
 
@@ -58,9 +59,9 @@ import {
   type PermissionDecision,
   type PermissionPrompt,
 } from "./lib/permissions.ts";
-import type { SessionState, SessionWindow } from "./lib/session.ts";
+import type { SessionState, SessionTab, SessionWindow } from "./lib/session.ts";
 import { KEYS } from "./lib/keys.ts";
-import { omniRows, shortcutLabel, type OmniMode, type OmniTarget } from "./lib/omnibox.ts";
+import { commandTitle, omniRows, shortcutLabel, type OmniMode, type OmniTarget } from "./lib/omnibox.ts";
 import { SEARCH_ENGINES, engineOf, type Layout, type SettingsState } from "./lib/settings.ts";
 import { parseTabPayload, tabPayload } from "./lib/tabdrag.ts";
 import {
@@ -178,6 +179,8 @@ export interface BrowserContext {
   sleepTab(id: string): void;
   /// Put to sleep and not shown since.
   asleep(id: string): boolean;
+  closeOtherTabs(id: string): void;
+  resetPinned(id: string): void;
   reopenTab(windowId: string): void;
   cycleTab(windowId: string, step: number): void;
   navigate(tabId: string, raw: string): void;
@@ -431,45 +434,87 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     ctx.selectTab(id);
   }
 
+  /// The commands that act on one tab, run on `tab`: the tab on show from the
+  /// command bar, the one right-clicked from its menu. False for any other id.
+  function runTabCommand(id: string, tab: SessionTab): boolean {
+    switch (id) {
+      case "close-tab":
+        ctx.closeTab(tab.id);
+        return true;
+      case "close-other-tabs":
+        ctx.closeOtherTabs(tab.id);
+        return true;
+      case "pin-tab":
+        ctx.setPinned(tab.id, !tab.pinned);
+        return true;
+      case "reset-pinned":
+        ctx.resetPinned(tab.id);
+        return true;
+      case "sleep-tab":
+        ctx.sleepTab(tab.id);
+        return true;
+      case "duplicate-tab":
+        if (tab.url) ctx.openTab(win.id, tab.url);
+        return true;
+      case "move-new-window":
+        ctx.moveTabTo(tab.id, "new");
+        return true;
+      case "copy-address":
+        if (tab.url) void clipboard.writeText(tab.url).catch(() => {});
+        return true;
+      case "reload":
+        ctx.command(tab.id, "reload");
+        return true;
+    }
+    return false;
+  }
+
+  /// A tab's right-click menu, in the command table's words. A pinned tile
+  /// gets the few that make sense for a page kept on purpose.
+  function tabMenu(tab: SessionTab): MenuEntry[] {
+    const item = (id: string, enabled = true): MenuEntry => ({ id, label: commandTitle(id, tab.pinned), enabled });
+    const gap: MenuEntry = { separator: true };
+    if (tab.pinned) {
+      return [item("reset-pinned", !!tab.pinnedUrl && tab.pinnedUrl !== tab.url), item("pin-tab"), item("sleep-tab", ctx.canSleep(tab.id)), gap, item("close-tab")];
+    }
+    return [
+      item("reload", !!tab.url),
+      item("duplicate-tab", !!tab.url),
+      item("copy-address", !!tab.url),
+      gap,
+      item("pin-tab"),
+      item("move-new-window", tabs.length > 1),
+      item("sleep-tab", ctx.canSleep(tab.id)),
+      gap,
+      item("close-tab"),
+      item("close-other-tabs", tabs.some((t) => t.id !== tab.id && !t.pinned)),
+    ];
+  }
+
   function runPaletteItem(id: string): void {
     if (id === "url") return commitQuery(paletteQuery);
     closePalette();
     if (id.startsWith("tab:")) return selectTab(id.slice(4));
     if (id.startsWith("hist:")) return openUrl(id.slice(5));
     if (id.startsWith("go:")) return openUrl(id.slice(3));
+    if (runTabCommand(id.slice(4), active)) return;
     switch (id.slice(4)) {
       case "new-tab":
         return openPalette("", "new-tab");
       case "new-window":
         return ctx.newWindow();
-      case "close-tab":
-        return ctx.closeTab(active.id);
       case "reopen-tab":
         return ctx.reopenTab(win.id);
       case "next-tab":
         return ctx.cycleTab(win.id, 1);
       case "prev-tab":
         return ctx.cycleTab(win.id, -1);
-      case "pin-tab":
-        return ctx.setPinned(active.id, !active.pinned);
-      case "sleep-tab":
-        return ctx.sleepTab(active.id);
-      case "duplicate-tab":
-        if (active.url) ctx.openTab(win.id, active.url);
-        return;
-      case "move-new-window":
-        return ctx.moveTabTo(active.id, "new");
       case "back":
         return ctx.command(active.id, "goBack");
       case "forward":
         return ctx.command(active.id, "goForward");
-      case "copy-address":
-        if (active.url) void clipboard.writeText(active.url).catch(() => {});
-        return;
       case "site-info":
         return setSiteInfoOpen(true);
-      case "reload":
-        return ctx.command(active.id, "reload");
       case "find":
         return ctx.openFind(active.id);
       case "downloads":
@@ -1596,6 +1641,8 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               windowMenu={windowMenu()}
               onSelect={selectTab}
               onClose={ctx.closeTab}
+              menuFor={tabMenu}
+              onMenu={(t, id) => runTabCommand(id, t)}
               onNewTab={() => ctx.openTab(win.id, "")}
               onOpenAddress={openAddress}
               onOpenSettings={ctx.openSettings}
@@ -1690,6 +1737,8 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                   asleep={ctx.asleep}
                   onSelect={selectTab}
                   onClose={ctx.closeTab}
+                  menuFor={(t) => tabMenu(tabs.find((x) => x.id === t.id)!)}
+                  onMenu={(t, id) => runTabCommand(id, tabs.find((x) => x.id === t.id)!)}
                   dragPayload={(t) => tabPayload({ profile: "default", tabId: t.id, url: t.url })}
                   dropIndex={dropIndex}
                   onDragOverIndex={(index) => ctx.setDropHint(win.id, index)}

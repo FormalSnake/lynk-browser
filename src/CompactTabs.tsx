@@ -2,6 +2,7 @@
 // row between the reload button and the address field. Shared by the main
 // window and a private one, which draw the same row.
 import { Platform, Spacing, useState } from "@nativedesktop/react";
+import type { MenuEntry } from "@nativedesktop/react";
 
 /// A tab is about 156pt when the row has space for it. TITLE_FLOOR is where a
 /// title is down to a few characters beside the favicon and the close button,
@@ -136,6 +137,9 @@ export interface CompactTabsProps {
   asleep?: (id: string) => boolean;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
+  /// A tab's right-click menu, and the item picked from it.
+  menuFor?: (tab: CompactTab) => MenuEntry[];
+  onMenu?: (tab: CompactTab, id: string) => void;
   /// What a drag of this tab carries, so the window it lands in can tell
   /// where it came from and whether its page can move.
   dragPayload: (tab: CompactTab) => string;
@@ -174,6 +178,8 @@ export function CompactTabs({
   asleep,
   onSelect,
   onClose,
+  menuFor,
+  onMenu,
   dragPayload,
   dropIndex,
   onDragOverIndex,
@@ -245,6 +251,8 @@ export function CompactTabs({
               cssClasses={["flat"]}
               style={{ hexpand: true }}
               onClick={() => onSelect(t.id)}
+              contextMenu={menuFor?.(t)}
+              onContextMenuSelected={onMenu ? (e) => onMenu(t, e.text) : undefined}
               draggable
               dragPayload={dragPayload(t)}
               onDragStarted={(e) => onDragStart(e.text)}
