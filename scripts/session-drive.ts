@@ -230,7 +230,7 @@ async function setFresh(on: boolean): Promise<void> {
     // A menu item's click is answered after the app has handled it, and a
     // host still leaving a menu's tracking loop can drop the first one.
     for (let attempt = 0; attempt < 3; attempt++) {
-      await app.click("menu-settings").catch(() => {});
+      await app.click("menu-settings").catch((e: unknown) => console.log(`   menu-settings click: ${String(e)}`));
       const found = await waitFor("the fresh-window switch", () => findAcross(app, "settings-fresh-window"), (n) => n !== null, 10_000).catch(() => null);
       if (found) return;
     }
