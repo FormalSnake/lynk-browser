@@ -152,7 +152,9 @@ try {
     // keyboard layout, the page focused, goes to the View menu's accelerator,
     // and the value steps from 150% to 175%.
     const view = await geometry("page-t1");
-    if (view) await app.cursor.click({ x: view.x + view.w / 2, y: view.y + view.h / 2 });
+    // Near the page's bottom-left corner rather than its middle, where a
+    // floating window of another app (a password manager's prompt) sits.
+    if (view) await app.cursor.click({ x: view.x + 40, y: view.y + view.h - 40 });
     await app.cursor.press("Meta++");
     await poll(value, (v) => v === "175%", { timeoutMs: 5000 }).catch(async () => fail(`a real Cmd++ did not step the zoom to 175% (got ${await value()})`));
     console.log(`  NB_ZOOM_CHORD_OK ${tag} a real Cmd++ stepped the page to 175%`);
@@ -178,7 +180,12 @@ try {
     }
     if (pop!.x < main.x || pop!.x + pop!.width > main.x + main.w) fail(`the zoom popover (${pop!.x}..${pop!.x + pop!.width}) hangs out of the window (${main.x}..${main.x + main.w})`);
     console.log(`  NB_ZOOM_ANCHOR_OK ${tag} centre ${mid}, anchor ${at!.x}..${at!.x + at!.w}, popover ${pop!.width}x${pop!.height}`);
+    // Past NSPopover's fade-in, or the capture shows it half transparent.
+    await Bun.sleep(600);
     capture();
+    // The click pinned it open; Escape puts it away before the find bar.
+    await app.cursor.press("Escape");
+    await Bun.sleep(500);
   }
   console.log(`  capture ${SHOTS}/zoom-${tag}.png`);
 
