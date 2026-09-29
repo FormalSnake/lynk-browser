@@ -30,8 +30,8 @@ import type {
 
 import { INSET, Sidebar } from "./Sidebar.tsx";
 import { ADDRESS_MIN_WIDTH, CompactTabs, LAYOUT_BUTTON_WIDTH, tabRunMetrics } from "./CompactTabs.tsx";
-import { ZoomPopover, useZoomPopover, zoomFieldProps } from "./ZoomControl.tsx";
-import { stepZoom } from "./lib/zoom.ts";
+import { ZoomFootControl, ZoomPopover, useZoomPopover, zoomFieldProps } from "./ZoomControl.tsx";
+import { stepZoom, zoomPercent } from "./lib/zoom.ts";
 import type { DownloadItem } from "./lib/downloads.ts";
 import { downloadDir } from "./lib/downloads.ts";
 import {
@@ -273,8 +273,6 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// Compact's address field, which the zoom popover points at: its trailing
   /// icon is the magnifier.
   const addressField = useRef<NdNodeRef<"searchinput"> | null>(null);
-  const zoomFactor = ctx.zoomFor(active.url);
-  const zoomPopover = useZoomPopover(active.id, ctx.rt(active.id).zoomNotice);
   /// What is in the address field right now. Only a test hook reads it: a
   /// person presses Enter, which carries the text with it.
   const typedAddress = useRef("");
@@ -288,6 +286,12 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   const find = ctx.findFor(active.id);
   const compact = prefs.layout === "compact";
   const gtk = Platform.backend === "gtk";
+  const zoomFactor = ctx.zoomFor(active.url);
+  const zoomPopover = useZoomPopover(active.id, activeRt.zoomNotice, () => {
+    // The sidebar's foot is out of sight with the sidebar hidden, so the new
+    // value is said the way the reference browser says it.
+    if (!compact && sidebarHidden && toast.current) void showToast(toast.current, { title: `Zoom ${zoomPercent(zoomFactor)}` });
+  });
 
   ctx.registerController(win.id, {
     openPalette,
@@ -1413,6 +1417,17 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               pinStyle={ctx.prefs.pinStyle}
               asleep={ctx.asleep}
               siteInfo={siteInfoControl()}
+              zoom={
+                <ZoomFootControl
+                  open={zoomPopover.open && !sidebarHidden}
+                  factor={zoomFactor}
+                  prefix={p}
+                  onToggle={zoomPopover.toggle}
+                  onStep={(direction) => ctx.setZoom(active.id, stepZoom(zoomFactor, direction))}
+                  onReset={() => ctx.setZoom(active.id, 1)}
+                  onClosed={zoomPopover.close}
+                />
+              }
               extensions={extensionControls()}
               downloads={downloadsControl()}
               windowMenu={windowMenu()}

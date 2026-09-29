@@ -72,8 +72,9 @@ export interface SidebarProps {
   /// A tab put to sleep, whose row or tile is drawn dimmed until it wakes.
   asleep: (id: string) => boolean;
   /// The small glyphs at the foot: the padlock with its site-info popover,
-  /// the extension actions, downloads.
+  /// the page zoom while it is not 100%, the extension actions, downloads.
   siteInfo: React.ReactNode;
+  zoom: React.ReactNode;
   extensions: React.ReactNode;
   downloads: React.ReactNode;
   /// A secondary window's own menu, in the foot.
@@ -359,6 +360,7 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
           onClick={props.onOpenSettings}
         />
         {props.siteInfo}
+        {props.zoom}
         {props.extensions}
         {!gtk && props.downloads}
         {props.windowMenu}

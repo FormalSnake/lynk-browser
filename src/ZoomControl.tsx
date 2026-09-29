@@ -3,9 +3,11 @@
 // the controls. It replaces Chromium's zoom bubble, which has no location bar
 // to anchor to in this browser and would sit over the middle of the page.
 //
-// Two parts, so any layout that owns an address field can carry it:
-// `zoomFieldProps` goes on the field itself, and `<ZoomPopover>` is portalled
-// into the window and anchored to that field's trailing icon.
+// Compact has an address field: `zoomFieldProps` goes on the field itself, and
+// `<ZoomPopover>` is portalled into the window and anchored to that field's
+// trailing icon. The sidebar layout has no address field, so `<ZoomFootControl>`
+// puts the magnifier among the small glyphs at the sidebar's foot, beside the
+// padlock, with the popover above it.
 import { Platform, Spacing, createPortal, useEffect, useRef, useState } from "@nativedesktop/react";
 import type { NdNodeRef } from "@nativedesktop/react";
 import { ZOOM_MAX, ZOOM_MIN, ZOOM_NOTICE_MS, isDefaultZoom, zoomPercent } from "./lib/zoom.ts";
@@ -43,10 +45,11 @@ export function zoomFieldProps(factor: number, shown: boolean, onClick: () => vo
 
 /// Open state for the popover. A click opens it until it is dismissed; a
 /// `notice` bump on the same tab (a chord, a menu step) opens it for
-/// ZOOM_NOTICE_MS unless the user already opened it.
+/// ZOOM_NOTICE_MS unless the user already opened it, and calls `onNotice`.
 export function useZoomPopover(
   tabId: string,
   notice: number,
+  onNotice?: () => void,
 ): {
   open: boolean;
   pinned: boolean;
@@ -65,6 +68,7 @@ export function useZoomPopover(
       return;
     }
     if (last.notice === notice) return;
+    onNotice?.();
     setMode((m) => (m === "pinned" ? m : "notice"));
     const timer = setTimeout(() => setMode((m) => (m === "notice" ? "closed" : m)), ZOOM_NOTICE_MS);
     return () => clearTimeout(timer);
@@ -77,63 +81,94 @@ export function useZoomPopover(
   };
 }
 
-export interface ZoomPopoverProps {
-  anchor: React.RefObject<NdNodeRef<"searchinput"> | null>;
-  open: boolean;
+interface ZoomPanelProps {
   factor: number;
   /// Prefix for testIDs, so every window's popover can be told apart.
   prefix: string;
   onStep: (direction: 1 | -1) => void;
   onReset: () => void;
+}
+
+function ZoomPanel({ factor, prefix, onStep, onReset }: ZoomPanelProps): React.ReactNode {
+  return (
+    <box testID={`${prefix}zoom-panel`} orientation="horizontal" spacing={Spacing.xs} style={{ padding: Spacing.xs }}>
+      <button
+        testID={`${prefix}zoom-out`}
+        iconName="list-remove-symbolic"
+        tooltip="Zoom Out"
+        enabled={factor > ZOOM_MIN + 0.001}
+        cssClasses={["flat"]}
+        onClick={() => onStep(-1)}
+      />
+      <label
+        testID={`${prefix}zoom-value`}
+        text={zoomPercent(factor)}
+        cssClasses={["numeric"]}
+        style={{ minWidth: VALUE_WIDTH, valign: "center" }}
+      />
+      <button
+        testID={`${prefix}zoom-in`}
+        iconName="list-add-symbolic"
+        tooltip="Zoom In"
+        enabled={factor < ZOOM_MAX - 0.001}
+        cssClasses={["flat"]}
+        onClick={() => onStep(1)}
+      />
+      <button
+        testID={`${prefix}zoom-reset`}
+        label="Reset"
+        enabled={!isDefaultZoom(factor)}
+        cssClasses={["flat"]}
+        onClick={onReset}
+      />
+    </box>
+  );
+}
+
+export interface ZoomPopoverProps extends ZoomPanelProps {
+  anchor: React.RefObject<NdNodeRef<"searchinput"> | null>;
+  open: boolean;
   onClosed: () => void;
 }
 
-export function ZoomPopover({ anchor, open, factor, prefix, onStep, onReset, onClosed }: ZoomPopoverProps): React.ReactNode {
+export function ZoomPopover({ anchor, open, onClosed, ...panel }: ZoomPopoverProps): React.ReactNode {
   return createPortal(
     <popover
-      testID={`${prefix}zoom-popover`}
+      testID={`${panel.prefix}zoom-popover`}
       anchorRef={anchor}
       anchorSlot="trailingIcon"
       open={open}
       position="bottom"
       onClosed={onClosed}
     >
-      <box
-        testID={`${prefix}zoom-panel`}
-        orientation="horizontal"
-        spacing={Spacing.xs}
-        style={{ padding: Spacing.xs }}
-      >
-        <button
-          testID={`${prefix}zoom-out`}
-          iconName="list-remove-symbolic"
-          tooltip="Zoom Out"
-          enabled={factor > ZOOM_MIN + 0.001}
-          cssClasses={["flat"]}
-          onClick={() => onStep(-1)}
-        />
-        <label
-          testID={`${prefix}zoom-value`}
-          text={zoomPercent(factor)}
-          cssClasses={["numeric"]}
-          style={{ minWidth: VALUE_WIDTH, valign: "center" }}
-        />
-        <button
-          testID={`${prefix}zoom-in`}
-          iconName="list-add-symbolic"
-          tooltip="Zoom In"
-          enabled={factor < ZOOM_MAX - 0.001}
-          cssClasses={["flat"]}
-          onClick={() => onStep(1)}
-        />
-        <button
-          testID={`${prefix}zoom-reset`}
-          label="Reset"
-          enabled={!isDefaultZoom(factor)}
-          cssClasses={["flat"]}
-          onClick={onReset}
-        />
-      </box>
+      <ZoomPanel {...panel} />
     </popover>,
+  );
+}
+
+export interface ZoomFootControlProps extends ZoomPanelProps {
+  open: boolean;
+  onToggle: () => void;
+  onClosed: () => void;
+}
+
+/// Nothing while the page is at 100% and the popover is closed.
+export function ZoomFootControl({ open, onToggle, onClosed, ...panel }: ZoomFootControlProps): React.ReactNode {
+  if (!open && isDefaultZoom(panel.factor)) return null;
+  return (
+    // Boxed: a popover anchors on its tree parent.
+    <box testID={`${panel.prefix}zoom-anchor`} orientation="horizontal">
+      <button
+        testID={`${panel.prefix}zoom-indicator`}
+        iconName={zoomIcon(panel.factor)}
+        tooltip={`Zoom: ${zoomPercent(panel.factor)}`}
+        cssClasses={["flat"]}
+        style={{ valign: "center" }}
+        onClick={onToggle}
+      />
+      <popover testID={`${panel.prefix}zoom-popover`} open={open} position="top" onClosed={onClosed}>
+        <ZoomPanel {...panel} />
+      </popover>
+    </box>
   );
 }
