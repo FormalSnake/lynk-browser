@@ -1561,9 +1561,9 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 </popover>,
               )}
 
-              {/* A narrow row gives this one up first: the View menu and the
-                  chord switch layouts too. */}
-              {compact && win.width >= LAYOUT_BUTTON_WIDTH && (
+              {/* A narrow GTK row gives this one up first: the View menu and
+                  the chord switch layouts too. */}
+              {compact && (!gtk || win.width >= LAYOUT_BUTTON_WIDTH) && (
                 <button
                   slot="end"
                   testID={`${p}layout-toggle`}
