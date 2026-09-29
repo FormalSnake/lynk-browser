@@ -132,6 +132,8 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   const pending = useRef<PermissionPrompt[]>([]);
   /// The two halves of an extension row, each from its own framework call.
   const [registry, setRegistry] = useState<InstalledExtension[]>([]);
+  /// The ids the last registry read listed, to see which one went.
+  const knownExtensions = useRef<string[]>([]);
   const [extActions, setExtActions] = useState<ExtensionAction[]>([]);
   /// The action a click is being decided for. Nothing opens until its live
   /// state is in, because the manifest's popup may be one the extension has
@@ -870,7 +872,15 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   function refreshExtensions(): void {
     const node = extRegistry.current;
     if (!node) return;
-    void listExtensions(node).then(setRegistry).catch(() => {});
+    void listExtensions(node)
+      .then((list) => {
+        for (const gone of knownExtensions.current) {
+          if (!list.some((e) => e.id === gone)) closeExtensionTabs(gone);
+        }
+        knownExtensions.current = list.map((e) => e.id);
+        setRegistry(list);
+      })
+      .catch(() => {});
     void listExtensionActions(node).then(setExtActions).catch(() => {});
   }
 
@@ -993,9 +1003,24 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
       .catch(() => {});
   }
 
+  /// Chrome closes an extension's own pages with it. A window left with no
+  /// tab gets an empty one, so removing an extension never quits the app.
+  function closeExtensionTabs(id: string): void {
+    const prefix = `chrome-extension://${id}/`;
+    for (const w of session.get().windows) {
+      const doomed = w.tabs.filter((t) => t.url.startsWith(prefix));
+      if (doomed.length === 0) continue;
+      if (doomed.length === w.tabs.length) openTab(w.id, "");
+      for (const t of doomed) closeTab(t.id);
+    }
+  }
+
   function uninstallExtension(id: string): void {
     const node = extRegistry.current;
     if (!node) return;
+    // Before the extension goes: once it is unloaded its pages navigate
+    // away from its address and can no longer be told apart.
+    closeExtensionTabs(id);
     void removeExtension(node, id)
       .then(() => {
         if (TEST_HOOKS) console.error(`ND_APP EXT_REMOVED id=${id}`);
