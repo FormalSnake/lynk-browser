@@ -247,6 +247,7 @@ const WIDTHS: [string, number][] = [
 
 try {
   await poll("the page", () => pageEval("location.href"), (href) => href.includes("/action"), 60_000);
+  const windowsAtStart = appWindows().length;
 
   // 1. The registry reaches the panel: both fixtures listed, the framework's
   //    own extension not. One install at a time: an install parks its path on
@@ -337,24 +338,43 @@ try {
   //    Chromium asks nothing.
   if (!real) {
     await step("4. uninstall through the app's confirmation", async () => {
+      // The extension's own page from its install, open in a tab, has to
+      // close with it, as in Chrome.
+      const ownTab = async () => (await nodes()).some((n) => /^tab-[^-]+$/.test(n.testID ?? "") && n.text === "ND Gate options");
+      await poll("the extension's own tab", ownTab, (open) => open);
+      const tabsBefore = await tabCount();
+
+      // Remove from the row's menu, each time through the real pointer on
+      // macOS: the ⋯ button, then the menu item.
+      const remove = async (): Promise<void> => {
+        await openPanel();
+        await press(`ext-more-${other}`);
+        await Bun.sleep(800);
+        if (MAC) {
+          // An NSMenu item has no view to locate. The menu drops from the
+          // button's leading edge with Options then Remove, and Remove's
+          // middle sits this far from the button's, measured in
+          // ext-appkit-row-menu.png.
+          const more = await app.getByTestId(`ext-more-${other}`).boundingBox();
+          if (!more) fail("the row's menu button has no geometry");
+          await app.cursor.click({ x: more.x + more.width / 2 + 33, y: more.y + more.height / 2 + 53 });
+        } else {
+          await clickWhenReady(`ext-remove-${other}`);
+        }
+      };
       await openPanel();
       await press(`ext-more-${other}`);
       await Bun.sleep(800);
       shot("row-menu");
-      // Put the menu away with a click on the page, the way a person would,
-      // and reopen the panel it closed with it.
-      if (MAC) {
-        const frame = (await app.windows()).windows[0]?.geometry ?? fail("the window reports no geometry");
-        await app.cursor.click({ x: frame.w - 100, y: frame.h - 100 });
-        await Bun.sleep(500);
-      }
-      await openPanel();
-      await clickWhenReady(`ext-remove-${other}`);
+      if (MAC) await app.cursor.click({ x: 900, y: 400 });
+      await Bun.sleep(500);
+
+      await remove();
       await Bun.sleep(1500);
       if (lines.some((l) => l.includes(`EXT_REMOVED id=${other}`))) fail("Cancel removed the extension");
       await openPanel();
       if (!(await rows()).some((r) => r.id === other)) fail("Cancel removed the row");
-      await clickWhenReady(`ext-remove-${other}`);
+      await remove();
       const landed = await poll(
         "the removal to land",
         async () => lines.find((l) => l.includes(`ND_APP EXT_REMOVED id=${other}`) || l.includes(`EXT_REMOVE failed id=${other}`)) ?? "",
@@ -364,11 +384,19 @@ try {
       if (landed.includes("failed")) fail(landed.slice(landed.indexOf("ND_APP")));
       await Bun.sleep(1500);
       noStrayWindow("after the removal");
+      // Nothing of the panel or its menu may be left up.
+      if (await panelShown()) fail("the panel stayed open after Remove");
+      if (MAC && appWindows().length !== windowsAtStart) {
+        fail(`${appWindows().length} windows up after Remove, ${windowsAtStart} at start: a menu or panel stayed`);
+      }
+      shot("removed");
+      if (await ownTab()) fail("the extension's own tab is still open");
+      if ((await tabCount()) !== tabsBefore - 1) fail(`tabs ${tabsBefore} -> ${await tabCount()}, want the extension's one closed`);
       await openPanel();
       const left = await rows();
       if (left.some((r) => r.id === other)) fail("the extension is still listed");
-      shot("removed");
-      console.log(`4. Cancel kept it, Remove took it out with no Chromium dialog; ${left.length} row(s) left`);
+      shot("removed-panel");
+      console.log(`4. Cancel kept it; Remove took it and its tab out, closed the panel and menu, no Chromium dialog; ${left.length} row(s) left`);
     });
   } else {
     await step("4. real extension click", async () => {
