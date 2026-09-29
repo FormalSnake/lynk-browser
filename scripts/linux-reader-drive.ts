@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Reading mode (Ctrl+Shift+R) and floating video (Ctrl+Shift+P) on Linux,
-// run as a drive inside the framework's real-app rigs:
+// reached by chord and through the command bar, run as a drive inside the
+// framework's real-app rigs:
 //
 //   ND_APP_DIR=<this app> ND_ACCEPT_RIGS=x11 \
 //     ND_ACCEPT_DRIVE=<path from the framework to this file> \
@@ -145,6 +146,58 @@ function focusPage(): void {
 }
 const key = (chord: string) => sh("xdotool", "key", "--clearmodifiers", chord);
 
+/// Ctrl+K, the words, Return: the command bar runs its top row.
+function viaBar(words: string): void {
+  key("ctrl+k");
+  Bun.sleepSync(600);
+  sh("xdotool", "type", "--delay", "40", words);
+  Bun.sleepSync(600);
+  key("Return");
+}
+
+/// Set before the toggle: the reader's shadow root is closed, so the drive
+/// keeps the roots the page makes to measure the reader's type.
+const CATCH_ROOTS = `(() => {
+  if (window.__nbRoots) return "ok";
+  window.__nbRoots = [];
+  const attach = Element.prototype.attachShadow;
+  Element.prototype.attachShadow = function (init) { const r = attach.call(this, init); window.__nbRoots.push(r); return r; };
+  return "ok";
+})()`;
+const METRICS = `(() => {
+  const r = window.__ndReader && window.__nbRoots.find((x) => x.host === window.__ndReader.host);
+  if (!r) return "{}";
+  const scroll = r.querySelector(".scroll");
+  const main = r.querySelector("main");
+  const p = [...r.querySelectorAll("article p")].find((x) => x.innerText.trim().length > 80);
+  const cs = p ? getComputedStyle(p) : null;
+  const ms = getComputedStyle(main);
+  const inner = main.clientWidth - parseFloat(ms.paddingLeft) - parseFloat(ms.paddingRight);
+  return JSON.stringify({
+    chars: r.querySelector("article").innerText.length,
+    title: r.querySelector("h1.title").innerText,
+    fontSize: cs ? parseFloat(cs.fontSize) : 0,
+    lineHeight: cs ? parseFloat(cs.lineHeight) : 0,
+    measure: cs ? inner / parseFloat(cs.fontSize) : 0,
+    family: cs ? cs.fontFamily : "",
+    overflowX: scroll.scrollWidth - scroll.clientWidth,
+    indent: p ? Math.round(p.getBoundingClientRect().left - r.querySelector("h1.title").getBoundingClientRect().left) : 0,
+    chain: p ? (() => { const out = []; for (let e = p; e && e.localName !== "article"; e = e.parentElement) out.push(e.localName); return out.join("<"); })() : "",
+  });
+})()`;
+/// Content extracted and set to read: a real article's worth of words, body
+/// text at 17 px or more with 1.5 line spacing or more, lines no longer than
+/// about 75 characters, and nothing wider than the window.
+function readable(what: string, raw: string): void {
+  const m = JSON.parse(raw) as { chars?: number; title?: string; fontSize?: number; lineHeight?: number; measure?: number; overflowX?: number; indent?: number };
+  console.log(`  ${what} metrics ${raw}`);
+  check(`${what}.extracted`, (m.chars ?? 0) >= 1500 && !!m.title, `${m.chars ?? 0} chars`);
+  check(`${what}.typeSize`, (m.fontSize ?? 0) >= 17 && (m.lineHeight ?? 0) / (m.fontSize ?? 1) >= 1.5, `${m.fontSize}/${m.lineHeight}`);
+  check(`${what}.measure`, (m.measure ?? 99) <= 40, `${m.measure?.toFixed(1)} em`);
+  check(`${what}.noOverflow`, (m.overflowX ?? 1) <= 0, `${m.overflowX}`);
+  check(`${what}.alignedWithTitle`, Math.abs(m.indent ?? 0) <= 1, `${m.indent} px`);
+}
+
 // ---- legs ----------------------------------------------------------------------
 
 const PAGES: { name: string; url: string; pick?: string }[] = [
@@ -172,12 +225,19 @@ for (const p of legs.includes("reader") ? PAGES : []) {
   // A click on a link would navigate; the page has to still be where it was.
   if ((await evalPage("location.href")) !== url) url = await load(url);
   await evalPage("window.__nbMarker = 1");
-  key("ctrl+shift+r");
+  await evalPage(CATCH_ROOTS);
+  // The command bar reaches the same toggle as the chord: the first page goes
+  // in through it.
+  if (p === PAGES[0]) viaBar("reading mode");
+  else key("ctrl+shift+r");
   const on = await answer("ND_APP READER ");
   check(`${p.name}.readerOn`, on === "on", `${on} on ${url}`);
   check(`${p.name}.noReload`, (await evalPage("String(window.__nbMarker)")) === "1");
   check(`${p.name}.sameAddress`, (await evalPage("location.href")) === url);
   await Bun.sleep(1000);
+  readable(p.name, await evalPage(METRICS));
+  await evalPage(`window.__ndReader && (window.__ndReader.host.dataset.scheme = "light")`);
+  await Bun.sleep(300);
   capture(`reader-${p.name}-light`);
   await evalPage(`window.__ndReader && (window.__ndReader.host.dataset.scheme = "dark")`);
   await Bun.sleep(300);
@@ -188,7 +248,10 @@ for (const p of legs.includes("reader") ? PAGES : []) {
   key("Next");
   await Bun.sleep(400);
   capture(`reader-${p.name}-dark-further`);
-  key("ctrl+shift+r");
+  // The chord leaves on the first page, Escape on the others; the app hears
+  // of an Escape through the reader's channel.
+  if (p === PAGES[0]) key("ctrl+shift+r");
+  else key("Escape");
   const off = await answer("ND_APP READER ");
   check(`${p.name}.readerOff`, off === "off", off);
   check(`${p.name}.pageBack`, (await evalPage("String(!window.__ndReader && window.__nbMarker === 1)")) === "true");
@@ -213,7 +276,7 @@ await evalPage("document.querySelector('video').play().then(() => 'playing')");
 await Bun.sleep(800);
 const before = new Set(windowsOf(hostPid).map((w) => w.id));
 focusPage();
-key("ctrl+shift+p");
+viaBar("float video");
 const floated = await answer("ND_APP FLOAT ");
 check("float.on", floated === "on", floated);
 await Bun.sleep(1500);
@@ -246,6 +309,19 @@ if (pip) {
   check("float.notOverThePage", !!top && (pip.x + pip.w > top.x + top.w - 40 || pip.y + pip.h > top.y + top.h - 40), `pip ${pip.x},${pip.y} app ${top?.x},${top?.y} ${top?.w}x${top?.h}`);
 }
 capture("float-alone");
+
+// Moved by hand, it stays where it was put: nothing the host does on its
+// window watch puts it back.
+if (pip) {
+  const target = { x: Math.max(0, pip.x - 400), y: Math.max(0, pip.y - 260) };
+  if (rig === "hypr") sh("hyprctl", "dispatch", "movewindowpixel", `exact ${target.x} ${target.y},title:^(${pip.name})$`);
+  else sh("xdotool", "windowmove", pip.id, String(target.x), String(target.y));
+  await Bun.sleep(2500);
+  const at = windowsOf(hostPid).find((w) => w.id === pip.id);
+  check("float.keptAfterMove", !!at && Math.abs(at.x - target.x) <= 40 && Math.abs(at.y - target.y) <= 40, `asked ${target.x},${target.y} got ${at?.x},${at?.y}`);
+  if (at) Object.assign(pip, { x: at.x, y: at.y });
+  capture("float-moved");
+}
 
 // Another app's window, raised over everything and focused: GTK's own demo, as
 // an X client on x11 and a native Wayland one under Hyprland.
@@ -301,6 +377,13 @@ await Bun.sleep(1200);
 const managed = new Set((sh("xprop", "-root", "_NET_CLIENT_LIST").match(/0x[0-9a-f]+/g) ?? []).map((h) => Number(h)));
 const left = windowsOf(hostPid).filter((w) => !before.has(w.id) && w.w > 100 && managed.has(Number(w.id)));
 check("float.noneLeft", left.length === 0, JSON.stringify(left));
+check(
+  "float.backInPage",
+  (await evalPage(
+    "(() => { const v = document.querySelector('video'); const r = v.getBoundingClientRect(); return String(!document.pictureInPictureElement && v.isConnected && r.width > 100 && r.height > 50); })()",
+  )) === "true",
+);
+capture("float-back-in-page");
 server.stop(true);
 
 console.log(failed === 0 ? `ND_APP_CHROME_LEGS_OK(${rig})` : `ND_APP_CHROME_LEGS_FAIL(${rig}) ${failed} failed`);

@@ -34,7 +34,11 @@ const RUN = mkdtempSync(join(tmpdir(), "nb-reader-"));
 // rides a wrapper that execs the host (same pid, same bundle path).
 const CDP_PORT = Number(process.env.ND_CEF_DEBUG_PORT ?? 9481);
 const hostBinary = join(RUN, "host.sh");
-writeFileSync(hostBinary, `#!/bin/sh\nexec "${bundled}" --remote-debugging-port=${CDP_PORT} "$@"\n`);
+// app.cursor runs the same binary with --nd-input, which must not get the port.
+writeFileSync(
+  hostBinary,
+  `#!/bin/sh\ncase "$1" in --nd-*) exec "${bundled}" "$@" ;; esac\nexec "${bundled}" --remote-debugging-port=${CDP_PORT} "$@"\n`,
+);
 chmodSync(hostBinary, 0o755);
 mkdirSync(SHOTS, { recursive: true });
 
@@ -143,6 +147,52 @@ async function load(url: string): Promise<string> {
   return evalPage("location.href");
 }
 
+/// Set before the toggle: the reader's shadow root is closed, so the drive
+/// keeps the roots the page makes to measure the reader's type.
+const CATCH_ROOTS = `(() => {
+  if (window.__nbRoots) return "ok";
+  window.__nbRoots = [];
+  const attach = Element.prototype.attachShadow;
+  Element.prototype.attachShadow = function (init) { const r = attach.call(this, init); window.__nbRoots.push(r); return r; };
+  return "ok";
+})()`;
+const METRICS = `(() => {
+  const r = window.__ndReader && window.__nbRoots.find((x) => x.host === window.__ndReader.host);
+  if (!r) return "{}";
+  const scroll = r.querySelector(".scroll");
+  const main = r.querySelector("main");
+  const p = [...r.querySelectorAll("article p")].find((x) => x.innerText.trim().length > 80);
+  const cs = p ? getComputedStyle(p) : null;
+  const ms = getComputedStyle(main);
+  const inner = main.clientWidth - parseFloat(ms.paddingLeft) - parseFloat(ms.paddingRight);
+  return JSON.stringify({
+    chars: r.querySelector("article").innerText.length,
+    title: r.querySelector("h1.title").innerText,
+    fontSize: cs ? parseFloat(cs.fontSize) : 0,
+    lineHeight: cs ? parseFloat(cs.lineHeight) : 0,
+    measure: cs ? inner / parseFloat(cs.fontSize) : 0,
+    ink: cs ? cs.color : "",
+    ground: getComputedStyle(scroll).backgroundColor,
+    overflowX: scroll.scrollWidth - scroll.clientWidth,
+    indent: p ? Math.round(p.getBoundingClientRect().left - r.querySelector("h1.title").getBoundingClientRect().left) : 0,
+    chain: p ? (() => { const out = []; for (let e = p; e && e.localName !== "article"; e = e.parentElement) out.push(e.localName); return out.join("<"); })() : "",
+  });
+})()`;
+/// Content extracted and set to read: a real article's worth of words, body
+/// text at 17 px or more with 1.5 line spacing or more, lines no longer than
+/// about 75 characters, and nothing wider than the window.
+function readable(what: string, raw: string): void {
+  const m = JSON.parse(raw) as { chars?: number; title?: string; fontSize?: number; lineHeight?: number; measure?: number; overflowX?: number; indent?: number; ink?: string; ground?: string };
+  console.log(`  ${what}: ${raw}`);
+  if (!m.chars || m.chars < 1500) fail(`${what}: only ${m.chars ?? 0} characters extracted`);
+  if (!m.title) fail(`${what}: no title`);
+  if ((m.fontSize ?? 0) < 17) fail(`${what}: body text is ${m.fontSize} px`);
+  if ((m.lineHeight ?? 0) / (m.fontSize ?? 1) < 1.5) fail(`${what}: line height ${m.lineHeight} on ${m.fontSize} px`);
+  if ((m.measure ?? 99) > 40) fail(`${what}: lines are ${m.measure?.toFixed(1)} em wide`);
+  if ((m.overflowX ?? 1) > 0) fail(`${what}: ${m.overflowX} px wider than the window`);
+  if (Math.abs(m.indent ?? 0) > 1) fail(`${what}: body text sits ${m.indent} px off the title's edge`);
+}
+
 let calculator = 0;
 try {
   const page = await step("find the tab's page", async () => {
@@ -196,9 +246,36 @@ try {
     if (out.exitCode !== 0) fail(`osascript: ${out.stderr.toString().trim()}`);
   };
 
+  const key = (code: number): void => {
+    const script =
+      `tell application "System Events"\n` +
+      `  set frontmost of (first process whose unix id is ${app.pid}) to true\n` +
+      `  delay 0.3\n` +
+      `  key code ${code}\n` +
+      `end tell`;
+    const out = Bun.spawnSync(["osascript", "-e", script]);
+    if (out.exitCode !== 0) fail(`osascript: ${out.stderr.toString().trim()}`);
+  };
+  /// ⌘K, the words, Return: the command bar runs its top row.
+  const viaBar = (words: string): void => {
+    const script =
+      `tell application "System Events"\n` +
+      `  set frontmost of (first process whose unix id is ${app.pid}) to true\n` +
+      `  delay 0.3\n` +
+      `  keystroke "k" using {command down}\n` +
+      `  delay 0.6\n` +
+      `  keystroke "${words}"\n` +
+      `  delay 0.6\n` +
+      `  key code 36\n` +
+      `end tell`;
+    const out = Bun.spawnSync(["osascript", "-e", script]);
+    if (out.exitCode !== 0) fail(`osascript: ${out.stderr.toString().trim()}`);
+  };
+
   /// NB_READER_LEGS=float runs the floating-video leg alone.
   const legs = process.env.NB_READER_LEGS ?? "reader,float";
-  for (const p of legs.includes("reader") ? PAGES : []) {
+  const only = process.env.NB_READER_PAGES;
+  for (const p of legs.includes("reader") ? PAGES.filter((x) => !only || only.includes(x.name) || x === PAGES[0]) : []) {
     let url = await load(p.url);
     if (p.pick) {
       const href = await evalPage(
@@ -208,12 +285,20 @@ try {
       url = await load(href);
     }
     await evalPage("window.__nbMarker = 1");
-    chord("r");
+    await evalPage(CATCH_ROOTS);
+    await evalPage("window.__nbKeys = []; window.addEventListener('keydown', (e) => window.__nbKeys.push(e.key), true); 'ok'");
+    // The command bar reaches the same toggle as the chord: the first page
+    // goes in through it.
+    if (p === PAGES[0]) viaBar("reading mode");
+    else chord("r");
     const on = await marker(`ND_APP READER ${tab}`);
     if (on !== "on") fail(`${p.name}: reader answered ${on} on ${url}`);
     if ((await evalPage("String(window.__nbMarker)")) !== "1") fail(`${p.name}: the chord reloaded the page`);
     if ((await evalPage("location.href")) !== url) fail(`${p.name}: the address changed under the reader`);
     await Bun.sleep(1200);
+    readable(p.name, await evalPage(METRICS));
+    await evalPage(`window.__ndReader && (window.__ndReader.host.dataset.scheme = "light")`);
+    await Bun.sleep(300);
     capture(`reader-${p.name}-light`);
     await evalPage(`window.__ndReader.host.dataset.scheme = "dark"`);
     await Bun.sleep(300);
@@ -225,14 +310,27 @@ try {
     capture(`reader-${p.name}-dark-further`);
     await app.setWindowSize(720, 860);
     await Bun.sleep(800);
+    readable(`${p.name} at 720`, await evalPage(METRICS));
     capture(`reader-${p.name}-dark-narrow`);
     await evalPage(`window.__ndReader.host.dataset.scheme = "light"`);
     await Bun.sleep(300);
     capture(`reader-${p.name}-light-narrow`);
     await app.setWindowSize(1280, 860);
-    chord("r");
+    // The chord leaves on the first page, Escape on the others; the app hears
+    // of an Escape through the reader's channel.
+    if (p === PAGES[0]) chord("r");
+    else {
+      // The toggle hands the keyboard to the reader, without a click.
+      const focus = await evalPage("String(document.hasFocus())");
+      if (focus !== "true") fail(`${p.name}: the page does not have the keyboard under the reader`);
+      key(121);
+      key(53);
+      await Bun.sleep(800);
+      console.log(`  keys the page saw: ${await evalPage("JSON.stringify(window.__nbKeys)")}`);
+      console.log(`  after Escape the reader is ${(await evalPage("String(!!window.__ndReader)")) === "true" ? "still up" : "gone"}`);
+    }
     const off = await marker(`ND_APP READER ${tab}`);
-    if (off !== "off") fail(`${p.name}: second chord answered ${off}`);
+    if (off !== "off") fail(`${p.name}: leaving answered ${off}`);
     if ((await evalPage("String(!window.__ndReader && window.__nbMarker === 1)")) !== "true") {
       fail(`${p.name}: leaving the reader did not put the page back as it was`);
     }
@@ -244,7 +342,7 @@ try {
   await evalPage("document.querySelector('video').play()");
   await Bun.sleep(1000);
   const before = new Set(ndshotWindows(app.pid).map((w) => w.windowID));
-  chord("p");
+  viaBar("float video");
   const floated = await marker(`ND_APP FLOAT ${tab}`);
   if (floated !== "on") fail(`float answered ${floated}`);
   await Bun.sleep(1500);
@@ -252,6 +350,35 @@ try {
   if (!pip) fail("no floating window appeared");
   console.log(`  floating window ${JSON.stringify({ app: pip.app, title: pip.title, w: pip.width, h: pip.height })}`);
   capture("float-window", pip.windowID);
+  if ((await evalPage("String(!!document.pictureInPictureElement)")) !== "true") fail("the page has no floating video");
+
+  // Moved by hand, it stays where it was put: nothing puts it back in a
+  // corner, and the app window moving or the app coming forward leaves it be.
+  const [win] = (await app.windows()).windows;
+  const geo = win?.geometry ?? fail("the window reports no geometry");
+  // Clear of the play button in the middle and the buttons in the corners.
+  const grab = { x: pip.x + pip.width * 0.3 - geo.x, y: pip.y + pip.height * 0.7 - geo.y };
+  const drop = { x: grab.x - 360, y: grab.y - 220 };
+  console.log(`  window at ${geo.x},${geo.y}; floating window at ${pip.x},${pip.y}; grabbing ${grab.x},${grab.y} in the window`);
+  await app.cursor.move(grab, { steps: 12 });
+  await Bun.sleep(300);
+  await app.cursor.down();
+  await Bun.sleep(200);
+  await app.cursor.move(drop, { steps: 30 });
+  await Bun.sleep(200);
+  await app.cursor.up();
+  await Bun.sleep(1500);
+  const moved = ndshotWindows(app.pid).find((w) => w.windowID === pip.windowID) ?? fail("the floating window went away when moved");
+  const dx = moved.x - pip.x;
+  const dy = moved.y - pip.y;
+  if (Math.abs(dx + 360) > 40 || Math.abs(dy + 220) > 40) fail(`the drag moved it by ${dx},${dy}, not -360,-220`);
+  await app.setWindowSize(1100, 800);
+  await Bun.sleep(1500);
+  const kept = ndshotWindows(app.pid).find((w) => w.windowID === pip.windowID);
+  console.log(`  moved ${pip.x},${pip.y} -> ${moved.x},${moved.y}; after the app window resized ${kept?.x},${kept?.y}`);
+  if (!kept || Math.abs(kept.x - moved.x) > 2 || Math.abs(kept.y - moved.y) > 2) fail(`it did not stay where it was put: ${JSON.stringify(kept)}`);
+  await app.setWindowSize(1280, 860);
+  capture("float-moved", pip.windowID);
 
   const calc = Bun.spawn(["/System/Applications/Calculator.app/Contents/MacOS/Calculator"], { stdout: "ignore", stderr: "ignore" });
   calculator = calc.pid;
@@ -266,12 +393,25 @@ try {
   if (shot.exitCode !== 0) fail(`capture over another app: ${shot.stderr.toString().trim()}`);
   console.log("  capture float-over-other-app.png");
 
-  chord("p");
+  // Back to the app the way a person gets there, a click on its window
+  // (the page's empty top right, clear of the floating video).
+  const [again] = (await app.windows()).windows;
+  const at = again?.geometry ?? fail("the window reports no geometry");
+  await app.cursor.click({ x: at.w - 40, y: 120 });
+  await Bun.sleep(500);
+  // Through the bar, not the chord: a global shortcut on the test Mac takes
+  // ⇧⌘P before any keyDown reaches the app.
+  viaBar("float video");
   const back = await marker(`ND_APP FLOAT ${tab}`);
   if (back !== "off") fail(`second float chord answered ${back}`);
   await Bun.sleep(1200);
   const left = ndshotWindows(app.pid).filter((w) => !before.has(w.windowID) && w.width > 100);
   if (left.length > 0) fail(`windows left behind after the video came back: ${JSON.stringify(left)}`);
+  const inPage = await evalPage(
+    "(() => { const v = document.querySelector('video'); const r = v.getBoundingClientRect(); return String(!document.pictureInPictureElement && v.isConnected && r.width > 100 && r.height > 50); })()",
+  );
+  if (inPage !== "true") fail("the video is not back in the page");
+  capture("float-back-in-page");
   console.log("NB_FLOAT_OK");
   console.log("NB_READER_OK");
 } finally {

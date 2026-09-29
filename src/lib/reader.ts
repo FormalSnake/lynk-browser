@@ -102,6 +102,7 @@ function pageScript(action: "toggle" | "off" | "scheme", scheme: Appearance): st
   const leave = `
     const r = window[${JSON.stringify(KEY)}];
     if (r) {
+      window.removeEventListener("keydown", r.onKey, true);
       r.host.remove();
       document.documentElement.style.overflow = r.overflow;
       delete window[${JSON.stringify(KEY)}];
@@ -186,6 +187,12 @@ function pageScript(action: "toggle" | "off" | "scheme", scheme: Appearance): st
       const cells = [...t.querySelectorAll("td, th")].filter((c) => c.closest("table") === t);
       t.replaceWith(...cells.flatMap((c) => [...c.childNodes]));
     }
+    // Readability turns some layout tables into divs and leaves their rows and
+    // cells behind; outside a table those are wrappers, and a cell's padding
+    // would push the prose off the title's edge.
+    for (const el of [...article.content.querySelectorAll("tbody, thead, tfoot, tr, td, th")].reverse()) {
+      if (!el.parentElement || !el.parentElement.closest("table")) el.replaceWith(...el.childNodes);
+    }
     // A page's own custom elements would upgrade again inside the reader and
     // run the page's code there (MDN's code blocks empty themselves and grow a
     // Copy button): each one becomes the plain element it stands for.
@@ -238,11 +245,42 @@ function pageScript(action: "toggle" | "off" | "scheme", scheme: Appearance): st
     document.documentElement.style.overflow = "hidden";
     host.style.cssText = "position:fixed;inset:0;z-index:2147483647;";
     document.documentElement.append(host);
-    Object.defineProperty(window, ${JSON.stringify(KEY)}, { value: { host, overflow }, configurable: true });
+    // Escape leaves, before the page's own key handlers can act on a page
+    // that is not on screen. The app hears of it through LEFT_EVENT.
+    const onKey = (e) => {
+      if (e.key !== "Escape" || e.isComposing) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      window.removeEventListener("keydown", onKey, true);
+      host.remove();
+      document.documentElement.style.overflow = overflow;
+      delete window[${JSON.stringify(KEY)}];
+      document.dispatchEvent(new CustomEvent(${JSON.stringify(LEFT_EVENT)}));
+    };
+    window.addEventListener("keydown", onKey, true);
+    Object.defineProperty(window, ${JSON.stringify(KEY)}, { value: { host, overflow, onKey }, configurable: true });
     scroll.focus({ preventScroll: true });
     return "on";
   })()`;
 }
+
+/// Fired on the document when Escape took the reader away.
+const LEFT_EVENT = "ndreader:left";
+
+/// The isolated world and script-message name the app hears Escape through.
+/// A world of its own keeps `window.webkit.messageHandlers` out of the page's
+/// world, where sites read it as a sign of Safari.
+export const READER_WORLD = "ndreader";
+export const READER_CHANNEL = "ndReader";
+
+/// Runs in READER_WORLD while the reader is up: DOM events cross worlds, the
+/// message handler does not.
+export const READER_BRIDGE_SCRIPT = `(() => {
+  if (window.__ndReaderBridge) return "ok";
+  window.__ndReaderBridge = true;
+  document.addEventListener(${JSON.stringify(LEFT_EVENT)}, () => window.webkit.messageHandlers.${READER_CHANNEL}.postMessage("left"));
+  return "ok";
+})()`;
 
 /// Reading mode on the page, or off it again when it is already up.
 export function toggleReaderScript(scheme: Appearance): string {

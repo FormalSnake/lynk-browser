@@ -103,7 +103,15 @@ import {
   type SessionTab,
 } from "./lib/session.ts";
 import { LAYOUTS, PIN_STYLES, SEARCH_ENGINES, engineOf, settings, type Layout } from "./lib/settings.ts";
-import { leaveReaderScript, readerSchemeScript, readerState, toggleReaderScript } from "./lib/reader.ts";
+import {
+  READER_BRIDGE_SCRIPT,
+  READER_CHANNEL,
+  READER_WORLD,
+  leaveReaderScript,
+  readerSchemeScript,
+  readerState,
+  toggleReaderScript,
+} from "./lib/reader.ts";
 import { parseTabPayload } from "./lib/tabdrag.ts";
 import {
   IDLE,
@@ -734,11 +742,28 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
         if (TEST_HOOKS) console.error(`ND_APP READER ${tabId} ${state}`);
         patch(tabId, { reading: state === "on" });
         if (state === "none") toast("No article to read on this page");
+        if (state === "on") {
+          hearReaderEscape(node);
+          // The keyboard goes to the reader, wherever it was: Space and Page
+          // Down scroll it and Escape leaves.
+          sendCommand(node, "focus");
+        }
       })
       .catch((e: unknown) => {
         console.error(`ND_APP READER failed ${String(e)}`);
         toast("This page cannot be shown in reading mode");
       });
+  }
+
+  /// Views whose reader channel is registered; one registration serves every
+  /// document the view loads.
+  const readerChannels = useRef(new Set<number>());
+  function hearReaderEscape(node: NdNodeRef<"webview">): void {
+    if (!readerChannels.current.has(node.id)) {
+      readerChannels.current.add(node.id);
+      sendCommand(node, "registerScriptMessage", { name: READER_CHANNEL, world: READER_WORLD });
+    }
+    void executeJavaScript(node, READER_BRIDGE_SCRIPT, READER_WORLD).catch(() => {});
   }
 
   function toggleFloat(tabId: string): void {
@@ -1730,6 +1755,11 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                     onFaviconChanged={(e) => onFavicon(t.url, e.data as { dataUrl?: string; iconUrl?: string })}
                     onSecurityChanged={(e) => patch(t.id, { security: securityOf(t.url, e.data) })}
                     onZoomChanged={(e) => onZoomChanged(t.id, e.data)}
+                    onScriptMessage={(e) => {
+                      if ((e.data as { name?: string }).name !== READER_CHANNEL) return;
+                      if (TEST_HOOKS) console.error(`ND_APP READER ${t.id} off`);
+                      patch(t.id, { reading: false });
+                    }}
                     onFindResult={(e) => {
                       // Two events per search on GTK: `done` carries the
                       // outcome, `done: false` carries the total from the
