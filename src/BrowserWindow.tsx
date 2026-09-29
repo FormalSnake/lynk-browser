@@ -9,6 +9,7 @@ import {
   Platform,
   Spacing,
   clipboard,
+  createPortal,
   executeJavaScript,
   onJavaScriptResult,
   onToastButtonClicked,
@@ -28,7 +29,7 @@ import type {
 } from "@nativedesktop/react";
 
 import { INSET, Sidebar } from "./Sidebar.tsx";
-import { CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
+import { ADDRESS_MIN_WIDTH, CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
 import type { DownloadItem } from "./lib/downloads.ts";
 import { downloadDir } from "./lib/downloads.ts";
 import {
@@ -110,6 +111,8 @@ export interface WindowController {
   closePalette(): void;
   openDownloads(): void;
   openSiteInfo(): void;
+  /// Fires the compact address field's padlock, or the sidebar's.
+  pressPadlock(): void;
   /// Arc's Cmd+S, for the sidebar layout.
   toggleSidebar(): void;
   /// Test-only: what the pointer at the leading edge does, for a backend with
@@ -266,6 +269,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// What is in the address field right now. Only a test hook reads it: a
   /// person presses Enter, which carries the text with it.
   const typedAddress = useRef("");
+  const addressField = useRef<NdNodeRef<"searchinput">>(null);
   /// The open popup's view, and the id of the one whose window.close the app
   /// has already hooked.
   const popupView = useRef<NdNodeRef<"webview"> | null>(null);
@@ -291,6 +295,11 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
       if (contentBars.current) sendCommand(contentBars.current, show ? "revealTopBars" : "concealTopBars");
     },
     openSiteInfo: () => openPanel("siteInfo"),
+    pressPadlock: () => {
+      if (compact && addressField.current) sendCommand(addressField.current, "activateLeadingIcon");
+      else if (siteInfoOpen) setSiteInfoOpen(false);
+      else openPanel("siteInfo");
+    },
     showPopup: (id, url) => {
       openPanel("popup");
       setPopupSize({ width: POPUP_DEFAULT_WIDTH, height: POPUP_DEFAULT_HEIGHT });
@@ -596,7 +605,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// The tab run is sized from the window rather than from hexpand: GTK would
   /// hand every tab an equal share of the whole row, which is what left the
   /// address field nowhere to go and every title at two characters.
-  const tabMetrics = tabRunMetrics(win.width, tabs, pinnedActions.length);
+  const tabMetrics = tabRunMetrics(win.width, tabs, active.id, chromium ? pinnedActions.length + 1 : 0);
   const targets = ctx.moveTargets(win.id);
   const dropIndex = ctx.dropHint?.windowId === win.id ? ctx.dropHint.index : null;
 
@@ -696,20 +705,110 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   // GTK shrinks one to the room left under the window and then closes it for
   // being under its minimum size.
 
-  function siteInfoControl(slot?: "start"): React.ReactNode {
+  /// What the page may do and what it is asking for, hung off the padlock.
+  function siteInfoPanel(): React.ReactNode {
+    return (
+      <box
+        testID={`${p}site-info-panel`}
+        orientation="vertical"
+        spacing={Spacing.sm}
+        style={{ padding: Spacing.sm, minWidth: SITE_PANEL_WIDTH }}
+      >
+        <label
+          testID={`${p}site-info-host`}
+          text={hostOf(active.url) || "New Tab"}
+          cssClasses={["heading"]}
+          style={{ halign: "start" }}
+        />
+        <label
+          testID={`${p}site-info-security`}
+          text={SECURITY_TOOLTIP[activeRt.security]}
+          cssClasses={["dimmed", "caption"]}
+          ellipsize
+          style={{ halign: "start" }}
+        />
+        {activePrompt ? (
+          <box orientation="vertical" spacing={Spacing.sm}>
+            <label
+              testID={`${p}permission-request`}
+              text={permissionSentence(hostOf(active.url) || activePrompt.origin, activePrompt.types)}
+              style={{ halign: "start" }}
+            />
+            <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end" }}>
+              <button
+                testID={`${p}permission-block`}
+                label="Block"
+                onClick={() => {
+                  ctx.decidePrompt(activePrompt, "block");
+                  setSiteInfoOpen(false);
+                }}
+              />
+              <button
+                testID={`${p}permission-allow`}
+                label="Allow"
+                cssClasses={["suggested-action"]}
+                onClick={() => {
+                  ctx.decidePrompt(activePrompt, "allow");
+                  setSiteInfoOpen(false);
+                }}
+              />
+            </box>
+          </box>
+        ) : siteDecisions.length === 0 ? (
+          <label
+            testID={`${p}site-permissions-empty`}
+            text="This site has not asked for anything yet."
+            cssClasses={["dimmed"]}
+            style={{ halign: "start" }}
+          />
+        ) : (
+          <box orientation="vertical" spacing={Spacing.xs}>
+            {siteDecisions.map((row) => (
+              <box key={row.type} orientation="horizontal" spacing={Spacing.sm}>
+                <label
+                  testID={`${p}site-permission-${row.type}`}
+                  text={`${permissionName(row.type)}: ${row.decision === "allow" ? "Allowed" : "Blocked"}`}
+                  ellipsize
+                  style={{ halign: "start", hexpand: true }}
+                />
+              </box>
+            ))}
+            <button
+              testID={`${p}site-permissions-reset`}
+              label="Reset Permissions"
+              cssClasses={["flat"]}
+              onClick={() => ctx.resetSiteDecisions(activeOrigin)}
+            />
+          </box>
+        )}
+      </box>
+    );
+  }
+
+  function closeSiteInfo(): void {
+    setSiteInfoOpen(false);
+    // Escape and a click outside are a dismissal, and a dismissed request is
+    // denied rather than left pending.
+    ctx.denyPromptsFor(active.id);
+  }
+
+  /// The sidebar's padlock: a button in its foot, so the popover opens upward
+  /// and stays inside the window. Opened downward GTK shrinks one to the room
+  /// left under the window and then closes it for being under its minimum
+  /// size. Compact draws the padlock inside the address field instead
+  /// (`leadingIconName`).
+  function siteInfoControl(): React.ReactNode {
     return (
       <>
         {/* One indicator, updated in place. The state rides the testID
             because getTree exposes a node's text but never its icon
             name, so that is the only way a drive can assert which
             padlock is drawn; it must NOT ride a `key`, which remounts
-            the button and left AppKit with one toolbar item per state
-            the page had ever been in. */}
-        {/* The padlock is Chrome's site-info button: what this page is
-            allowed to do hangs off it, and so does a permission the page
-            is asking for right now. Boxed because a popover anchors on
-            its tree parent and a header bar's handle is not one. */}
-        <box slot={slot} testID={`${p}site-info-anchor`} orientation="horizontal">
+            the button. The padlock is Chrome's site-info button: what
+            this page is allowed to do hangs off it, and so does a
+            permission the page is asking for right now. Boxed because a
+            popover anchors on its tree parent. */}
+        <box testID={`${p}site-info-anchor`} orientation="horizontal">
           <button
             testID={`${p}security-${activeRt.security}`}
             iconName={SECURITY_ICON[activeRt.security]}
@@ -717,91 +816,8 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             cssClasses={["flat"]}
             onClick={() => (siteInfoOpen ? setSiteInfoOpen(false) : openPanel("siteInfo"))}
           />
-          <popover
-            testID={`${p}site-info-popover`}
-            open={siteInfoOpen}
-            position={slot ? "bottom" : "top"}
-            onClosed={() => {
-              setSiteInfoOpen(false);
-              // Escape and a click outside are a dismissal, and a
-              // dismissed request is denied rather than left pending.
-              ctx.denyPromptsFor(active.id);
-            }}
-          >
-            <box
-              testID={`${p}site-info-panel`}
-              orientation="vertical"
-              spacing={Spacing.sm}
-              style={{ padding: Spacing.sm, minWidth: SITE_PANEL_WIDTH }}
-            >
-              <label
-                testID={`${p}site-info-host`}
-                text={hostOf(active.url) || "New Tab"}
-                cssClasses={["heading"]}
-                style={{ halign: "start" }}
-              />
-              <label
-                testID={`${p}site-info-security`}
-                text={SECURITY_TOOLTIP[activeRt.security]}
-                cssClasses={["dimmed", "caption"]}
-                ellipsize
-                style={{ halign: "start" }}
-              />
-              {activePrompt ? (
-                <box orientation="vertical" spacing={Spacing.sm}>
-                  <label
-                    testID={`${p}permission-request`}
-                    text={permissionSentence(hostOf(active.url) || activePrompt.origin, activePrompt.types)}
-                    style={{ halign: "start" }}
-                  />
-                  <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end" }}>
-                    <button
-                      testID={`${p}permission-block`}
-                      label="Block"
-                      onClick={() => {
-                        ctx.decidePrompt(activePrompt, "block");
-                        setSiteInfoOpen(false);
-                      }}
-                    />
-                    <button
-                      testID={`${p}permission-allow`}
-                      label="Allow"
-                      cssClasses={["suggested-action"]}
-                      onClick={() => {
-                        ctx.decidePrompt(activePrompt, "allow");
-                        setSiteInfoOpen(false);
-                      }}
-                    />
-                  </box>
-                </box>
-              ) : siteDecisions.length === 0 ? (
-                <label
-                  testID={`${p}site-permissions-empty`}
-                  text="This site has not asked for anything yet."
-                  cssClasses={["dimmed"]}
-                  style={{ halign: "start" }}
-                />
-              ) : (
-                <box orientation="vertical" spacing={Spacing.xs}>
-                  {siteDecisions.map((row) => (
-                    <box key={row.type} orientation="horizontal" spacing={Spacing.sm}>
-                      <label
-                        testID={`${p}site-permission-${row.type}`}
-                        text={`${permissionName(row.type)}: ${row.decision === "allow" ? "Allowed" : "Blocked"}`}
-                        ellipsize
-                        style={{ halign: "start", hexpand: true }}
-                      />
-                    </box>
-                  ))}
-                  <button
-                    testID={`${p}site-permissions-reset`}
-                    label="Reset Permissions"
-                    cssClasses={["flat"]}
-                    onClick={() => ctx.resetSiteDecisions(activeOrigin)}
-                  />
-                </box>
-              )}
-            </box>
+          <popover testID={`${p}site-info-popover`} open={siteInfoOpen} position="top" onClosed={closeSiteInfo}>
+            {siteInfoPanel()}
           </popover>
         </box>
       </>
@@ -1286,6 +1302,14 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 label="Conceal the revealed window controls"
                 onSelect={() => menuTarget()?.revealStrip(false)}
               />
+              {/* The compact padlock is an icon inside the field, not a
+                  widget automation can click; this fires it the way a
+                  pointer press does. */}
+              <menuitem
+                testID="menu-site-info"
+                label="Open site information"
+                onSelect={() => menuTarget()?.pressPadlock()}
+              />
               <menuitem
                 testID="menu-commit-address"
                 label="Commit the address field"
@@ -1500,33 +1524,42 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 />
               )}
 
-              {siteInfoControl("start")}
               {/* Compact is a standard browser row: the address is an editable
                   field in it, and it takes whatever the row has left: the
-                  host promotes a search entry packed straight into a header
-                  bar to the title widget with hexpand, which is the centre
-                  run. Wrapping it in a box loses that and leaves it at its
-                  floor. Typing and Enter commit from the field; ⌘L opens the
-                  command bar in both layouts.
-
-                  The padlock stays a separate button to its left: the widget
-                  has no leading-icon prop on either backend, so putting the
-                  security state inside the field would need a framework arm
-                  (LEDGER). */}
+                  host makes a search entry packed straight into a header bar
+                  its title and fills the run between the start and end packs.
+                  Wrapping it in a box loses that. Typing and Enter commit
+                  from the field; ⌘L opens the command bar in both layouts.
+                  The padlock is the field's own leading icon, Chrome's site
+                  information button, and the panel hangs off the icon. */}
               <searchinput
-                slot="start"
+                ref={addressField}
                 testID={`${p}omnibox`}
                 text={shownUrl}
                 placeholder="Search or enter address"
-                // Set, not expanded: see TabRunMetrics.addressWidth for why
-                // hexpand alone leaves the field at its floor.
-                style={{ hexpand: true, minWidth: tabMetrics.addressWidth }}
+                leadingIconName={SECURITY_ICON[activeRt.security]}
+                leadingIconTooltip={SECURITY_TOOLTIP[activeRt.security]}
+                leadingIconLabel="Site information"
+                onLeadingIconClicked={() => (siteInfoOpen ? setSiteInfoOpen(false) : openPanel("siteInfo"))}
+                style={{ hexpand: true, minWidth: ADDRESS_MIN_WIDTH }}
                 // A ref, not state: feeding a keystroke back into the
                 // controlled `text` prop makes the host's set_text race the
                 // entry and blank it.
                 onChanged={(e) => (typedAddress.current = e.text)}
                 onActivate={(e) => commitQuery(e.text, "current")}
               />
+              {createPortal(
+                <popover
+                  testID={`${p}site-info-popover`}
+                  anchorRef={addressField}
+                  anchorSlot="leadingIcon"
+                  open={siteInfoOpen}
+                  position="bottom"
+                  onClosed={closeSiteInfo}
+                >
+                  {siteInfoPanel()}
+                </popover>,
+              )}
 
               {compact && (
                 <button

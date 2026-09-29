@@ -333,7 +333,7 @@ export function PrivateWindow({
               <CompactTabs
                 tabs={runTabs}
                 activeId={active.id}
-                metrics={tabRunMetrics(width, runTabs, 0)}
+                metrics={tabRunMetrics(width, runTabs, active.id, 0)}
                 prefix="private-"
                 // A private window shows no favicons: the cache is on disk and
                 // this window writes nothing there.
@@ -429,14 +429,13 @@ export function PrivateWindow({
                 promotes a search entry there to the title widget with
                 hexpand, which is what gives it the row's whole free run. */}
             <searchinput
-              slot="start"
               ref={(node) => {
                 omnibox.current = node as NdNodeRef<"searchinput"> | null;
               }}
               testID="private-omnibox"
               text={displayUrl(active.url)}
               placeholder="Search or enter address"
-              style={{ hexpand: true, minWidth: compact ? tabRunMetrics(width, runTabs, 0).addressWidth : ADDRESS_MIN_WIDTH }}
+              style={{ hexpand: true, minWidth: ADDRESS_MIN_WIDTH }}
               onActivate={(e) => navigate(e.text)}
             />
             {/* The app's one primary menu button is packed into whichever

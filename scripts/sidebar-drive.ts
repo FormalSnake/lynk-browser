@@ -1461,11 +1461,9 @@ print(worst if worst is not None else -1)`,
       for (const width of [1280, 720]) {
         await app.setWindowSize(width, 800);
         await Bun.sleep(500);
-        let lock = "";
-        walk((await app.tree()).root, (n) => {
-          if (!lock && n.testID?.startsWith("security-")) lock = n.testID;
-        });
-        if (!lock) fail("compact has no site-info button");
+        // Compact's padlock is the address field's leading icon, which only
+        // the pointer or the test menu reaches.
+        const lock = "menu-site-info";
         await app.click(lock);
         await waitFor("the site-info popover", async () => (await app.find("site-info-popover"))?.visible, (v) => v === true);
         await Bun.sleep(600);
