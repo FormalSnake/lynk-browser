@@ -248,6 +248,19 @@ for (const p of legs.includes("reader") ? PAGES : []) {
   key("Next");
   await Bun.sleep(400);
   capture(`reader-${p.name}-dark-further`);
+  // At the narrow width, then back.
+  const top = toplevel();
+  if (top && rig === "x11") {
+    sh("xdotool", "windowsize", top.id, "720", String(top.h));
+    await Bun.sleep(1200);
+    readable(`${p.name}@720`, await evalPage(METRICS));
+    capture(`reader-${p.name}-dark-narrow`);
+    await evalPage(`window.__ndReader && (window.__ndReader.host.dataset.scheme = "light")`);
+    await Bun.sleep(300);
+    capture(`reader-${p.name}-light-narrow`);
+    sh("xdotool", "windowsize", top.id, String(top.w), String(top.h));
+    await Bun.sleep(1200);
+  }
   // The chord leaves on the first page, Escape on the others; the app hears
   // of an Escape through the reader's channel.
   if (p === PAGES[0]) key("ctrl+shift+r");
