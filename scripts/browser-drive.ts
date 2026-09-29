@@ -465,6 +465,8 @@ function launch(storeDir: string): Promise<AppHandle> {
       NB_TEST_EXT: resolve(import.meta.dir, "../fixtures/nd-test-ext"),
       // Declares a popup, switches it off at runtime and sets a badge.
       NB_TEST_EXT_ACTION: resolve(import.meta.dir, "../fixtures/nd-action-ext"),
+      // Leg 19c's two answers to the app's "Remove ...?" confirmation.
+      ND_AUTOMATION_DIALOG_SCRIPT: JSON.stringify({ "window.showAlert": [{ buttonId: "cancel" }, { buttonId: "remove" }] }),
       // The counter page defines nbTest to fill its field; every other page
       // the drive runs this on has the link.
       NB_TEST_JS: "window.nbTest ? window.nbTest() : document.getElementById('open').click()",
@@ -489,6 +491,7 @@ function launch(storeDir: string): Promise<AppHandle> {
       // of lines a second, and the tail has moved on by the time a leg looks.
       if (line.includes("ND_APP PERMISSION")) permissionTraces.push(line.trim());
       if (line.includes("ND_APP ACTION ")) actionTraces.push(line.trim());
+      if (line.includes("ND_APP ACTION_TRIGGER ")) triggerTraces.push(line.trim());
       if (line.includes("ND_APP MOVE ")) moveTraces.push(line.trim());
     },
   });
@@ -497,6 +500,7 @@ function launch(storeDir: string): Promise<AppHandle> {
 const menuTraces: string[] = [];
 const permissionTraces: string[] = [];
 const actionTraces: string[] = [];
+const triggerTraces: string[] = [];
 const moveTraces: string[] = [];
 
 interface MenuTraceItem {
@@ -1273,8 +1277,10 @@ try {
     // declares a popup and switches it off at runtime, which is what 1Password
     // does until an account is set up; the owner saw its splash for ever
     // because the app opened the manifest's popup anyway. A click on such an
-    // action opens the extension's setup page instead, and the badge it sets
-    // is drawn on the button.
+    // action is Chrome's: onClicked with the tab on show and an activeTab
+    // grant, which the fixture proves by marking the page with no host
+    // permissions. An engine that cannot run the click opens the extension's
+    // setup page instead. The badge it sets is drawn on the button.
     await step("open the panel for the action fixture", () => app.click("extensions-button"));
     await Bun.sleep(500);
     rootShot("19-extensions-panel");
@@ -1303,18 +1309,48 @@ try {
     });
     const actionTabsBefore = (await tabRows(app)).length;
     await step("click the action", () => app.click(`ext-action-${actionId}`));
-    const onboarding = await waitRows(
-      app,
-      (r) => r.length === actionTabsBefore + 1 && r[r.length - 1] === "ND Action onboarding",
-      "the extension's setup page in a tab of its own",
-    );
+    const triggered = await step("the click reaches the engine", async () => {
+      const deadline = Date.now() + PATIENCE;
+      while (Date.now() < deadline) {
+        const line = triggerTraces.find((l) => l.includes(`id=${actionId}`));
+        if (line) return line.slice(line.indexOf("ND_APP"));
+        await Bun.sleep(100);
+      }
+      return fail("the click never reached triggerExtensionAction");
+    });
+    let outcome: string;
+    if (triggered.endsWith(" ok")) {
+      outcome = await step("onClicked marked the page through activeTab", async () => {
+        const deadline = Date.now() + PATIENCE;
+        let last = "";
+        while (Date.now() < deadline) {
+          const answer = await app.rpc.call("webviewEval", {
+            ref: await shownPageRef(app),
+            code: `document.documentElement.dataset.ndActionClicked || ""`,
+            timeoutMs: 5_000,
+          });
+          last = answer.ok ? String(answer.value) : `error: ${answer.error}`;
+          if (last.includes("/action")) return `marked the page ${JSON.stringify(last)}`;
+          await Bun.sleep(200);
+        }
+        return fail(`the page was never marked; last read ${JSON.stringify(last)}`);
+      });
+      if ((await tabRows(app)).length !== actionTabsBefore) fail("the click opened a tab as well");
+    } else {
+      const onboarding = await waitRows(
+        app,
+        (r) => r.length === actionTabsBefore + 1 && r[r.length - 1] === "ND Action onboarding",
+        "the extension's setup page in a tab of its own",
+      );
+      outcome = `fell back to ${JSON.stringify(onboarding[onboarding.length - 1])} (${triggered})`;
+      await step("close the setup page", () => app.click("menu-close-tab"));
+    }
     const decided = actionTraces.find((line) => line.includes(`id=${actionId}`)) ?? "";
     if (!decided.includes('popup=""')) fail(`the click was decided on ${JSON.stringify(decided)}, want the live popup ""`);
     if (await app.find(`ext-popup-view-${actionId}`)) fail("the popup the extension switched off was mounted anyway");
     if (actionTraces.filter((line) => line.includes(`id=${actionId}`)).length !== 1) {
       fail(`one click decided more than once: ${JSON.stringify(actionTraces)}`);
     }
-    await step("close the setup page", () => app.click("menu-close-tab"));
     await waitRows(app, (r) => r.length === actionTabsBefore, "the tab count back where it started");
     await step("open the panel to unpin", () => app.click("extensions-button"));
     await step("unpin the action fixture", () => clickWhenReady(app, `ext-pin-toggle-${actionId}`));
@@ -1323,8 +1359,43 @@ try {
     );
     await step("close the panel", () => app.click("extensions-button"));
     console.log(
-      `19b. a popup switched off at runtime is not shown: badge ${JSON.stringify(badge)}, click opened ${JSON.stringify(onboarding[onboarding.length - 1])} (${decided.slice(decided.indexOf("ND_APP"))})`,
+      `19b. a popup switched off at runtime is not shown: badge ${JSON.stringify(badge)}, click ${outcome} (${decided.slice(decided.indexOf("ND_APP"))})`,
     );
+
+    // Removal is the app's to confirm: Chromium's own "Remove ...?" dialog
+    // hangs off a toolbar nobody sees. The scripted answers are Cancel, then
+    // Remove.
+    const rowsNow = async (): Promise<string[]> => {
+      const seen: string[] = [];
+      walk((await app.tree(mainWindow)).root, (n) => {
+        if (n.testID?.startsWith("ext-row-")) seen.push(n.testID.slice("ext-row-".length));
+      });
+      return seen;
+    };
+    await step("open the panel to remove", () => app.click("extensions-button"));
+    await step("Remove, then Cancel", async () => {
+      await clickWhenReady(app, `ext-more-${extId}`);
+      await clickWhenReady(app, `ext-remove-${extId}`);
+    });
+    await Bun.sleep(1500);
+    if (!(await rowsNow()).includes(extId)) fail("Cancel removed the extension");
+    if (!(await app.find("extensions-panel"))) await step("reopen the panel", () => app.click("extensions-button"));
+    await step("Remove, then Remove", async () => {
+      await clickWhenReady(app, `ext-more-${extId}`);
+      await clickWhenReady(app, `ext-remove-${extId}`);
+    });
+    const leftRows = await step("the row goes", async () => {
+      const deadline = Date.now() + PATIENCE;
+      let seen = await rowsNow();
+      while (seen.includes(extId) && Date.now() < deadline) {
+        await Bun.sleep(200);
+        seen = await rowsNow();
+      }
+      if (seen.includes(extId)) fail(`still listed: ${JSON.stringify(seen)}`);
+      return seen;
+    });
+    await step("close the panel", () => app.click("extensions-button").catch(() => {}));
+    console.log(`19c. removed ${extId} through the app's confirmation, Cancel kept it; ${leftRows.length} row(s) left`);
   }
 
   // Permissions. Under 0.4.9 Chromium draws no prompt of its own, so the app
