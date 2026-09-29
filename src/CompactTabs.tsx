@@ -30,11 +30,12 @@ const CLOSE_SLOT_WIDTH = 26;
 /// low side hands the tabs room the field needed: the window's own padding
 /// and controls (the traffic lights on macOS, three buttons in the row on
 /// GTK), back, forward, reload, new tab, and the layout, downloads and menu
-/// buttons. Measured 408 on GTK under X11 and 368 on AppKit. The layout
+/// buttons. Measured 408 on GTK under X11 (plus the 10 px its client-side
+/// frame takes out of the width the app is told) and 368 on AppKit. The layout
 /// button leaves the row below LAYOUT_BUTTON_WIDTH (the View menu and the
 /// chord still switch), which gives back LAYOUT_BUTTON. The extensions
 /// button and each pinned extension action add FURNITURE_SLOT.
-const FURNITURE = { gtk: 412, appkit: 380 } as const;
+const FURNITURE = { gtk: 424, appkit: 380 } as const;
 const FURNITURE_SLOT = 44;
 const LAYOUT_BUTTON = 40;
 export const LAYOUT_BUTTON_WIDTH = 960;

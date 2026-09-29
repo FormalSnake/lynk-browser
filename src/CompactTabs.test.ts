@@ -16,8 +16,8 @@ describe("tabRunMetrics", () => {
         expect(m.shown.some((t) => t.id === active)).toBe(true);
         const used = m.shown.reduce((sum, t) => sum + (t.pinned ? 36 : t.id === active ? m.activeWidth : m.width) + 4, 0);
         // What the row has left for the field once the tabs and the rest of
-        // the row (the 412 px of GTK furniture, less the layout button below 960 px, and one 44 px slot) are counted.
-        expect(width - 412 + (width >= 960 ? 0 : 40) - 44 - used).toBeGreaterThanOrEqual(ADDRESS_MIN_WIDTH);
+        // the row (the 424 px of GTK furniture, less the layout button below 960 px, and one 44 px slot) are counted.
+        expect(width - 424 + (width >= 960 ? 0 : 40) - 44 - used).toBeGreaterThanOrEqual(ADDRESS_MIN_WIDTH);
         expect(m.activeWidth).toBeGreaterThanOrEqual(width >= 800 ? 120 : 90);
       }
     });
