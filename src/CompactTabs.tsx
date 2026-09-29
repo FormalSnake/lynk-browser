@@ -30,12 +30,10 @@ const CLOSE_SLOT_WIDTH = 26;
 /// low side hands the tabs room the field needed: the window's own padding
 /// and controls (the traffic lights on macOS, three buttons in the row on
 /// GTK), back, forward, reload, new tab, and the layout, downloads and menu
-/// buttons. Measured 408 on GTK under X11 and 368 on AppKit. On GTK the
-/// layout button leaves the row below LAYOUT_BUTTON_WIDTH (the View menu and
-/// the chord still switch), which gives back LAYOUT_BUTTON. AppKit keeps it:
-/// a toolbar button unmounted and mounted again comes back as a second,
-/// dead item beside the first. The extensions button and each pinned
-/// extension action add FURNITURE_SLOT.
+/// buttons. Measured 408 on GTK under X11 and 368 on AppKit. The layout
+/// button leaves the row below LAYOUT_BUTTON_WIDTH (the View menu and the
+/// chord still switch), which gives back LAYOUT_BUTTON. The extensions
+/// button and each pinned extension action add FURNITURE_SLOT.
 const FURNITURE = { gtk: 412, appkit: 380 } as const;
 const FURNITURE_SLOT = 44;
 const LAYOUT_BUTTON = 40;
@@ -77,7 +75,7 @@ export function tabRunMetrics(
   trailing: number,
   backend: "gtk" | "appkit",
 ): TabRunMetrics {
-  const layoutButton = backend === "gtk" && windowWidth < LAYOUT_BUTTON_WIDTH ? LAYOUT_BUTTON : 0;
+  const layoutButton = windowWidth < LAYOUT_BUTTON_WIDTH ? LAYOUT_BUTTON : 0;
   const row = windowWidth - FURNITURE[backend] + layoutButton - trailing * FURNITURE_SLOT;
   const pinned = tabs.filter((t) => t.pinned);
   const loose = tabs.filter((t) => !t.pinned);

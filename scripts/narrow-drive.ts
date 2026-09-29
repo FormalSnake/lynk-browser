@@ -201,6 +201,11 @@ async function compactStep(width: number): Promise<void> {
   const off = controls.filter(([, g]) => g.x < -1 || right(g) > width + 1).map(([id, g]) => `${id} at ${Math.round(g.x)}..${Math.round(right(g))}`);
   const shared = overlaps(controls);
   check(`${at} controls`, off.length === 0 && shared.length === 0, [...off, ...shared].join("; ") || `${controls.length} controls, none overlapping`);
+  // An end-pack button gone from the row is one AppKit moved into the
+  // toolbar's overflow menu.
+  const missing = ["downloads-button", "window-menu"].filter((id) => nodes.has(id) && !drawn(nodes.get(id)));
+  if (nodes.has("extensions-button") && !drawn(nodes.get("extensions-button"))) missing.push("extensions-button");
+  check(`${at} end pack`, missing.length === 0, missing.length ? `${missing.join(", ")} not in the row` : "every end button in the row");
   const tabsShown = controls.filter(([id]) => id.startsWith("tab-slot-")).length;
   console.log(`    ${tabsShown} of ${tabs.length} tabs in the row`);
   if (CAPTURED.includes(width)) await capture(`narrow-compact-${width}${SUFFIX}`);
