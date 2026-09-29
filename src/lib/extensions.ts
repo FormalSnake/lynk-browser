@@ -11,10 +11,8 @@ export interface ExtensionRow {
   /// `data:` URI, so that is the only one a `<button>` can show. Empty when the
   /// extension ships none, and the puzzle glyph stands in.
   iconData: string;
-  /// "" for an action with no popup. Such an action cannot be triggered at all
-  /// here: without a Chromium toolbar button there is nothing for
-  /// `chrome.action.onClicked` to fire on, so the row says so rather than
-  /// offering a click that would do nothing.
+  /// "" for an action with no popup in its manifest; a click on one is
+  /// `chrome.action.onClicked`, which the engine runs.
   popupUrl: string;
   /// Where the extension sends a person who has not set it up yet, for an
   /// action whose popup is switched off. "" when it declares no options page.
@@ -48,10 +46,10 @@ export function pinnedRows(rows: ExtensionRow[], pinned: string[]): ExtensionRow
 }
 
 /// The page a hidden view shows so the action's live state can be read: any
-/// page of the extension answers for it, and the popup is the one every
-/// action with something to open declares.
+/// document of the extension answers for it. The popup is the one every action
+/// with something to open declares, and the manifest is one every extension has.
 export function probeUrl(row: ExtensionRow): string {
-  return row.popupUrl || row.optionsUrl;
+  return row.popupUrl || row.optionsUrl || `chrome-extension://${row.id}/manifest.json`;
 }
 
 /// The badge colour an extension asked for, as the nearest of the app's own

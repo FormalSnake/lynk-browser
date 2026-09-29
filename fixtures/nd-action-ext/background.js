@@ -5,3 +5,19 @@ chrome.action.setPopup({ popup: "" });
 chrome.action.setTitle({ title: "ND Action Runtime" });
 chrome.action.setBadgeText({ text: "7" });
 chrome.action.setBadgeBackgroundColor({ color: "#d93025" });
+
+// No host permissions: this only reaches the page when the click granted
+// activeTab on it, which is what Chrome's toolbar does.
+chrome.action.onClicked.addListener(async (tab) => {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (url) => {
+        document.documentElement.dataset.ndActionClicked = url;
+      },
+      args: [tab.url ?? ""],
+    });
+  } catch (error) {
+    console.error("ND_ACTION_CLICK_FAIL", String(error));
+  }
+});

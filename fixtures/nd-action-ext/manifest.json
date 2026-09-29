@@ -2,15 +2,24 @@
   "manifest_version": 3,
   "name": "ND Action Extension",
   "version": "1.0",
-  "description": "Fixture for scripts/browser-drive.ts: declares a popup, switches it off at runtime and sets a badge, the way 1Password does before it is set up.",
-  "background": { "service_worker": "background.js" },
+  "description": "Fixture for scripts/browser-drive.ts: declares a popup, switches it off at runtime and sets a badge, the way 1Password does before it is set up. A click then reaches onClicked, which marks the page through activeTab alone.",
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "ND Action Manifest",
-    "default_icon": { "16": "icon16.png" }
+    "default_icon": {
+      "16": "icon16.png"
+    }
   },
   "options_page": "onboarding.html",
-  "icons": { "16": "icon16.png" },
-  "permissions": ["storage", "tabs"],
-  "host_permissions": ["<all_urls>"]
+  "icons": {
+    "16": "icon16.png"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabs"
+  ]
 }

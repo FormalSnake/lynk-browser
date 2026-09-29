@@ -12,6 +12,8 @@ import {
   openPath,
   readExtensionAction,
   sendCommand,
+  triggerExtensionAction,
+  uninstallExtension as removeExtension,
   setContextMenuItems,
   useLayoutEffect,
   watchExtensions,
@@ -952,10 +954,32 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     const live = read ? read.state.popupUrl : row.popupUrl;
     if (TEST_HOOKS) console.error(`ND_APP ACTION id=${row.id} matched=${read?.matched ?? false} popup=${JSON.stringify(live)}`);
     if (live === "") {
-      if (row.optionsUrl) openTab(windowId, row.optionsUrl);
+      await runAction(windowId, row);
       return;
     }
     controllers.current.get(windowId)?.showPopup(row.id, live);
+  }
+
+  /// An action with no popup is Chromium's to run: `onClicked` with the tab on
+  /// show and an `activeTab` grant on it. Where the engine cannot run it (the
+  /// GTK embedding, for now), the extension's own page is the closest thing.
+  function shownView(windowId: string): NdNodeRef<"webview"> | null {
+    const w = session.get().windows.find((x) => x.id === windowId);
+    const tab = w?.tabs.find((t) => t.id === w.activeId);
+    return tab && tab.url ? view(tab.id) : null;
+  }
+
+  async function runAction(windowId: string, row: ExtensionRow): Promise<void> {
+    const page = shownView(windowId);
+    const error = page
+      ? await triggerExtensionAction(page, row.id).then(() => null, (e: Error) => e.message)
+      : "no page on show";
+    if (TEST_HOOKS) console.error(`ND_APP ACTION_TRIGGER id=${row.id} ${error ?? "ok"}`);
+    if (error === null) {
+      if (probes.current.has(row.id)) void readActionFor(row.id, windowId, 2);
+      return;
+    }
+    if (row.optionsUrl) openTab(windowId, row.optionsUrl);
   }
 
   /// Test-only: `launchApp` passes no argv, so a drive cannot hand the host a
@@ -967,6 +991,18 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     void installExtension(node, dir)
       .then(() => refreshExtensions())
       .catch(() => {});
+  }
+
+  function uninstallExtension(id: string): void {
+    const node = extRegistry.current;
+    if (!node) return;
+    void removeExtension(node, id)
+      .then(() => {
+        if (TEST_HOOKS) console.error(`ND_APP EXT_REMOVED id=${id}`);
+        settings.update((s) => ({ ...s, pinnedExtensions: s.pinnedExtensions.filter((p) => p !== id) }));
+        refreshExtensions();
+      })
+      .catch((e: unknown) => console.error(`ND_APP EXT_REMOVE failed id=${id} ${String(e)}`));
   }
 
   // ------------------------------------------------------- context menu ---
@@ -1246,6 +1282,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     pinExtension,
     clickAction,
     installTestExtension,
+    uninstallExtension,
     newWindow,
     openPrivate: () => setPrivateOpen(true),
     openSettings: () => setSettingsOpen(true),
@@ -1329,6 +1366,8 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                     onNewWindow={(e) => openTabFromPage(t.id, e.text)}
                     onBrowserCommand={(e) => onBrowserCommand(t.id, e.text)}
                     onJavaScriptResult={onJavaScriptResult}
+                    // triggerExtensionAction answers on the tab it clicked for.
+                    onExtensionActions={onExtensionActions}
                     onPermissionRequest={(e) => onPermissionRequest(t.id, e.data)}
                     onFaviconChanged={(e) => onFavicon(t.url, e.data as { dataUrl?: string; iconUrl?: string })}
                     onSecurityChanged={(e) => patch(t.id, { security: securityOf(t.url, e.data) })}

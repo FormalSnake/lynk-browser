@@ -11,12 +11,14 @@ import {
   clipboard,
   createPortal,
   executeJavaScript,
+  onAlertResult,
   onJavaScriptResult,
   onToastButtonClicked,
   onToastDismissed,
   openPath,
   revealPath,
   sendCommand,
+  showAlert,
   showToast,
   useRef,
   useState,
@@ -190,6 +192,7 @@ export interface BrowserContext {
   pinExtension(id: string): void;
   clickAction(windowId: string, row: ExtensionRow): void;
   installTestExtension(dir: string | undefined): void;
+  uninstallExtension(id: string): void;
 
   newWindow(): void;
   openPrivate(): void;
@@ -248,6 +251,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [siteInfoOpen, setSiteInfoOpen] = useState(false);
   const [extensionsOpen, setExtensionsOpen] = useState(false);
+  const windowRef = useRef<NdNodeRef<"window"> | null>(null);
   /// The action whose popup is open, "" for none, and the address it was
   /// mounted at: the one Chromium reported at the click, which an extension
   /// can change at runtime away from the manifest's.
@@ -499,6 +503,37 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     ctx.clickAction(win.id, row);
   }
 
+  /// Chromium's own "Remove ...?" dialog hangs off a toolbar the app never
+  /// shows, so the confirmation is the window's, and the engine removes the
+  /// extension without asking again.
+  function confirmRemoveExtension(row: ExtensionRow): void {
+    const node = windowRef.current;
+    if (!node) return;
+    setExtensionsOpen(false);
+    void showAlert(node, {
+      title: `Remove \u201c${row.name}\u201d?`,
+      body: "Its settings and data in this browser are removed with it.",
+      // The first button is the leftmost on GTK and the rightmost on AppKit,
+      // and each platform puts Remove on the right.
+      buttons: gtk
+        ? [
+            { id: "cancel", label: "Cancel" },
+            { id: "remove", label: "Remove", style: "destructive" },
+          ]
+        : [
+            { id: "remove", label: "Remove", style: "destructive" },
+            { id: "cancel", label: "Cancel" },
+          ],
+      // Return removes and Escape keeps it, as in Chrome's own dialog.
+      defaultId: "remove",
+      closeId: "cancel",
+    })
+      .then((answer) => {
+        if (answer.buttonId === "remove") ctx.uninstallExtension(row.id);
+      })
+      .catch(() => {});
+  }
+
   function closeExtensionPopup(): void {
     setPopupId("");
   }
@@ -512,12 +547,9 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   }
 
   /// What the button says it will do: the title the extension set for this
-  /// tab when there is one. An extension with no popup in its manifest cannot
-  /// be triggered at all here: there is no Chromium toolbar button for
-  /// `chrome.action.onClicked` to fire on.
+  /// tab when there is one.
   function popupTooltip(row: ExtensionRow): string {
     if (!row.enabled) return `${row.name} is turned off`;
-    if (!row.popupUrl) return `${row.name} has no popup`;
     return actionState(row.id)?.title || row.name;
   }
 
@@ -887,7 +919,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                     iconName="application-x-addon-symbolic"
                     tooltip={popupTooltip(row)}
                     cssClasses={["flat"]}
-                    enabled={row.enabled && row.popupUrl !== "" && ctx.checkingAction !== row.id}
+                    enabled={row.enabled && ctx.checkingAction !== row.id}
                     onClick={() => openExtensionPopup(row)}
                   />
                   {live?.badgeText ? (
@@ -954,7 +986,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                         ellipsize
                         tooltip={popupTooltip(row)}
                         cssClasses={["flat"]}
-                        enabled={row.enabled && row.popupUrl !== ""}
+                        enabled={row.enabled}
                         style={{ hexpand: true }}
                         onClick={() => openExtensionPopup(row)}
                       />
@@ -967,6 +999,29 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                         style={{ valign: "center" }}
                         onToggled={() => ctx.pinExtension(row.id)}
                       />
+                      <menubutton
+                        testID={`${p}ext-more-${row.id}`}
+                        iconName="view-more-symbolic"
+                        tooltip={`More for ${row.name}`}
+                        cssClasses={["flat"]}
+                        style={{ valign: "center" }}
+                      >
+                        {row.optionsUrl ? (
+                          <menuitem
+                            testID={`${p}ext-options-${row.id}`}
+                            label="Options"
+                            onSelect={() => {
+                              setExtensionsOpen(false);
+                              ctx.openTab(win.id, row.optionsUrl);
+                            }}
+                          />
+                        ) : null}
+                        <menuitem
+                          testID={`${p}ext-remove-${row.id}`}
+                          label="Remove…"
+                          onSelect={() => confirmRemoveExtension(row)}
+                        />
+                      </menubutton>
                     </box>
                   ))
                 )}
@@ -1114,6 +1169,12 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
 
   return (
     <window
+      ref={(node) => {
+        windowRef.current = node as NdNodeRef<"window"> | null;
+      }}
+      onAlertResult={(e) => {
+        if (windowRef.current) onAlertResult(windowRef.current, e);
+      }}
       title={pageTitle}
       testID={first ? "main-window" : `${p}window`}
       defaultWidth={win.width}
