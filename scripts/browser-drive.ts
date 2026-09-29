@@ -759,10 +759,12 @@ try {
   if ((loads["c"] ?? 0) !== cBefore) fail(`the background tab fetched /c before it was shown (${loads["c"]} loads)`);
   if (await app.find(`page-${behindId}`)) fail(`the background tab ${behindId} built a view before it was shown`);
   await shoot(app, "06-background-tab");
-  await step("show the background tab", () => app.click(behind.testID!));
+  // From the Tabs menu: a click on a row would leave the real pointer over
+  // the sidebar, and the hover leg below reads where the pointer is.
+  await step("show the background tab", () => app.click("menu-tab-2"));
   await waitRows(app, (r) => r[2]!.startsWith("Page C"), "page C once the background tab is shown");
   if ((loads["c"] ?? 0) !== cBefore + 1) fail(`showing the background tab loaded /c ${(loads["c"] ?? 0) - cBefore} times`);
-  await step("back to the popup page", () => app.click(withPopup[1]!.testID!));
+  await step("back to the popup page", () => app.click("menu-tab-1"));
   await waitUrl(app, "/popup");
   console.log("6. target=_blank opened a background tab without stealing focus, and it loaded only when shown");
 
@@ -1101,7 +1103,7 @@ try {
   // every other page here. The tab opens behind the page and loads when shown.
   await Bun.sleep(1000);
   if (loads["search"]) fail("the search tab fetched its page before it was shown");
-  await step("show the search tab", () => app.click(searchTab!.testID!));
+  await step("show the search tab", () => app.click(`menu-tab-${tabsBefore}`));
   const searched = Date.now() + PATIENCE;
   while (Date.now() < searched && !loads["search"]) await Bun.sleep(120);
   if (!loads["search"]) fail("the search tab never reached the fixture's /search");
