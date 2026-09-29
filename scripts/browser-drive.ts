@@ -743,6 +743,7 @@ try {
   //    executeJavaScript (that path does carry a user gesture).
   await goTo(app, `${base}/popup`);
   await waitRows(app, (r) => r[1]!.startsWith("Popup page"), "the popup fixture to load");
+  const cBefore = loads["c"] ?? 0;
   await app.click("menu-run-test-js");
   await waitRows(app, (r) => r.length === 3, "a background tab from target=_blank");
   const withPopup = await tabRows(app);
@@ -750,9 +751,20 @@ try {
     fail(`the popup tab should stay active, rows are ${JSON.stringify(withPopup.map((r) => r.title))}`);
   }
   await waitUrl(app, "/popup");
-  await waitRows(app, (r) => r[2]!.startsWith("Page C"), "page C in the background tab");
-  console.log("6. target=_blank opened a background tab without stealing focus");
+  // A tab opened behind the page waits to be looked at: its row reads its
+  // address, it has no view, and the fixture never served it.
+  await Bun.sleep(1500);
+  const behind = withPopup[2]!;
+  const behindId = behind.testID!.replace(/^.*tab-/, "");
+  if ((loads["c"] ?? 0) !== cBefore) fail(`the background tab fetched /c before it was shown (${loads["c"]} loads)`);
+  if (await app.find(`page-${behindId}`)) fail(`the background tab ${behindId} built a view before it was shown`);
   await shoot(app, "06-background-tab");
+  await step("show the background tab", () => app.click(behind.testID!));
+  await waitRows(app, (r) => r[2]!.startsWith("Page C"), "page C once the background tab is shown");
+  if ((loads["c"] ?? 0) !== cBefore + 1) fail(`showing the background tab loaded /c ${(loads["c"] ?? 0) - cBefore} times`);
+  await step("back to the popup page", () => app.click(withPopup[1]!.testID!));
+  await waitUrl(app, "/popup");
+  console.log("6. target=_blank opened a background tab without stealing focus, and it loaded only when shown");
 
   // Sidebar row action: the per-row close button, dispatched the way a hover
   // click would (click {testId, action}).
@@ -1041,12 +1053,12 @@ try {
     app.waitFor({ testId: "settings-window", state: "present" }, { timeoutMs: PATIENCE }),
   );
   await step("choose Google", () => app.setValue("settings-engine", 1));
-  await step("turn off reopen-on-launch", () => app.setValue("settings-restore", false));
+  await step("turn on the fresh window", () => app.setValue("settings-fresh-window", true));
   await Bun.sleep(600);
   const prefs = JSON.parse(readFileSync(`${PROFILE}/settings.json`, "utf8")) as {
-    data?: { searchEngine?: string; restoreOnLaunch?: boolean };
+    data?: { searchEngine?: string; freshWindow?: boolean };
   };
-  if (prefs.data?.searchEngine !== "google" || prefs.data?.restoreOnLaunch !== false) {
+  if (prefs.data?.searchEngine !== "google" || prefs.data?.freshWindow !== true) {
     fail(`settings did not persist: ${JSON.stringify(prefs.data)}`);
   }
   await openAddressBar(app);
@@ -1061,7 +1073,7 @@ try {
   // minimum the row would hand it, which ellipsized "Compact".
   const segmentWidth = (await app.find("settings-layout"))?.geometry?.w ?? 0;
   if (segmentWidth < LAYOUT_SEGMENT_WIDTH) fail(`the layout switch is ${segmentWidth} px wide, want ${LAYOUT_SEGMENT_WIDTH}`);
-  console.log(`15. settings: engine + restore persisted, palette now offers ${JSON.stringify(searchTitle)}`);
+  console.log(`15. settings: engine + fresh window persisted, palette now offers ${JSON.stringify(searchTitle)}`);
 
   // Stage 6: the page context menu. The menu itself is the engine's own
   // (`contextMenuMode` defaults to native), and no drive can open one: GTK4
@@ -1086,7 +1098,10 @@ try {
   await waitRows(app, (r) => r.length === tabsBefore + 1, "a tab for the searched selection");
   const searchTab = (await tabRows(app))[tabsBefore];
   // Served by the fixture (NB_TEST_SEARCH_PREFIX), counted server-side like
-  // every other page here.
+  // every other page here. The tab opens behind the page and loads when shown.
+  await Bun.sleep(1000);
+  if (loads["search"]) fail("the search tab fetched its page before it was shown");
+  await step("show the search tab", () => app.click(searchTab!.testID!));
   const searched = Date.now() + PATIENCE;
   while (Date.now() < searched && !loads["search"]) await Bun.sleep(120);
   if (!loads["search"]) fail("the search tab never reached the fixture's /search");
@@ -1186,21 +1201,20 @@ try {
       // The extension opens its own welcome tab on install (chrome.tabs.create),
     // which reaches the app as `newWindow` carrying a chrome-extension:// URL.
     // It used to arrive empty and the app opened a dead about:blank tab.
-    const welcome = await waitRows(
+    // It opens behind the page, so it reads its address until it is shown.
+    const opened = await waitRows(
       app,
-      (r) => r.some((title) => title === "ND Gate options"),
+      (r) => r.length === extTabsBefore + 1,
       "the tab the extension opened for itself",
     );
     // The tab the install added, not the ones earlier legs left lying about:
     // a dead one would come up as the last row reading about:blank.
-    if (welcome.length !== extTabsBefore + 1 || welcome[welcome.length - 1] !== "ND Gate options") {
-      fail(`the extension's tab came up as ${JSON.stringify(welcome.slice(extTabsBefore))}`);
+    if (!opened[opened.length - 1]!.includes("options")) {
+      fail(`the extension's tab came up as ${JSON.stringify(opened.slice(extTabsBefore))}`);
     }
-    await step("close the extension's own tab", async () => {
-      const at = welcome.findIndex((title) => title === "ND Gate options");
-      await app.click(`menu-tab-${at}`);
-      await app.click("menu-close-tab");
-    });
+    await step("show the extension's own tab", () => app.click(`menu-tab-${opened.length - 1}`));
+    await waitRows(app, (r) => r[r.length - 1] === "ND Gate options", "the extension's tab once shown");
+    await step("close the extension's own tab", () => app.click("menu-close-tab"));
 
   const extRow = await app.mustFind(`ext-row-${extId}`);
     if (extRow.text !== "NB Test Extension") fail(`the row reads ${JSON.stringify(extRow.text)}`);
@@ -1750,11 +1764,11 @@ try {
   }
   await waitRowsIn(`${secondId}-tab-list`, (r) => r[0]?.startsWith("Page B") ?? false, "page B in the new window");
   await step("open settings", () => app.click("menu-settings"));
-  await step("turn reopen-on-launch back on", async () => {
+  await step("turn the fresh window back off", async () => {
     const deadline = Date.now() + PATIENCE;
     for (;;) {
       try {
-        return await app.setValue("settings-restore", true);
+        return await app.setValue("settings-fresh-window", false);
       } catch (e) {
         if (Date.now() > deadline) throw e;
         await Bun.sleep(200);

@@ -58,6 +58,7 @@ export const COMMANDS: OmniCommand[] = [
   { id: "next-tab", title: "Next Tab", iconName: "go-next-symbolic", keys: "next-tab" },
   { id: "prev-tab", title: "Previous Tab", iconName: "go-previous-symbolic", keys: "prev-tab" },
   { id: "pin-tab", title: "Pin Tab", iconName: "view-pin-symbolic" },
+  { id: "sleep-tab", title: "Put Tab to Sleep", iconName: "weather-clear-night-symbolic", aka: "unload discard memory" },
   { id: "duplicate-tab", title: "Duplicate Tab", iconName: "edit-copy-symbolic" },
   { id: "move-new-window", title: "Move Tab to New Window", iconName: "window-new-symbolic" },
   { id: "back", title: "Back", iconName: "go-previous-symbolic", keys: "back" },
@@ -150,6 +151,9 @@ export interface OmniInput {
   chromium: boolean;
   /// Whether the showing tab is pinned, which names the pin command.
   pinned?: boolean;
+  /// Whether the showing tab can be put to sleep; the command is left out
+  /// when it cannot.
+  canSleep?: boolean;
   favicon: (url: string) => string | undefined;
   mac?: boolean;
 }
@@ -251,6 +255,7 @@ function commandRows(input: OmniInput, lowered: string): OmniRow[] {
   const rows: OmniRow[] = [];
   for (const c of COMMANDS) {
     if (!input.chromium && (c.id === "extensions" || c.id === "extensions-page" || c.id === "webstore")) continue;
+    if (c.id === "sleep-tab" && !input.canSleep) continue;
     const title = c.id === "pin-tab" && input.pinned ? "Unpin Tab" : c.title;
     if (lowered && !`${title} ${c.aka ?? ""}`.toLowerCase().includes(lowered)) continue;
     rows.push({

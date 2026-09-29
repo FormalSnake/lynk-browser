@@ -44,7 +44,7 @@ function seed(layout: "compact" | "sidebar", activeId: string): void {
     `${STORE}/settings.json`,
     JSON.stringify({
       version: 1,
-      data: { searchEngine: "google", homepage: "", restoreOnLaunch: true, layout, sitePermissions: {}, pinnedExtensions: [] },
+      data: { searchEngine: "google", homepage: "", freshWindow: false, layout, sitePermissions: {}, pinnedExtensions: [] },
     }),
   );
   writeFileSync(

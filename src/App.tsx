@@ -89,6 +89,12 @@ function withoutEmptyWindows(s: SessionState): SessionState {
   return s.windows.every((w) => w.tabs.length > 0) ? s : { ...s, windows: s.windows.filter((w) => w.tabs.length > 0) };
 }
 
+function without<T>(map: Record<string, T>, id: string): Record<string, T> {
+  if (!(id in map)) return map;
+  const { [id]: _gone, ...rest } = map;
+  return rest;
+}
+
 function tabNumber(id: string): number {
   return Number(id.slice(1)) || 0;
 }
@@ -151,10 +157,14 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   const [dropHint, setDropHintState] = useState<{ windowId: string; index: number } | null>(null);
 
   const closed = useRef<{ url: string; title: string }[]>([]);
-  /// Tabs opened during this session, as opposed to restored from the store.
-  /// A new background tab loads at once, the way target=_blank behaves in every
-  /// browser; a restored one waits until it is looked at.
-  const opened = useRef(new Set<string>());
+  /// Tabs that have a browser. A tab gets one the first time it is shown and
+  /// keeps it until it is put to sleep or closed: a restored tab, one opened
+  /// behind the page and a sleeping one all wait to be looked at.
+  const [live, setLive] = useState<Record<string, true>>({});
+  /// Tabs put to sleep, which their rows draw dimmed until they wake.
+  const [asleep, setAsleep] = useState<Record<string, true>>({});
+  /// Where a sleeping page was scrolled to, put back once it has loaded again.
+  const scrollMemory = useRef(new Map<string, [number, number]>());
   /// Last URL the engine actually committed per tab, so a download can put the
   /// tab back where it was.
   const committed = useRef(new Map<string, string>());
@@ -203,6 +213,26 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// list, no popup to open and no chrome:// page to reach, so the toolbar
   /// does not offer any of it rather than offering a dead button.
   const chromium = engine === "chromium";
+
+  /// Whether a tab has, or is about to get, a browser: every tab a window is
+  /// showing does.
+  const isLive = (id: string): boolean => live[id] === true || windows.some((w) => w.activeId === id);
+
+  // A tab on show keeps its browser once it is shown elsewhere. Every path
+  // that changes the tab on show (a click, a close landing on a neighbour, a
+  // move, a new window) ends here, so none of them has to remember to.
+  useLayoutEffect(() => {
+    const woken = windows.map((w) => w.activeId).filter((id) => id !== "" && live[id] !== true);
+    if (woken.length === 0) return;
+    setLive((l) => ({ ...l, ...Object.fromEntries(woken.map((id) => [id, true as const])) }));
+    setAsleep((a) => {
+      if (!woken.some((id) => id in a)) return a;
+      const rest = { ...a };
+      for (const id of woken) delete rest[id];
+      return rest;
+    });
+    if (TEST_HOOKS) for (const id of woken) console.error(`ND_APP WAKE tab=${id}`);
+  });
 
   // A tab navigating or a new search engine both change what a right-click
   // should show, and both land as a render. The push is skipped when the tree
@@ -254,15 +284,14 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
         }),
       };
     });
-    opened.current.add(created);
     return created;
   }
 
   /// A tab a PAGE asked for: `window.open`, target=_blank, and now an
   /// extension's `chrome.tabs.create`. An empty or about:blank URL is not a
   /// tab worth opening, it is a dead one; 0.4.10 carries the real URL, so a
-  /// blank one means the route had nothing to say. It opens beside the page
-  /// that asked, in that page's window.
+  /// blank one means the route had nothing to say. It opens behind the page
+  /// that asked, in that page's window, and loads when it is first shown.
   function openTabFromPage(fromTab: string, url: string): void {
     const target = url.trim();
     if (!target || target === "about:blank") return;
@@ -324,6 +353,9 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     views.current.delete(id);
     placed.current.delete(id);
     sentMenus.current.delete(id);
+    scrollMemory.current.delete(id);
+    setLive((l) => without(l, id));
+    setAsleep((a) => without(a, id));
     setFinds((f) => {
       if (!(id in f)) return f;
       const { [id]: _gone, ...rest } = f;
@@ -382,6 +414,69 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
         return { ...w, tabs: [...rest.slice(0, boundary), { ...tab, pinned }, ...rest.slice(boundary)] };
       }),
     }));
+  }
+
+  /// A tab with a page to let go of. The one on show can sleep only when its
+  /// window has another tab to show instead.
+  function canSleep(id: string): boolean {
+    const w = windowOfTab(session.get(), id);
+    const tab = w?.tabs.find((t) => t.id === id);
+    if (!w || !tab || tab.url === "" || !isLive(id)) return false;
+    return w.activeId !== id || w.tabs.length > 1;
+  }
+
+  /// Put to Sleep: the tab's browser is closed, which is what gives its
+  /// renderer's memory back, and the tab keeps its place, title, icon and
+  /// address, and loads again when it is next shown. The tab on show hands
+  /// the window to the nearest tab that is still awake, so sleeping one page
+  /// does not load another.
+  async function sleepTab(id: string): Promise<void> {
+    if (!canSleep(id)) return;
+    const node = view(id);
+    if (node) {
+      // The engine answers with the result's string rendering.
+      const answer = await Promise.race([
+        executeJavaScript(node, "Math.round(scrollX) + ',' + Math.round(scrollY)").catch(() => null),
+        Bun.sleep(500).then(() => null),
+      ]);
+      const [x, y] = String(answer ?? "").split(",").map(Number);
+      if ((x || y) && Number.isFinite(x) && Number.isFinite(y)) scrollMemory.current.set(id, [x!, y!]);
+    }
+    // The page may have been closed or shown while its scroll was read.
+    if (!canSleep(id)) return;
+    const w = windowOfTab(session.get(), id)!;
+    if (w.activeId === id) {
+      const at = w.tabs.findIndex((t) => t.id === id);
+      const others = w.tabs
+        .map((t, i) => ({ t, d: Math.abs(i - at) * 2 + (i < at ? 1 : 0) }))
+        .filter(({ t }) => t.id !== id)
+        .sort((a, b) => Number(!isLive(a.t.id)) - Number(!isLive(b.t.id)) || a.d - b.d);
+      selectTab(others[0]!.t.id);
+    }
+    denyPromptsFor(id);
+    views.current.delete(id);
+    placed.current.delete(id);
+    sentMenus.current.delete(id);
+    committed.current.delete(id);
+    setFinds((f) => without(f, id));
+    setArmedTabs((a) => without(a, id));
+    setLive((l) => without(l, id));
+    setAsleep((a) => ({ ...a, [id]: true }));
+    patch(id, { loading: false, progress: 0, canGoBack: false, canGoForward: false, error: null });
+    if (TEST_HOOKS) console.error(`ND_APP SLEEP tab=${id} scroll=${scrollMemory.current.get(id)?.join(",") ?? "top"}`);
+  }
+
+  /// A woken page is put back where it was scrolled to once it has loaded.
+  function onLoading(id: string, loading: boolean): void {
+    patch(id, { loading });
+    const at = scrollMemory.current.get(id);
+    const node = view(id);
+    // Until the page has committed, the view is still on the blank page it
+    // was created with.
+    if (loading || !at || !node || !committed.current.has(id)) return;
+    scrollMemory.current.delete(id);
+    void executeJavaScript(node, `window.scrollTo(${at[0]}, ${at[1]})`).catch(() => {});
+    if (TEST_HOOKS) console.error(`ND_APP SCROLLBACK tab=${id} to=${at[0]},${at[1]}`);
   }
 
   function reopenTab(windowId: string): void {
@@ -1103,6 +1198,9 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     closeTab,
     selectTab,
     setPinned,
+    canSleep,
+    sleepTab: (id) => void sleepTab(id),
+    asleep: (id) => asleep[id] === true && !isLive(id),
     reopenTab,
     cycleTab,
     navigate,
@@ -1166,7 +1264,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
           these, and they come before the windows so that a closing window's
           pages are taken down before the window is. */}
       {[...allTabs]
-        .filter((t) => t.url !== "")
+        .filter((t) => t.url !== "" && isLive(t.id))
         .sort((a, b) => tabNumber(a.id) - tabNumber(b.id))
         .map((t) => {
           const w = windows.find((x) => x.tabs.includes(t))!;
@@ -1174,12 +1272,10 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
           const shown = w.activeId === t.id && tabRt.error === null;
           // React never attaches refs inside a subtree that mounts straight
           // into a hidden Activity, and without the ref a tab's context menu
-          // is never registered and its URL is never set. A tab opened in
-          // this session therefore stays "visible" for the one frame it takes
-          // to arm; it has no URL yet, so the frame is blank. A RESTORED tab
-          // is left alone until it is selected, which is the lazy session
-          // restore every browser does anyway.
-          const arming = !armedTabs[t.id] && opened.current.has(t.id);
+          // is never registered and its URL is never set. A view therefore
+          // stays "visible" for the one frame it takes to arm; it has no URL
+          // yet, so the frame is blank.
+          const arming = !armedTabs[t.id];
           return (
             <Fragment key={t.id}>
               {createPortal(
@@ -1199,7 +1295,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                     style={{ hexpand: true, vexpand: true }}
                     onNavigate={(e) => onNavigated(t.id, e.text)}
                     onTitleChanged={(e) => onTitled(t.id, e.text)}
-                    onLoadingChanged={(e) => patch(t.id, { loading: e.checked })}
+                    onLoadingChanged={(e) => onLoading(t.id, e.checked)}
                     onLoadProgress={(e) => patch(t.id, { progress: e.value })}
                     onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
                     onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
@@ -1332,11 +1428,11 @@ function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
                   />
                 </row>
                 <switchrow
-                  testID="settings-restore"
-                  title="Reopen Tabs on Launch"
-                  subtitle="Start with the tabs you had open last time"
-                  checked={prefs.restoreOnLaunch}
-                  onToggled={(e) => settings.update((s) => ({ ...s, restoreOnLaunch: e.checked }))}
+                  testID="settings-fresh-window"
+                  title="Start with a Fresh Window"
+                  subtitle="Pinned tabs stay; the rest of last time's tabs don't come back"
+                  checked={prefs.freshWindow}
+                  onToggled={(e) => settings.update((s) => ({ ...s, freshWindow: e.checked }))}
                 />
               </settingsgroup>
 

@@ -160,3 +160,27 @@ export function moveTabIn(state: SessionState, tabId: string, toWindow: string, 
   });
   return { ...state, windows };
 }
+
+/// "Start with a fresh window": the pinned tabs of every window come back in
+/// one window, in front of a new tab, which is the homepage when one is set.
+/// Tab and window numbering carry over, so a fresh id never collides with one
+/// still in the store.
+export function freshStart(stored: SessionState, homepage: string): SessionState {
+  const first = stored.windows[0];
+  const pins = stored.windows.flatMap((w) => w.tabs.filter((t) => t.pinned && t.url !== "about:blank"));
+  const id = `t${stored.nextTabId}`;
+  return {
+    ...stored,
+    nextTabId: stored.nextTabId + 1,
+    windows: [
+      {
+        id: first?.id ?? `w${stored.nextWindowId}`,
+        tabs: [...pins, { ...blankTab(id), url: homepage }],
+        activeId: id,
+        width: first?.width || WINDOW_WIDTH,
+        height: first?.height || WINDOW_HEIGHT,
+      },
+    ],
+    nextWindowId: first ? stored.nextWindowId : stored.nextWindowId + 1,
+  };
+}

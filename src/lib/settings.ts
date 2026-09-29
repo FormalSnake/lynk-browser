@@ -44,7 +44,8 @@ export interface SettingsState {
   searchEngine: SearchEngineId;
   /// Empty means the new-tab page rather than a site.
   homepage: string;
-  restoreOnLaunch: boolean;
+  /// Start with the pinned tabs and a new tab rather than last time's tabs.
+  freshWindow: boolean;
   layout: Layout;
   pinStyle: PinStyle;
   /// What each site may do, by origin and then by permission type. Only the
@@ -60,7 +61,7 @@ export interface SettingsState {
 export const DEFAULT_SETTINGS: SettingsState = {
   searchEngine: "duckduckgo",
   homepage: "",
-  restoreOnLaunch: true,
+  freshWindow: false,
   layout: "sidebar",
   pinStyle: "icons",
   pinnedExtensions: [],
@@ -78,9 +79,13 @@ export const settings = createStore<SettingsState>({
 /// before a preference existed is missing that key. Every read assumes the
 /// full shape, so the gaps are filled once at load.
 export function normalizeSettings(state: SettingsState): SettingsState {
+  // A settings.json from before this setting has restoreOnLaunch instead, and
+  // that one off is the same fresh start.
+  const { restoreOnLaunch, ...saved } = state as SettingsState & { restoreOnLaunch?: boolean };
   return {
     ...DEFAULT_SETTINGS,
-    ...state,
+    ...saved,
+    freshWindow: typeof saved.freshWindow === "boolean" ? saved.freshWindow : restoreOnLaunch === false,
     layout: LAYOUTS.some((l) => l.id === state.layout) ? state.layout : DEFAULT_SETTINGS.layout,
     pinStyle: PIN_STYLES.some((p) => p.id === state.pinStyle) ? state.pinStyle : DEFAULT_SETTINGS.pinStyle,
     pinnedExtensions: Array.isArray(state.pinnedExtensions)

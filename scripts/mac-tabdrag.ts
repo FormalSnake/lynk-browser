@@ -81,7 +81,7 @@ writeFileSync(
     data: {
       searchEngine: "duckduckgo",
       homepage: "",
-      restoreOnLaunch: true,
+      freshWindow: false,
       layout: "compact",
       pinnedExtensions: [],
       sitePermissions: {},

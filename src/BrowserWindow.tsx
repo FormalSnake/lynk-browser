@@ -157,6 +157,10 @@ export interface BrowserContext {
   closeTab(id: string): void;
   selectTab(id: string): void;
   setPinned(id: string, pinned: boolean): void;
+  canSleep(id: string): boolean;
+  sleepTab(id: string): void;
+  /// Put to sleep and not shown since.
+  asleep(id: string): boolean;
   reopenTab(windowId: string): void;
   cycleTab(windowId: string, step: number): void;
   navigate(tabId: string, raw: string): void;
@@ -397,6 +401,8 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
         return ctx.cycleTab(win.id, -1);
       case "pin-tab":
         return ctx.setPinned(active.id, !active.pinned);
+      case "sleep-tab":
+        return ctx.sleepTab(active.id);
       case "duplicate-tab":
         if (active.url) ctx.openTab(win.id, active.url);
         return;
@@ -620,6 +626,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     engineName: SEARCH_ENGINES.find((e) => e.id === prefs.searchEngine)?.name ?? "the web",
     chromium,
     pinned: active.pinned,
+    canSleep: ctx.canSleep(active.id),
     favicon: faviconFor,
   });
 
@@ -813,6 +820,12 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             <menuitem testID={`${p}menu-new-tab`} label="New Tab" onSelect={() => openPalette("", "new-tab")} />
             <menuitem testID={`${p}menu-new-window`} label="New Window" onSelect={ctx.newWindow} />
             <menuitem testID={`${p}menu-close-tab`} label="Close Tab" onSelect={() => ctx.closeTab(active.id)} />
+            <menuitem
+              testID={`${p}menu-sleep-tab`}
+              label="Put Tab to Sleep"
+              enabled={ctx.canSleep(active.id)}
+              onSelect={() => ctx.sleepTab(active.id)}
+            />
             <menuitem role="separator" testID={`${p}menu-sep-move`} />
             {moveItems(`${p}menu-`, win, targets)}
             <menuitem role="separator" testID={`${p}menu-sep`} />
@@ -1085,7 +1098,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
       }}
     >
       {first && (
-        <menubar defaults>
+        <menubar defaults testID="menubar">
           <menu label="File" testID="menu-file">
             <menuitem
               testID="menu-new-tab"
@@ -1210,6 +1223,12 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               testID="menu-pin-tab"
               label={menuActive.pinned ? "Unpin Tab" : "Pin Tab"}
               onSelect={() => ctx.setPinned(menuActive.id, !menuActive.pinned)}
+            />
+            <menuitem
+              testID="menu-sleep-tab"
+              label="Put Tab to Sleep"
+              enabled={ctx.canSleep(menuActive.id)}
+              onSelect={() => ctx.sleepTab(menuActive.id)}
             />
             {moveItems("menu-", menuWin, ctx.moveTargets(menuWin.id))}
             <menuitem role="separator" testID="menu-tabs-sep" />
@@ -1359,6 +1378,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               addressFor={(t) => displayUrl(t.url) || "New Tab"}
               iconFor={faviconFor}
               pinStyle={ctx.prefs.pinStyle}
+              asleep={ctx.asleep}
               siteInfo={siteInfoControl()}
               extensions={extensionControls()}
               downloads={downloadsControl()}
@@ -1456,6 +1476,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                   iconFor={faviconFor}
                   labelFor={tabLabel}
                   addressFor={(t) => displayUrl(t.url) || "New Tab"}
+                  asleep={ctx.asleep}
                   onSelect={selectTab}
                   onClose={ctx.closeTab}
                   dragPayload={(t) => tabPayload({ profile: "default", tabId: t.id, url: t.url })}

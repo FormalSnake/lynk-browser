@@ -69,6 +69,8 @@ export interface SidebarProps {
   iconFor: (url: string) => string | undefined;
   /// Whether a tile shows the site's icon or only its first letter.
   pinStyle: PinStyle;
+  /// A tab put to sleep, whose row or tile is drawn dimmed until it wakes.
+  asleep: (id: string) => boolean;
   /// The small glyphs at the foot: the padlock with its site-info popover,
   /// the extension actions, downloads.
   siteInfo: React.ReactNode;
@@ -156,6 +158,10 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
     };
   }
 
+  function sleeping(t: SessionTab): string[] {
+    return props.asleep(t.id) ? ["dimmed"] : [];
+  }
+
   function pin(t: SessionTab, slot: number): React.ReactNode {
     const live = t.id === activeId;
     const icon = props.pinStyle === "icons" ? props.iconFor(t.url) : undefined;
@@ -169,7 +175,7 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
         spacing={0}
         // AppKit: each tile its own glass pill, the one on show raised and
         // brighter. GTK keeps the flat tile.
-        cssClasses={gtk ? ["view"] : live ? ["view", "glass", "raised"] : ["view", "glass"]}
+        cssClasses={[...(gtk ? ["view"] : live ? ["view", "glass", "raised"] : ["view", "glass"]), ...sleeping(t)]}
         dropTarget
         onDragOver={() => {
           if (dragging && (reorder?.to ?? -1) !== slot) setReorder({ id: dragging, to: slot });
@@ -234,7 +240,7 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
         orientation="horizontal"
         // The tab on show is the one filled row; the rest only answer the
         // pointer, and read in the quieter ink.
-        cssClasses={live ? ["view"] : ["activatable"]}
+        cssClasses={live ? ["view"] : ["activatable", ...sleeping(t)]}
         style={{ minHeight: TAB_ROW_HEIGHT, hexpand: true, padding: { left: rowInset, right: 2 } }}
         onHoverChanged={(e) => setHovered(e.checked ? t.id : "")}
       >

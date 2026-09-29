@@ -41,7 +41,7 @@ writeFileSync(
   `${STORE}/settings.json`,
   JSON.stringify({
     version: 1,
-    data: { searchEngine: "google", homepage: "", restoreOnLaunch: true, layout: "compact", sitePermissions: {}, pinnedExtensions: [] },
+    data: { searchEngine: "google", homepage: "", freshWindow: false, layout: "compact", sitePermissions: {}, pinnedExtensions: [] },
   }),
 );
 writeFileSync(

@@ -92,6 +92,8 @@ export interface CompactTabsProps {
   iconFor: (url: string) => string | undefined;
   labelFor: (tab: CompactTab) => string;
   addressFor: (tab: CompactTab) => string;
+  /// A tab put to sleep, whose chip is drawn dimmed until it wakes.
+  asleep?: (id: string) => boolean;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   /// What a drag of this tab carries, so the window it lands in can tell
@@ -129,6 +131,7 @@ export function CompactTabs({
   iconFor,
   labelFor,
   addressFor,
+  asleep,
   onSelect,
   onClose,
   dragPayload,
@@ -182,7 +185,7 @@ export function CompactTabs({
             // the title and the close button. Two linked buttons would draw a
             // seam down the middle of it. An unselected tab draws no chip at
             // all, which is what tells it from the selected one.
-            cssClasses={active ? ["card"] : []}
+            cssClasses={active ? ["card"] : asleep?.(t.id) ? ["dimmed"] : []}
             style={{ minWidth: t.pinned ? ICON_TAB_WIDTH : metrics.width, valign: "center", hexpand: false }}
             onHoverChanged={(e) => setHovered(e.checked ? t.id : "")}
           >

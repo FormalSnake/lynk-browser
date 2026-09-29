@@ -106,3 +106,10 @@ test("tabs step with Ctrl+Tab off macOS", () => {
   expect(hint("next-tab")).toBe("Ctrl+Tab");
   expect(hint("prev-tab")).toBe("Ctrl+Shift+Tab");
 });
+
+test("Put Tab to Sleep is offered only for a tab that can sleep", () => {
+  const ids = (canSleep: boolean) => omniRows({ ...base, mode: "switcher", query: "sleep", canSleep }).map((r) => r.id);
+  expect(ids(true)).toEqual(["cmd:sleep-tab"]);
+  expect(ids(false)).toEqual([]);
+  expect(omniRows({ ...base, mode: "switcher", query: "memory", canSleep: true }).map((r) => r.id)).toEqual(["cmd:sleep-tab"]);
+});
