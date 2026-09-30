@@ -348,9 +348,9 @@ try {
       // macOS: the ⋯ button, then the menu item.
       const remove = async (): Promise<void> => {
         await openPanel();
-        await press(`ext-more-${other}`);
-        await Bun.sleep(800);
         if (MAC) {
+          await press(`ext-more-${other}`);
+          await Bun.sleep(800);
           // An NSMenu item has no view to locate. The menu drops from the
           // button's leading edge with Options then Remove, and Remove's
           // middle sits this far from the button's, measured in
@@ -362,8 +362,11 @@ try {
           await clickWhenReady(`ext-remove-${other}`);
         }
       };
+      // GTK's automation takes a menu item without its menu open, and has no
+      // click for the button that opens it, so the capture is best effort.
       await openPanel();
-      await press(`ext-more-${other}`);
+      if (MAC) await press(`ext-more-${other}`);
+      else await app.click(`ext-more-${other}`).catch(() => {});
       await Bun.sleep(800);
       shot("row-menu");
       if (MAC) await app.cursor.click({ x: 900, y: 400 });
