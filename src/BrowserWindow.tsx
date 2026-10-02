@@ -564,16 +564,19 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
       // whatever view it is in, so measuring it would only ever report the
       // size the app already chose. A popup that declares no size of its own
       // reports the view's width and its content height, which is what Chrome
-      // lays one out at too.
+      // lays one out at too. Measured to the body's far edges rather than its
+      // size: a first child's top margin collapses through the body and
+      // pushes it down, and a size that leaves that out scrolls the popup.
       `(() => {
          window.close = () => window.webkit.messageHandlers.ndPopup.postMessage(1);
          const b = document.body;
          if (!b) return JSON.stringify([0, 0]);
          const r = b.getBoundingClientRect();
          const s = getComputedStyle(b);
-         const mx = parseFloat(s.marginLeft) + parseFloat(s.marginRight);
-         const my = parseFloat(s.marginTop) + parseFloat(s.marginBottom);
-         return JSON.stringify([Math.ceil(r.width + mx), Math.ceil(r.height + my)]);
+         return JSON.stringify([
+           Math.ceil(r.right + parseFloat(s.marginRight)),
+           Math.ceil(r.bottom + parseFloat(s.marginBottom)),
+         ]);
        })()`,
     )
       .then((size) => {

@@ -324,9 +324,16 @@ try {
       );
       await Bun.sleep(1500);
       noStrayWindow("with the popup open");
+      // Fitted to its document: nothing of it scrolls.
+      const overflow = await poll(
+        "the popup to fit its document",
+        () => popupEval(other, "(() => { const e = document.documentElement; return JSON.stringify([e.scrollWidth - innerWidth, e.scrollHeight - innerHeight]); })()"),
+        (o) => o !== "" && (JSON.parse(o) as number[]).every((d) => d <= 0),
+        10_000,
+      ).catch((e: Error) => fail(`the popup scrolls: ${e.message}`));
       const body = (await app.find(`ext-popup-body-${other}`))?.geometry;
       shot(`popup-${label}`);
-      console.log(`3. popup (${label}) in the app's popover, ${body?.w}x${body?.h}: ${JSON.stringify(text.slice(0, 40))}`);
+      console.log(`3. popup (${label}) in the app's popover, ${body?.w}x${body?.h}, overflow ${overflow}: ${JSON.stringify(text.slice(0, 40))}`);
       await clickWhenReady("extensions-button");
       await poll("the popup to close", async () => !(await app.find(`ext-popup-view-${other}`)), (gone) => gone).catch(() => {});
       await closePanel().catch(() => {});
