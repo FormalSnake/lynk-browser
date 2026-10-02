@@ -208,8 +208,8 @@ const PAGES: { name: string; url: string; pick?: string }[] = [
 
 await connectPage();
 
-/// NB_READER_LEGS=float runs the floating-video leg alone.
-const legs = process.env.NB_READER_LEGS ?? "reader,float";
+/// NB_READER_LEGS picks legs: reader, huge (x11 only), float.
+const legs = process.env.NB_READER_LEGS ?? "reader,huge,float";
 for (const p of legs.includes("reader") ? PAGES : []) {
   console.log(`  -- ${p.name}`);
   let url = await load(p.url);
@@ -398,6 +398,23 @@ check(
 );
 capture("float-back-in-page");
 server.stop(true);
+
+// A window grown past X11's 16-bit coordinates (a tiling WM mid-animation,
+// a script) once aborted the host while it cut the page's shape. It runs last,
+// since the window can stay thousands of pixels wide afterwards.
+if (rig === "x11" && legs.includes("huge")) {
+  const top = toplevel();
+  if (top) {
+    sh("xdotool", "windowsize", top.id, "40000", String(top.h));
+    // A live host sizes the window back within milliseconds, so the width is
+    // only logged: a host that died keeps it at 40000.
+    await Bun.sleep(2500);
+    console.log(`  hugeWindow: ${toplevel()?.w ?? 0} px after asking for 40000`);
+    sh("xdotool", "windowsize", top.id, String(top.w), String(top.h));
+    await Bun.sleep(1500);
+    check("hugeWindow.hostAlive", (await evalPage("String(1 + 1)")) === "2" && sh("kill", "-0", hostPid) === "" && !!toplevel());
+  }
+}
 
 console.log(failed === 0 ? `ND_APP_CHROME_LEGS_OK(${rig})` : `ND_APP_CHROME_LEGS_FAIL(${rig}) ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
