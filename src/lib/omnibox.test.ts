@@ -119,7 +119,8 @@ test("reading mode and the floating video are commands with their chords", () =>
   expect(rows.find((r) => r.id === "cmd:reader")?.hint).toBe(process.platform === "darwin" ? "⇧⌘R" : "Ctrl+Shift+R");
   const reading = omniRows({ ...base, mode: "switcher", reading: true, mac: false });
   expect(reading.find((r) => r.id === "cmd:reader")?.title).toBe("Leave Reading Mode");
-  expect(reading.find((r) => r.id === "cmd:float")?.hint).toBe("Ctrl+Shift+P");
+  expect(reading.find((r) => r.id === "cmd:float")?.hint).toBe("Ctrl+Alt+P");
+  expect(omniRows({ ...base, mode: "switcher", query: "float", mac: true }).find((r) => r.id === "cmd:float")?.hint).toBe("⌥⌘P");
   expect(omniRows({ ...base, mode: "switcher", query: "pip" }).map((r) => r.id)).toContain("cmd:float");
   const webkit = omniRows({ ...base, mode: "switcher", chromium: false }).map((r) => r.id);
   expect(webkit).not.toContain("cmd:reader");

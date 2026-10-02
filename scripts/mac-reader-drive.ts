@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Reading mode (⇧⌘R) and floating video (⇧⌘P) on the real engine, macOS.
+// Reading mode (⇧⌘R) and floating video (⌥⌘P) on the real engine, macOS.
 //
 //   ND_HOST_BINARY=<NDShellDev.app/Contents/MacOS/NDShell> bun scripts/mac-reader-drive.ts
 //
@@ -235,12 +235,12 @@ try {
   /// A real keystroke: System Events posts it to the frontmost app, which is
   /// the road a person's key takes (the page has the keyboard, and Chromium
   /// answers ⇧⌘R itself unless the app's menu gets it first).
-  const chord = (letter: string): void => {
+  const chord = (letter: string, mods = "command down, shift down"): void => {
     const script =
       `tell application "System Events"\n` +
       `  set frontmost of (first process whose unix id is ${app.pid}) to true\n` +
       `  delay 0.3\n` +
-      `  keystroke "${letter}" using {command down, shift down}\n` +
+      `  keystroke "${letter}" using {${mods}}\n` +
       `end tell`;
     const out = Bun.spawnSync(["osascript", "-e", script]);
     if (out.exitCode !== 0) fail(`osascript: ${out.stderr.toString().trim()}`);
@@ -399,9 +399,7 @@ try {
   const at = again?.geometry ?? fail("the window reports no geometry");
   await app.cursor.click({ x: at.w - 40, y: 120 });
   await Bun.sleep(500);
-  // Through the bar, not the chord: a global shortcut on the test Mac takes
-  // ⇧⌘P before any keyDown reaches the app.
-  viaBar("float video");
+  chord("p", "command down, option down");
   const back = await marker(`ND_APP FLOAT ${tab}`);
   if (back !== "off") fail(`second float chord answered ${back}`);
   await Bun.sleep(1200);

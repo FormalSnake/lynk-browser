@@ -4,8 +4,8 @@
 //
 // Chords follow the Search browser's map. ⌘Tab belongs to macOS's app
 // switcher and never reaches the app, so tabs step with ⇧⌘] and ⇧⌘[ there and
-// with Ctrl+Tab elsewhere; ⇧⌘P is kept free for the floating video, so a
-// private window is ⇧⌘N.
+// with Ctrl+Tab elsewhere. The floating video is ⌥⌘P, not Search's ⇧⌘P,
+// which 1Password takes system-wide for Quick Access.
 const MAC = process.platform === "darwin";
 
 export const KEYS = {
@@ -29,7 +29,7 @@ export const KEYS = {
   "zoom-out": "primary+minus",
   "zoom-reset": "primary+0",
   reader: "primary+shift+r",
-  float: "primary+shift+p",
+  float: "primary+alt+p",
   "next-tab": MAC ? "primary+shift+bracketright" : "primary+tab",
   "prev-tab": MAC ? "primary+shift+bracketleft" : "primary+shift+tab",
   // The panels take Chrome's own chords on each platform.

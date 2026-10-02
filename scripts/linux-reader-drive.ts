@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Reading mode (Ctrl+Shift+R) and floating video (Ctrl+Shift+P) on Linux,
+// Reading mode (Ctrl+Shift+R) and floating video (Ctrl+Alt+P) on Linux,
 // reached by chord and through the command bar, run as a drive inside the
 // framework's real-app rigs:
 //
@@ -381,7 +381,7 @@ if (process.env.NB_READER_LEAVE_FLOAT === "1") {
   process.exit(failed === 0 ? 0 : 1);
 }
 focusPage();
-key("ctrl+shift+p");
+key("ctrl+alt+p");
 const back = await answer("ND_APP FLOAT ");
 check("float.off", back === "off", back);
 await Bun.sleep(1200);
