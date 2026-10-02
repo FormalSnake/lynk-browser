@@ -276,7 +276,6 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// What is in the address field right now. Only a test hook reads it: a
   /// person presses Enter, which carries the text with it.
   const typedAddress = useRef("");
-  const addressField = useRef<NdNodeRef<"searchinput">>(null);
   /// The open popup's view, and the id of the one whose window.close the app
   /// has already hooked.
   const popupView = useRef<NdNodeRef<"webview"> | null>(null);
