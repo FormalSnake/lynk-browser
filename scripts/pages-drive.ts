@@ -239,6 +239,9 @@ async function panelOpen(app: AppHandle, panel: string, open: boolean): Promise<
     const n = await present(app, `${panel}-search`);
     return open ? n !== null : n === null;
   });
+  // The node is in the tree before libadwaita has presented the dialog, and a
+  // key pressed in between reaches whatever had the keyboard before it.
+  if (open) await step(`${panel}'s search field to take the keyboard`, () => app.waitForFocused(`${panel}-search`, { timeoutMs: PATIENCE }));
 }
 
 /// A download started from the command bar, then the Downloads panel over
