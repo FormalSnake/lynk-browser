@@ -346,8 +346,12 @@ try {
   if (!real) {
     await step("4. uninstall through the app's confirmation", async () => {
       // The extension's own page from its install, open in a tab, has to
-      // close with it, as in Chrome.
-      const ownTab = async () => (await nodes()).some((n) => /^tab-[^-]+$/.test(n.testID ?? "") && n.text === "ND Gate options");
+      // close with it, as in Chrome. It opened behind the page, so it reads
+      // its address until it is shown.
+      const ownTab = async () =>
+        (await nodes()).some(
+          (n) => /^tab-[^-]+$/.test(n.testID ?? "") && (n.text === "ND Gate options" || (n.text ?? "").includes("options.html")),
+        );
       await poll("the extension's own tab", ownTab, (open) => open);
       const tabsBefore = await tabCount();
 
