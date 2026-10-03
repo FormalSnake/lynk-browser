@@ -140,7 +140,19 @@ const props = (id: string): string =>
 function focusPage(): void {
   const top = toplevel();
   if (!top) return;
-  sh("xdotool", "mousemove", "--sync", String(top.x + Math.round(top.w * 0.7)), String(top.y + Math.round(top.h * 0.6)));
+  // On screen, since the window can reach past its edge, and clear of the
+  // floating video: a click on that hands it the keyboard, and the chords
+  // after it never reach the app.
+  const [screenW] = sh("xdotool", "getdisplaygeometry").split(" ").map(Number);
+  const left = Math.max(top.x, 0);
+  const right = Math.min(top.x + top.w, screenW || top.x + top.w);
+  const x = left + Math.round((right - left) * 0.7);
+  let y = top.y + Math.round(top.h * 0.6);
+  const over = (w: Win) => w.id !== top.id && w.w > 100 && x >= w.x && x < w.x + w.w && y >= w.y && y < w.y + w.h;
+  if (windowsOf(hostPid).some(over)) {
+    y = top.y + Math.round(top.h * 0.3);
+  }
+  sh("xdotool", "mousemove", "--sync", String(x), String(y));
   sh("xdotool", "click", "1");
   Bun.sleepSync(300);
   // Which X window the keys that follow go to: a chord that never reaches the
