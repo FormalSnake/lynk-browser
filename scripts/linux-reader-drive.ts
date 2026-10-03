@@ -143,6 +143,11 @@ function focusPage(): void {
   sh("xdotool", "mousemove", "--sync", String(top.x + Math.round(top.w * 0.7)), String(top.y + Math.round(top.h * 0.6)));
   sh("xdotool", "click", "1");
   Bun.sleepSync(300);
+  // Which X window the keys that follow go to: a chord that never reaches the
+  // host is told apart from one the app dropped by this line.
+  const focus = Number(sh("xdotool", "getwindowfocus"));
+  const at = sh("xdotool", "getmouselocation");
+  console.log(`  focus 0x${focus.toString(16)} after a click at ${at}: ${props(`0x${focus.toString(16)}`)}`);
 }
 const key = (chord: string) => sh("xdotool", "key", "--clearmodifiers", chord);
 
