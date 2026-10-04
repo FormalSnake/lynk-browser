@@ -1,5 +1,6 @@
 import { render } from "@nativedesktop/react";
 import { App } from "./App.tsx";
+import { loadBlockingState } from "./lib/adblock.ts";
 import { bookmarks, normalizeBookmarks } from "./lib/bookmarks.ts";
 import { downloads, normalizeDownloads } from "./lib/downloads.ts";
 import { openFavicons } from "./lib/favicons.ts";
@@ -20,6 +21,7 @@ const savedDownloads = await downloads.load();
 downloads.set(seeded ? JSON.parse(await Bun.file(seeded).text()) : normalizeDownloads(savedDownloads));
 
 bookmarks.set(normalizeBookmarks(await bookmarks.load()));
+await loadBlockingState();
 
 openFavicons();
 await openHistory();

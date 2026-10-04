@@ -42,6 +42,8 @@ export interface Runtime {
   zoomNotice: number;
   /// Reading mode is up over the page.
   reading: boolean;
+  /// Requests the blocker stopped on the page now showing.
+  blocked: number;
 }
 
 export const IDLE: Runtime = {
@@ -54,6 +56,7 @@ export const IDLE: Runtime = {
   attempt: 0,
   zoomNotice: 0,
   reading: false,
+  blocked: 0,
 };
 
 export interface FindState {

@@ -130,6 +130,18 @@ import {
 import { LAYOUT_SEGMENT_WIDTH } from "./lib/metrics.ts";
 import { fileNameFromUrl, hostOf, toUrl } from "./lib/url.ts";
 import { clampZoom, stepZoom } from "./lib/zoom.ts";
+import {
+  blocking,
+  blockingOn,
+  hiddenOn,
+  hide,
+  refresh,
+  restoreHidden,
+  setBlockingOn,
+  siteOf,
+  startContentBlocking,
+} from "./lib/adblock.ts";
+import { HIDER_CHANNEL, HIDER_SOURCE, HIDER_WORLD, type HiderMessage } from "./lib/hider.ts";
 import { PrivateWindow, type PrivateBridge } from "./PrivateWindow.tsx";
 
 /// A window with no tabs left is closed, not kept around empty.
@@ -159,6 +171,7 @@ export interface AppProps {
 export function App({ initialHistory }: AppProps): React.ReactNode {
   const state = useStoreValue(session);
   const prefs = useStoreValue(settings);
+  const blockingState = useStoreValue(blocking);
   const windows = state.windows.filter((w) => w.tabs.length > 0);
   const allTabs = windows.flatMap((w) => w.tabs);
 
@@ -790,6 +803,73 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
         console.error(`ND_APP READER failed ${String(e)}`);
         toast("This page cannot be shown in reading mode");
       });
+  }
+
+  // ----------------------------------------------------------- blocking ---
+
+  // After the first commit, the earliest the host takes system calls: the
+  // lists reach it while Chromium is still starting, and the window never
+  // waits on them.
+  useMountEffect(() => startContentBlocking());
+
+  /// The ⇧⌘H picker, asleep in an isolated world of each tab's main frame.
+  /// Guarded by widget id: the ref callback runs on every render.
+  const hiderArmed = useRef(new Set<number>());
+  function armHider(node: NdNodeRef<"webview">): void {
+    if (!chromium || hiderArmed.current.has(node.id)) return;
+    hiderArmed.current.add(node.id);
+    sendCommand(node, "addUserScript", { id: "nb-hide", source: HIDER_SOURCE, injectionTime: "start", world: HIDER_WORLD });
+    sendCommand(node, "registerScriptMessage", { name: HIDER_CHANNEL, world: HIDER_WORLD });
+  }
+
+  function toggleHiding(tabId: string): void {
+    const node = view(tabId);
+    if (!node || !chromium || !siteOf(tabOf(tabId)?.url ?? "")) return;
+    void executeJavaScript(node, "window.__nbHide && window.__nbHide.toggle()", HIDER_WORLD).catch(() => {});
+  }
+
+  function onHiderMessage(tabId: string, m: HiderMessage): void {
+    if ("off" in m) return;
+    if ("trouble" in m) {
+      toast("Unable to hide that element");
+      return;
+    }
+    if (TEST_HOOKS) console.error(`ND_APP HIDDEN ${tabId} ${m.pick.selector}`);
+    void hide(siteOf(tabOf(tabId)?.url ?? ""), m.pick);
+  }
+
+  async function toggleBlocking(tabId: string): Promise<void> {
+    const site = siteOf(tabOf(tabId)?.url ?? "");
+    if (TEST_HOOKS) console.error(`ND_APP BLOCKING toggle ${tabId} site=${site}`);
+    if (!site) return;
+    const on = !blockingOn(site);
+    await setBlockingOn(site, on);
+    if (TEST_HOOKS) console.error(`ND_APP BLOCKING ${site} ${on ? "on" : "off"}`);
+    toast(on ? `Blocking ads on ${site}` : `Allowing ads on ${site}`);
+    command(tabId, "reload");
+  }
+
+  async function restoreHiddenOn(tabId: string): Promise<void> {
+    const site = siteOf(tabOf(tabId)?.url ?? "");
+    if (!site) return;
+    await restoreHidden(site);
+    command(tabId, "reload");
+  }
+
+  async function updateLists(): Promise<void> {
+    toast("Updating filter lists");
+    const changed = await refresh(true);
+    toast(changed ? "Filter lists updated" : "Filter lists are up to date");
+  }
+
+  function blockingFor(tabId: string): { site: string; on: boolean; hidden: number; blocked: number } {
+    const site = siteOf(tabOf(tabId)?.url ?? "");
+    return {
+      site,
+      on: blockingOn(site, blockingState),
+      hidden: hiddenOn(site, blockingState).length,
+      blocked: rt(tabId).blocked,
+    };
   }
 
   /// Views whose reader channel is registered; one registration serves every
@@ -1779,6 +1859,11 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     command,
     toggleReader,
     toggleFloat,
+    blockingFor,
+    toggleBlocking: (tabId) => void toggleBlocking(tabId),
+    toggleHiding,
+    restoreHidden: (tabId) => void restoreHiddenOn(tabId),
+    updateLists: () => void updateLists(),
     zoomFor,
     setZoom,
     zoomStep,
@@ -1865,6 +1950,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                       // The view exists now, so its menu can be pushed; the
                       // render-time sync could only skip it.
                       syncContextMenus(t.id);
+                      armHider(node as NdNodeRef<"webview">);
                       setArmedTabs((a) => (a[t.id] ? a : { ...a, [t.id]: true }));
                     }}
                     url={armedTabs[t.id] || createAtUrl(t.url) ? t.url : ""}
@@ -1887,12 +1973,18 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                     onSecurityChanged={(e) => patch(t.id, { security: securityOf(t.url, e.data) })}
                     onZoomChanged={(e) => onZoomChanged(t.id, e.data)}
                     onPictureInPicture={(e) => onPictureInPicture(t.id, e.data)}
+                    onContentBlocked={(e) => {
+                      const count = (e.data as { count: number }).count;
+                      patch(t.id, { blocked: count });
+                      if (TEST_HOOKS) console.error(`ND_APP BLOCKED ${t.id} ${count}`);
+                    }}
                     onScriptMessage={(e) => {
                       const message = e.data as { name?: string; body?: unknown };
                       if (message.name === STORE_CHANNEL) {
                         void onStoreRequest(t.id, message.body);
                         return;
                       }
+                      if (message.name === HIDER_CHANNEL && message.body) return onHiderMessage(t.id, message.body as HiderMessage);
                       if (message.name !== READER_CHANNEL) return;
                       if (TEST_HOOKS) console.error(`ND_APP READER ${t.id} off`);
                       patch(t.id, { reading: false });

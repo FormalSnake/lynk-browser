@@ -30,6 +30,7 @@ export const KEYS = {
   "zoom-reset": "primary+0",
   reader: "primary+shift+r",
   float: "primary+alt+p",
+  "hide-element": "primary+shift+h",
   "next-tab": MAC ? "primary+shift+bracketright" : "primary+tab",
   "prev-tab": MAC ? "primary+shift+bracketleft" : "primary+shift+tab",
   // The panels take Chrome's own chords on each platform.

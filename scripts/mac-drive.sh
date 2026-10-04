@@ -46,4 +46,4 @@ exec env \
   ND_WEBVIEW_ENGINE=chromium \
   ND_CEF_STYLE=chrome \
   ND_CEF_CACHE="$CACHE" \
-  bun "${1:-scripts/browser-drive.ts}"
+  bun "${1:-scripts/browser-drive.ts}" "${@:2}"

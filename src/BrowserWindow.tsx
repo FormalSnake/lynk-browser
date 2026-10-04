@@ -60,7 +60,7 @@ import {
 } from "./lib/permissions.ts";
 import type { SessionState, SessionTab, SessionWindow } from "./lib/session.ts";
 import { KEYS } from "./lib/keys.ts";
-import { commandTitle, omniRows, shortcutLabel, type OmniMode, type OmniTarget } from "./lib/omnibox.ts";
+import { blockedSentence, commandTitle, omniRows, shortcutLabel, type OmniMode, type OmniTarget } from "./lib/omnibox.ts";
 import { SEARCH_ENGINES, engineOf, type Layout, type SettingsState } from "./lib/settings.ts";
 import { parseTabPayload, tabPayload } from "./lib/tabdrag.ts";
 import {
@@ -186,6 +186,13 @@ export interface BrowserContext {
   command(tabId: string, name: "goBack" | "goForward" | "reload" | "stop"): void;
   toggleReader(tabId: string): void;
   toggleFloat(tabId: string): void;
+  /// The built-in blocker on a tab's site.
+  blockingFor(tabId: string): { site: string; on: boolean; hidden: number; blocked: number };
+  toggleBlocking(tabId: string): void;
+  /// ⇧⌘H: the element picker on the tab's page, or away again.
+  toggleHiding(tabId: string): void;
+  restoreHidden(tabId: string): void;
+  updateLists(): void;
   zoomFor(url: string): number;
   setZoom(tabId: string, next: number): void;
   /// One preset step in, out, or (0) back to 100%, with the popover shown.
@@ -297,6 +304,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   const popupHooked = useRef(0);
 
   const activeRt = ctx.rt(active.id);
+  const activeBlocking = ctx.blockingFor(active.id);
   const find = ctx.findFor(active.id);
   const compact = prefs.layout === "compact";
   const gtk = Platform.backend === "gtk";
@@ -545,6 +553,14 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
         return ctx.toggleReader(active.id);
       case "float":
         return ctx.toggleFloat(active.id);
+      case "blocking":
+        return ctx.toggleBlocking(active.id);
+      case "hide-element":
+        return ctx.toggleHiding(active.id);
+      case "restore-hidden":
+        return ctx.restoreHidden(active.id);
+      case "update-lists":
+        return ctx.updateLists();
       case "settings":
         return ctx.openSettings();
       case "zoom-in":
@@ -817,6 +833,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     pinned: active.pinned,
     canSleep: ctx.canSleep(active.id),
     reading: ctx.rt(active.id).reading,
+    blocking: chromium ? ctx.blockingFor(active.id) : undefined,
     favicon: faviconFor,
   });
 
@@ -905,9 +922,30 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
           testID={`${p}site-info-security`}
           text={SECURITY_TOOLTIP[activeRt.security]}
           cssClasses={["dimmed", "caption"]}
-          ellipsize
           style={{ halign: "start" }}
         />
+        {chromium && activeBlocking.site ? (
+          <box testID={`${p}site-blocking`} orientation="horizontal" spacing={Spacing.sm}>
+            <box orientation="vertical" style={{ hexpand: true, valign: "center" }}>
+              <label testID={`${p}site-blocking-title`} text="Block Ads and Trackers" style={{ halign: "start" }} />
+              <label
+                testID={`${p}site-blocking-count`}
+                text={activeBlocking.on ? blockedSentence(activeBlocking.blocked) : "Off for this site"}
+                cssClasses={["dimmed", "caption"]}
+                style={{ halign: "start" }}
+              />
+            </box>
+            <switch
+              testID={`${p}site-blocking-switch`}
+              checked={activeBlocking.on}
+              tooltip="Block Ads and Trackers"
+              style={{ valign: "center" }}
+              onToggled={(e) => {
+                if (e.checked !== activeBlocking.on) ctx.toggleBlocking(active.id);
+              }}
+            />
+          </box>
+        ) : null}
         {activePrompt ? (
           <box orientation="vertical" spacing={Spacing.sm}>
             <label
@@ -1285,6 +1323,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   // accelerators are the app's, not this window's.
   const menuWin = ctx.session.windows.find((w) => w.id === ctx.focusedWindowId) ?? win;
   const menuActive = menuWin.tabs.find((t) => t.id === menuWin.activeId) ?? menuWin.tabs[0]!;
+  const menuBlocking = ctx.blockingFor(menuActive.id);
   const menuRt = ctx.rt(menuActive.id);
   const menuTarget = (): WindowController | undefined => ctx.controllerFor(menuWin.id);
 
@@ -1420,6 +1459,19 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               accelerator={KEYS.reader}
               enabled={chromium}
               onSelect={() => ctx.toggleReader(menuActive.id)}
+            />
+            <menuitem
+              testID="menu-blocking"
+              label={menuBlocking.on ? `Allow Ads on ${menuBlocking.site || "This Site"}` : `Block Ads on ${menuBlocking.site}`}
+              enabled={chromium && !!menuBlocking.site}
+              onSelect={() => ctx.toggleBlocking(menuActive.id)}
+            />
+            <menuitem
+              testID="menu-hide-element"
+              label="Hide Element"
+              accelerator={KEYS["hide-element"]}
+              enabled={chromium && /^https?:/.test(menuActive.url)}
+              onSelect={() => ctx.toggleHiding(menuActive.id)}
             />
             <menuitem
               testID="menu-float"

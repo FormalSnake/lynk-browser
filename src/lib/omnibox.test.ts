@@ -132,3 +132,19 @@ test("no two declared shortcuts share a chord", async () => {
   const chords = Object.values(KEYS);
   expect(new Set(chords).size).toBe(chords.length);
 });
+
+test("the blocker's commands name the site and what they will do", () => {
+  const blocking = { site: "example.com", on: true, hidden: 0, blocked: 12 };
+  const rows = omniRows({ ...base, mode: "switcher", query: "ads", blocking });
+  const row = rows.find((r) => r.id === "cmd:blocking");
+  expect(row?.title).toBe("Allow Ads on example.com");
+  expect(row?.subtitle).toBe("12 requests blocked on this page");
+  const off = omniRows({ ...base, mode: "switcher", query: "ads", blocking: { ...blocking, on: false } });
+  expect(off.find((r) => r.id === "cmd:blocking")?.title).toBe("Block Ads on example.com");
+  // Nothing hidden, nothing to show again; a page with no site has no switch.
+  expect(rows.some((r) => r.id === "cmd:restore-hidden")).toBe(false);
+  const shown = omniRows({ ...base, mode: "switcher", query: "hidden", blocking: { ...blocking, hidden: 2 } });
+  expect(shown.find((r) => r.id === "cmd:restore-hidden")?.subtitle).toBe("2 elements hidden");
+  const blank = omniRows({ ...base, mode: "switcher", query: "ads", blocking: { ...blocking, site: "" } });
+  expect(blank.some((r) => r.id === "cmd:blocking" || r.id === "cmd:hide-element")).toBe(false);
+});

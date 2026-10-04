@@ -75,6 +75,10 @@ export const COMMANDS: OmniCommand[] = [
   { id: "zoom-reset", title: "Actual Size", iconName: "zoom-original-symbolic", keys: "zoom-reset", aka: "reset zoom" },
   { id: "reader", title: "Reading Mode", iconName: "text-x-generic-symbolic", keys: "reader", aka: "reader article" },
   { id: "float", title: "Float Video", iconName: "video-x-generic-symbolic", keys: "float", aka: "picture in picture pip" },
+  { id: "blocking", title: "Allow Ads on This Site", iconName: "security-low-symbolic", aka: "adblock ad blocker ublock trackers block ads" },
+  { id: "hide-element", title: "Hide Element", iconName: "view-conceal-symbolic", keys: "hide-element", aka: "adblock remove annoyance picker" },
+  { id: "restore-hidden", title: "Show Hidden Elements", iconName: "view-reveal-symbolic", aka: "adblock unhide restore" },
+  { id: "update-lists", title: "Update Filter Lists", iconName: "view-refresh-symbolic", aka: "adblock ublock easylist" },
   { id: "site-info", title: "Site Settings", iconName: "channel-secure-symbolic", aka: "permissions security" },
   { id: "downloads-all", title: "Downloads", iconName: "folder-download-symbolic", keys: "downloads" },
   { id: "history", title: "History", iconName: "document-open-recent-symbolic", keys: "history" },
@@ -89,7 +93,17 @@ export const COMMANDS: OmniCommand[] = [
 
 /// Commands that need the Chromium engine: extensions, and the reader and the
 /// floating video, which run as page scripts only it accepts.
-const CHROMIUM_ONLY = new Set(["extensions", "extensions-page", "webstore", "reader", "float"]);
+const CHROMIUM_ONLY = new Set([
+  "extensions",
+  "extensions-page",
+  "webstore",
+  "reader",
+  "float",
+  "blocking",
+  "hide-element",
+  "restore-hidden",
+  "update-lists",
+]);
 
 /// A command's title for a tab that is or is not pinned: the pin command
 /// names what it will do.
@@ -176,6 +190,9 @@ export interface OmniInput {
   canSleep?: boolean;
   /// Whether the showing tab is in reading mode, which names the reader command.
   reading?: boolean;
+  /// The built-in blocker on the showing tab's site, which names its
+  /// commands; the site ones are left out for a page with no site.
+  blocking?: { site: string; on: boolean; hidden: number; blocked: number };
   favicon: (url: string) => string | undefined;
   mac?: boolean;
 }
@@ -273,18 +290,45 @@ function tabRows(tabs: OmniTab[], lowered: string, cap: number, favicon: (url: s
   return rows;
 }
 
+/// Titles that name what the command will do on the showing tab.
+function commandTitleFor(id: string, input: OmniInput): string {
+  const b = input.blocking;
+  if (id === "reader" && input.reading) return "Leave Reading Mode";
+  if (id === "blocking" && b) return b.on ? `Allow Ads on ${b.site}` : `Block Ads on ${b.site}`;
+  if (id === "restore-hidden" && b) return `Show Hidden Elements on ${b.site}`;
+  return commandTitle(id, input.pinned ?? false);
+}
+
+function commandSubtitle(id: string, input: OmniInput): string | undefined {
+  const b = input.blocking;
+  if (!b) return undefined;
+  if (id === "blocking") return b.on ? blockedSentence(b.blocked) : "Ads and trackers load on this site";
+  if (id === "restore-hidden") return b.hidden === 1 ? "1 element hidden" : `${b.hidden} elements hidden`;
+  return undefined;
+}
+
+/// What the blocker stopped on the showing page.
+export function blockedSentence(count: number): string {
+  if (count === 0) return "Nothing blocked on this page";
+  return count === 1 ? "1 request blocked on this page" : `${count} requests blocked on this page`;
+}
+
 function commandRows(input: OmniInput, lowered: string): OmniRow[] {
   const rows: OmniRow[] = [];
   for (const c of COMMANDS) {
     if (!input.chromium && CHROMIUM_ONLY.has(c.id)) continue;
     if (c.id === "sleep-tab" && !input.canSleep) continue;
     if (c.pinnedOnly && !input.pinned) continue;
-    const title = c.id === "reader" && input.reading ? "Leave Reading Mode" : commandTitle(c.id, input.pinned ?? false);
+    const site = input.blocking?.site ?? "";
+    if ((c.id === "blocking" || c.id === "hide-element") && !site) continue;
+    if (c.id === "restore-hidden" && !input.blocking?.hidden) continue;
+    const title = commandTitleFor(c.id, input);
     if (lowered && !`${title} ${c.aka ?? ""}`.toLowerCase().includes(lowered)) continue;
     rows.push({
       id: `cmd:${c.id}`,
       title,
-      iconName: c.iconName,
+      subtitle: commandSubtitle(c.id, input),
+      iconName: c.id === "blocking" && !input.blocking?.on ? "security-high-symbolic" : c.iconName,
       hint: c.keys ? shortcutLabel(KEYS[c.keys], input.mac) : undefined,
     });
   }
