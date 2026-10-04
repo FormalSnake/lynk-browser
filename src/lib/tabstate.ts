@@ -8,8 +8,11 @@ import { displayUrl } from "./url.ts";
 /// would spend the indicator's credibility on a non-event.
 export type Security = "none" | "secure" | "mixed" | "insecure" | "invalid";
 
+/// `none` is the plain site-information mark rather than the globe, which is
+/// also the favicon a site without one gets: compact draws the two side by
+/// side in the tab on show.
 export const SECURITY_ICON: Record<Security, string> = {
-  none: "web-browser-symbolic",
+  none: "help-about-symbolic",
   secure: "channel-secure-symbolic",
   mixed: "dialog-warning-symbolic",
   insecure: "channel-insecure-symbolic",
