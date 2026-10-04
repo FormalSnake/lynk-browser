@@ -333,6 +333,32 @@ if (legs.includes("document")) {
     check("doc.contentMoved", (await evalPage("String(!document.getElementById('card'))")) === "true");
     rulesFor("doc", now);
     capture("doc-open");
+    // The app window at a narrow width with the call popped out: the window
+    // stays where it is and the page keeps its layout.
+    const appIds = [...managed()].map((id) => `0x${id.toString(16)}`)
+      .filter((id) => prop(id, "_NET_WM_PID").endsWith(` ${hostPid}`) && !prop(id, "WM_CLASS").includes('"picture-in-picture"'));
+    const geomOf = (id: string): Win => {
+      const info = sh("xwininfo", "-id", id);
+      const n = (k: string) => Number(info.match(new RegExp(`${k}:\\s+(-?\\d+)`))?.[1] ?? 0);
+      return { id, x: n("Absolute upper-left X"), y: n("Absolute upper-left Y"), w: n("Width"), h: n("Height"), name: "" };
+    };
+    const app = appIds.map(geomOf).sort((a, b) => b.w * b.h - a.w * a.h)[0];
+    console.log(`    app window ${app?.id} ${app?.w}x${app?.h}`);
+    if (app && rig === "x11") {
+      sh("xdotool", "windowsize", app.id, "720", String(app.h));
+      await Bun.sleep(1500);
+      const narrow = geomOf(app.id);
+      const still = windowsOf(hostPid).find((w) => w.id === pip.id);
+      check("doc.appNarrow", !!narrow && narrow.w <= 740 && !!still && still.x === now.x && still.y === now.y, `app ${narrow?.w}x${narrow?.h}, pip ${still?.x},${still?.y}`);
+      capture("doc-app-narrow");
+      sh("xdotool", "windowsize", app.id, String(app.w), String(app.h));
+      await Bun.sleep(800);
+    } else if (rig === "hypr") {
+      const main = hyprClients().find((x) => String(x.pid) === hostPid && x.title !== "Picture in Picture") as (HyprClient & { address?: string }) | undefined;
+      if (main?.address) sh("hyprctl", "dispatch", "resizewindowpixel", `exact 720 ${main.size[1]},address:${main.address}`);
+      await Bun.sleep(1500);
+      capture("doc-app-narrow");
+    }
     // Chromium's frame is the handle: its title strip.
     await landings("doc", now, { fx: 0.3, fy: 10 / now.h }, false);
     // Closed from the page, as Meet's own button does: the controls come home.
