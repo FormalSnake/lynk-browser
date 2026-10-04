@@ -34,9 +34,6 @@ const tag = `${layout}-${width}-${gtk ? "gtk" : "appkit"}`;
 const STORE = `/tmp/nb-zoom-${tag}`;
 const LOG = `${STORE}/host.log`;
 const PATIENCE = Number(process.env.ND_DRIVE_TIMEOUT_MS ?? 60_000);
-/// The icon slot on both backends: GTK's entry icon is 16px plus padding,
-/// AppKit's overlay is the cancel-button rect.
-const ICON_SLOT = 40;
 
 rmSync(STORE, { recursive: true, force: true });
 mkdirSync(STORE, { recursive: true });
@@ -115,12 +112,11 @@ try {
   await app.waitForPresent("page-t1", { timeoutMs: PATIENCE });
   await app.setWindowSize(width, 760);
   await Bun.sleep(2500);
-  // Compact's field, or the sidebar's foot glyph, which is only there while
-  // the page is not at 100% (the seeded 125%).
-  const anchorId = layout === "compact" ? "omnibox" : "zoom-indicator";
+  // The magnifier, at the end of compact's active tab or in the sidebar's
+  // foot, only there while the page is not at 100% (the seeded 125%).
+  const anchorId = "zoom-indicator";
   const anchor = await geometry(anchorId);
   if (!anchor || anchor.w <= 0) fail(`${anchorId} never laid out`);
-  const right = anchor!.x + anchor!.w;
 
   // A menu step shows the popover for ZOOM_NOTICE_MS.
   await app.getByTestId("menu-zoom-in").click();
@@ -132,19 +128,8 @@ try {
     // only a region capture includes.
     if (process.platform === "darwin") capture();
     else await app.screenshot(`${SHOTS}/zoom-${tag}.png`);
-    if (layout === "compact") {
-      const line = await poll(async () => (await Bun.file(LOG).text()).split("\n").filter((l) => l.includes("ND_POPOVER_POINTING slot=trailingIcon ")).at(-1) ?? null,
-        (l) => l != null, { timeoutMs: 5000 }).catch(() => fail("the zoom popover never pointed at the trailing icon"));
-      const num = (k: string) => Number(new RegExp(`${k}=(-?\\d+)`).exec(line!)![1]);
-      const [x, w, entryW] = [num("x"), num("w"), num("entryW")];
-      if (w <= 0 || x < entryW - ICON_SLOT || x + w > entryW) {
-        fail(`the zoom popover points at ${x}..${x + w}, outside the trailing ${ICON_SLOT}px of the ${entryW}px field`);
-      }
-      console.log(`  NB_ZOOM_ANCHOR_OK ${tag} points at ${x}..${x + w} of a ${entryW}px field`);
-    } else {
-      // A popover anchored on its tree parent points at the whole button.
-      console.log(`  NB_ZOOM_ANCHOR_OK ${tag} indicator at ${anchor!.x},${anchor!.y} ${anchor!.w}x${anchor!.h}`);
-    }
+    // A popover anchored on its tree parent points at the whole button.
+    console.log(`  NB_ZOOM_ANCHOR_OK ${tag} indicator at ${anchor!.x},${anchor!.y} ${anchor!.w}x${anchor!.h}`);
   } else {
     await Bun.sleep(1800);
     const main = (await app.windows()).windows[0]!.geometry!;
@@ -165,17 +150,15 @@ try {
     // A click on the magnifier keeps the popover up until it is dismissed,
     // which the census below needs: each read compiles a Swift script.
     const at = await geometry(anchorId);
-    const iconX = layout === "compact" ? right - 12 : at!.x + at!.w / 2;
-    await app.cursor.click({ x: iconX, y: at!.y + at!.h / 2 });
+    await app.cursor.click({ x: at!.x + at!.w / 2, y: at!.y + at!.h / 2 });
     const pop = await poll(async () => (await census()).find((w) => w.alpha > 0 && w.layer === 0 && w.width < main.w && w.height < 200) ?? null,
       (w) => w != null, { timeoutMs: 8000 }).catch(() => fail("no zoom popover window on screen"));
     const mid = pop!.x + pop!.width / 2 - main.x;
     const top = pop!.y - main.y;
+    if (pop!.x - main.x > at!.x + at!.w || pop!.x + pop!.width - main.x < at!.x) fail(`the zoom popover (${pop!.x - main.x}..${pop!.x + pop!.width - main.x}) is not over the indicator (${at!.x}..${at!.x + at!.w})`);
     if (layout === "compact") {
-      if (mid < right - ICON_SLOT || mid > right) fail(`the zoom popover points at ${mid}, outside the trailing ${ICON_SLOT}px of the field (${anchor!.x}..${right})`);
-      if (top < anchor!.y + anchor!.h - 4) fail(`the zoom popover opened at ${top}, over the field instead of under it`);
+      if (top < at!.y + at!.h - 4) fail(`the zoom popover opened at ${top}, over the active tab instead of under it`);
     } else {
-      if (pop!.x - main.x > at!.x + at!.w || pop!.x + pop!.width - main.x < at!.x) fail(`the zoom popover (${pop!.x - main.x}..${pop!.x + pop!.width - main.x}) is not over the indicator (${at!.x}..${at!.x + at!.w})`);
       if (top + pop!.height > at!.y + 4) fail(`the zoom popover opened at ${top}..${top + pop!.height}, not above the indicator at ${at!.y}`);
     }
     if (pop!.x < main.x || pop!.x + pop!.width > main.x + main.w) fail(`the zoom popover (${pop!.x}..${pop!.x + pop!.width}) hangs out of the window (${main.x}..${main.x + main.w})`);
@@ -191,7 +174,7 @@ try {
     const pinOpen = async () => {
       const g = await geometry(anchorId);
       if (!g) fail(`${anchorId} is gone`);
-      await app.cursor.click({ x: layout === "compact" ? g!.x + g!.w - 12 : g!.x + g!.w / 2, y: g!.y + g!.h / 2 });
+      await app.cursor.click({ x: g!.x + g!.w / 2, y: g!.y + g!.h / 2 });
       await poll(popoverUp, (up) => up, { timeoutMs: 8000 }).catch(() => fail("a click on the magnifier opened no popover"));
     };
     const expectGone = async (how: string) => {
@@ -242,9 +225,9 @@ try {
     // Pinned open, then the other layout: the anchor it pointed at is gone.
     await Bun.sleep(1800);
     const main = (await app.windows()).windows[0]!.geometry!;
-    const g = await geometry(layout === "compact" ? "omnibox" : "zoom-indicator");
+    const g = await geometry("zoom-indicator");
     if (!g) fail("no zoom anchor before the layout switch");
-    await app.cursor.click({ x: layout === "compact" ? g!.x + g!.w - 12 : g!.x + g!.w / 2, y: g!.y + g!.h / 2 });
+    await app.cursor.click({ x: g!.x + g!.w / 2, y: g!.y + g!.h / 2 });
     const up = async () => (await census()).some((w) => w.alpha > 0 && w.layer === 0 && w.width < main.w && w.height < 200);
     await poll(up, (u) => u, { timeoutMs: 8000 }).catch(() => fail("a click on the magnifier opened no popover"));
     await app.getByTestId("menu-layout").click();

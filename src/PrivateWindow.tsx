@@ -22,6 +22,7 @@ import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
 import { permissionSentence, splitTypes, type PermissionPrompt } from "./lib/permissions.ts";
 import { settings } from "./lib/settings.ts";
 import { parseTabPayload, tabPayload } from "./lib/tabdrag.ts";
+import { tabHover } from "./lib/tabstate.ts";
 import { displayUrl, hostOf, toUrl, fieldAddress } from "./lib/url.ts";
 import { fixWebStore } from "./lib/webstore.ts";
 
@@ -337,13 +338,13 @@ export function PrivateWindow({
               <CompactTabs
                 tabs={runTabs}
                 activeId={active.id}
-                metrics={tabRunMetrics(width, runTabs, active.id, 0, Platform.backend === "gtk" ? "gtk" : "appkit")}
+                metrics={tabRunMetrics(width, runTabs, active.id, 0, Platform.backend === "gtk" ? "gtk" : "appkit", true)}
                 prefix="private-"
                 // A private window shows no favicons: the cache is on disk and
                 // this window writes nothing there.
                 iconFor={() => undefined}
                 labelFor={(t) => t.title || (t.url ? displayUrl(t.url) : "New Tab")}
-                addressFor={(t) => displayUrl(t.url) || "New Tab"}
+                hoverFor={tabHover}
                 onSelect={setActiveId}
                 onClose={closeTab}
                 dragPayload={(t) => tabPayload({ profile: "private", tabId: t.id, url: t.url })}

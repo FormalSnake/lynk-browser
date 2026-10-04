@@ -66,7 +66,9 @@ export interface SidebarProps {
   /// Whether the tab on show is loading, which its row says with a spinner.
   loading: boolean;
   labelFor: (tab: SessionTab) => string;
-  addressFor: (tab: SessionTab) => string;
+  /// What hovering a row or a tile shows: its title and its whole address,
+  /// the same as a compact tab.
+  hoverFor: (tab: SessionTab) => string;
   iconFor: (url: string) => string | undefined;
   /// Whether a tile shows the site's icon or only its first letter.
   pinStyle: PinStyle;
@@ -191,7 +193,7 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
           testID={`${p}tab-${t.id}`}
           iconData={icon}
           label={icon ? undefined : monogram(props.labelFor(t))}
-          tooltip={props.labelFor(t)}
+          tooltip={props.hoverFor(t)}
           cssClasses={live ? ["flat"] : ["flat", "dimmed"]}
           // Adwaita's side padding would make a column wider than a
           // letter or an icon needs, and cost the grid a column.
@@ -258,7 +260,7 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
           iconName="web-browser-symbolic"
           labelAlign="start"
           ellipsize
-          tooltip={props.addressFor(t)}
+          tooltip={props.hoverFor(t)}
           cssClasses={live ? ["flat", "body"] : ["flat", "body", "dimmed"]}
           style={{ hexpand: true, valign: "center", font: REGULAR }}
           onClick={() => pick(t)}

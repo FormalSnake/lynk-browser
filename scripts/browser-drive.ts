@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { launchApp, type AppHandle, type JsonNode } from "@nativedesktop/test";
 import { LAYOUT_SEGMENT_WIDTH } from "../src/lib/metrics.ts";
+import { displayUrl } from "../src/lib/url.ts";
 import {
   SHOTS,
   fail,
@@ -311,16 +312,25 @@ async function paletteRow(app: AppHandle, match: (id: string) => boolean, what: 
   return fail(`the palette never settled on ${what}; its rows were ${JSON.stringify(ids)}`);
 }
 
-/// The current page URL, as shown by the header's address display.
-/// The address the window shows: the field's text, or, in the sidebar layout
-/// (no field), the accessible name of the row on show, which carries the
-/// whole address.
+/// The address the window shows, without its scheme: the last line of the
+/// hover text (the accessible name) of the tab on show, a sidebar row or the
+/// compact row's active chip, which carries the whole address.
 async function shownUrl(app: AppHandle): Promise<string> {
-  const field = await app.find("omnibox");
-  if (field) return String(field.text ?? "");
-  const active = listActive(await app.mustFind("tab-list"));
-  const row = await app.mustFind(`tab-${active}`);
-  return row.label === "New Tab" ? "" : String(row.label ?? "");
+  const list = await app.find("tab-list");
+  const id = list ? `tab-${listActive(list)}` : `tab-item-${await compactActive(app)}`;
+  const label = String((await app.mustFind(id)).label ?? "");
+  return label === "New Tab" ? "" : displayUrl(label.split("\n").at(-1) ?? "");
+}
+
+/// The compact row's tab on show: the one chip drawing its close button
+/// while no pointer is on the row.
+async function compactActive(app: AppHandle): Promise<string> {
+  let id = "";
+  walk((await app.tree()).root, (n) => {
+    const m = n.testID?.match(/^tab-close-(.+)$/);
+    if (!id && m && n.visible) id = m[1]!;
+  });
+  return id || fail("no compact tab draws its close button");
 }
 
 async function waitUrl(app: AppHandle, suffix: string, timeoutMs = PATIENCE): Promise<string> {
@@ -1508,17 +1518,13 @@ try {
   const afterDrop = await settledLoads();
   if (loadsAt !== afterDrop) fail(`dropping the sidebar reloaded a page: ${loadsAt} -> ${afterDrop}`);
 
-  // The address field is the point of the redraw: always there, always the
-  // active tab's address, and wider than any one tab.
-  const compactField = await app.mustFind("omnibox");
-  if (String(compactField.text ?? "") !== activeBeforeCompact) {
-    fail(`the compact address field reads ${JSON.stringify(compactField.text)}, want ${JSON.stringify(activeBeforeCompact)}`);
-  }
-  const fieldBox = compactField.geometry!;
+  // The active tab is the address: no field beside it, the same address
+  // the sidebar's row carried, and wider than the other tabs.
+  if (await app.find("omnibox")) fail("the compact row draws an address field besides the active tab");
+  const compactUrl = await shownUrl(app);
+  if (compactUrl !== activeBeforeCompact) fail(`the compact active tab carries ${JSON.stringify(compactUrl)}, want ${JSON.stringify(activeBeforeCompact)}`);
   const activeSlot = (await app.mustFind(`tab-slot-${activeTabId}`)).geometry!;
-  if (fieldBox.w < 240) fail(`the address field is only ${fieldBox.w} wide; its floor is 240`);
-  if (fieldBox.x < activeSlot.x) fail(`the address field (x=${fieldBox.x}) should sit after the tabs (x=${activeSlot.x})`);
-  if (activeSlot.w > 200) fail(`a compact tab is ${activeSlot.w} wide; the reference draws them near 156`);
+  if (activeSlot.w < 200) fail(`the address tab is only ${activeSlot.w} wide; its floor is 200`);
   await shoot(app, "18-compact", mainWindow);
 
   // Owner report: the compact tab list went stale. The row is the only tab UI
@@ -1611,14 +1617,15 @@ try {
   if (ink === null) console.log("  18a. no X screen to read, the ink reading did not run");
   else console.log(`  18a. ink over the page rect: ${ink.toFixed(2)} (root crop, other windows may stack over it)`);
 
-  // Typing an address into the compact field. Enter is a keystroke and GTK
-  // synthesises none (-32003), so the drive fills the field and runs the
-  // handler Enter runs; what is NOT covered here is the key binding itself.
-  await step("type an address into the compact field", () => app.setValue("omnibox", `${base}/c`));
-  await step("commit it", () => app.click("menu-commit-address"));
+  // A click on the active tab opens the command bar on its address, and an
+  // address typed there lands in that tab.
+  await step("click the address tab", async () => app.click(`tab-item-${await compactActive(app)}`));
+  await step("the bar presents", () => app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE }));
+  await typeQuery(app, `${base}/c`);
+  await step("submit it", () => app.setValue("palette", true));
   await waitUrl(app, "/c");
   await items((p) => p.some((t) => t.startsWith("Page C")), "the row to carry the page it landed on");
-  console.log("18c. the compact address field takes a URL and the tab lands on it");
+  console.log("18c. the address tab opens the bar, and the tab lands on what is typed there");
 
   // Opened and retitled: a tab opened from the History menu loads a real page,
   // so it starts on the address and has to end on the page's own title.
@@ -1798,27 +1805,37 @@ try {
     }
     return fail(`the store lists ${JSON.stringify(stored())}`);
   });
-  if (await app.find(`${secondId}-omnibox`)) {
-    await step("type an address into the new window", () => app.setValue(`${secondId}-omnibox`, `${base}/b`));
-    await step("commit it", () => app.click("menu-commit-address"));
-  } else {
-    // The sidebar layout has no address field: the new window's command bar
-    // is where its address is typed. The row on show opens its window's command bar on its address; the
-    // menu item acts on whichever window has the focus, which a headless
-    // compositor may not hand the new one.
+  {
+    // The new window's command bar is where its address is typed: the tab on
+    // show opens it on its address, in either layout. The menu item acts on
+    // whichever window has the focus, which a headless compositor may not
+    // hand the new one.
     const bar = `${secondId}-palette`;
     // Polled with find, which looks in every window; waitFor watches one.
     let newRow = "";
+    let opener = "";
     for (const deadline = Date.now() + PATIENCE; !newRow && Date.now() < deadline; await Bun.sleep(200)) {
       const list = await app.find(`${secondId}-tab-list`);
-      newRow = list ? listActive(list) : "";
+      if (list) {
+        newRow = listActive(list);
+        opener = `${secondId}-tab-${newRow}`;
+        continue;
+      }
+      const strip = await app.find(`${secondId}-tab-strip`);
+      if (strip) {
+        walk(strip, (n) => {
+          const m = n.testID?.match(new RegExp(`^${secondId}-tab-close-(.+)$`));
+          if (!newRow && m && n.visible) newRow = m[1]!;
+        });
+        opener = `${secondId}-tab-item-${newRow}`;
+      }
     }
     if (!newRow) {
       const wins = (await app.windows()).windows.map((w) => `${w.ref}:${w.title}`);
       const list = await app.find(`${secondId}-tab-list`);
       fail(`the new window shows no tab; windows ${JSON.stringify(wins)}; list ${JSON.stringify(list).slice(0, 600)}`);
     }
-    await step("open the new window's command bar", () => app.click(`${secondId}-tab-${newRow}`));
+    await step("open the new window's command bar", () => app.click(opener));
     for (const deadline = Date.now() + PATIENCE; !(await app.find(bar))?.visible; await Bun.sleep(200)) {
       if (Date.now() > deadline) fail("the new window's command bar never presented");
     }

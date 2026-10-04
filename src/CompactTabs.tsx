@@ -1,6 +1,8 @@
 // The compact layout's tab run: the tabs themselves, drawn in the one toolbar
-// row between the reload button and the address field. Shared by the main
-// window and a private one, which draw the same row.
+// row after the reload button. In the main window the active tab is also the
+// address: it carries the padlock and the zoom, and a click on it opens the
+// command bar on its address, as the sidebar's row does. A private window has
+// no command bar, so its row ends in an address field instead.
 import { Platform, Spacing, useState } from "@nativedesktop/react";
 import type { MenuEntry } from "@nativedesktop/react";
 
@@ -14,6 +16,11 @@ const TAB_MAX_WIDTH = 156;
 const TITLE_FLOOR = 120;
 const ACTIVE_FLOOR = 140;
 const ICON_TAB_WIDTH = 36;
+/// The active tab when it is the address: room for the padlock, the favicon,
+/// a readable run of title, the zoom glyph and the close button. ADDRESS_TAB
+/// is what it takes when the row has it, and it is the last to give way.
+const ADDRESS_TAB = 280;
+const ADDRESS_TAB_FLOOR = 200;
 
 /// The address field's minimum. It is a constant rather than anything worked
 /// out from the window, because on GTK every minimum in the row adds up to the
@@ -62,6 +69,8 @@ export interface TabRunMetrics {
   /// left out of the row rather than squeezed into it; the command bar's tab
   /// switcher still reaches it.
   shown: CompactTab[];
+  /// Whether the active tab is the address (no field in the row).
+  address: boolean;
 }
 
 /// How wide each tab may be, given the window and how many tabs share the row.
@@ -70,25 +79,31 @@ export interface TabRunMetrics {
 /// floor. The widths are what the row ASKS for: on GTK the run sits in a
 /// clipping scroller, so a width worked out for a wider window is cut off
 /// rather than holding the window at that width.
+///
+/// `field` is whether the row also holds an address field. Without one the
+/// active tab is the address: it is titled even when pinned, it takes up to
+/// ADDRESS_TAB, and it keeps ADDRESS_TAB_FLOOR while the others shrink.
 export function tabRunMetrics(
   windowWidth: number,
   tabs: CompactTab[],
   activeId: string,
   trailing: number,
   backend: "gtk" | "appkit",
+  field: boolean,
 ): TabRunMetrics {
   const layoutButton = windowWidth < LAYOUT_BUTTON_WIDTH ? LAYOUT_BUTTON : 0;
   const row = windowWidth - FURNITURE[backend] + layoutButton - trailing * FURNITURE_SLOT;
+  const icon = ICON_TAB_WIDTH + TAB_GAP;
+  if (!field) return addressRun(row, tabs, activeId);
   const pinned = tabs.filter((t) => t.pinned);
   const loose = tabs.filter((t) => !t.pinned);
-  const icon = ICON_TAB_WIDTH + TAB_GAP;
 
   // Every pinned tab at its favicon and every other tab titled, at an even
   // share of what the field leaves above its floor.
   const even = loose.length > 0 ? Math.floor((row - ADDRESS_FLOOR - pinned.length * icon) / loose.length) - TAB_GAP : TAB_MAX_WIDTH;
   if (even >= TITLE_FLOOR) {
     const width = Math.min(TAB_MAX_WIDTH, even);
-    return { width, titled: true, activeWidth: width, shown: tabs };
+    return { width, titled: true, activeWidth: width, shown: tabs, address: false };
   }
 
   // The active tab titled, then as many of the rest at their favicons as fit,
@@ -120,6 +135,50 @@ export function tabRunMetrics(
     // What the others leave goes to the active tab, up to a full tab.
     activeWidth: titledActive ? Math.min(TAB_MAX_WIDTH, activeWidth + Math.max(0, room)) : activeWidth,
     shown: tabs.filter((t) => keep.has(t.id)),
+    address: false,
+  };
+}
+
+/// The run when the active tab is the address. It is sized first; the rest
+/// share what it leaves the way they share the field's leftovers above.
+function addressRun(row: number, tabs: CompactTab[], activeId: string): TabRunMetrics {
+  const active = tabs.find((t) => t.id === activeId) ?? tabs[0];
+  const others = tabs.filter((t) => t !== active);
+  const pinned = others.filter((t) => t.pinned);
+  const loose = others.filter((t) => !t.pinned);
+  const icon = ICON_TAB_WIDTH + TAB_GAP;
+  const pinnedRun = pinned.length * icon;
+
+  // Everyone titled: the address at full width, the others at an even share.
+  const room = row - ADDRESS_TAB - TAB_GAP - pinnedRun;
+  const even = loose.length > 0 ? Math.floor(room / loose.length) - TAB_GAP : TAB_MAX_WIDTH;
+  if (even >= TITLE_FLOOR) {
+    return { width: Math.min(TAB_MAX_WIDTH, even), titled: true, activeWidth: Math.min(ADDRESS_TAB, row), shown: tabs, address: true };
+  }
+
+  // The others at their favicons, nearest the address first, then the
+  // address gives back what is left down to its floor.
+  const floor = Math.max(ICON_TAB_WIDTH, Math.min(ADDRESS_TAB_FLOOR, row));
+  let left = row - floor - TAB_GAP;
+  const keep = new Set<string>(active ? [active.id] : []);
+  for (const t of pinned) {
+    if (left < icon) break;
+    keep.add(t.id);
+    left -= icon;
+  }
+  const at = active ? tabs.indexOf(active) : 0;
+  const byDistance = [...loose].sort((a, b) => Math.abs(tabs.indexOf(a) - at) - Math.abs(tabs.indexOf(b) - at));
+  for (const t of byDistance) {
+    if (left < icon) break;
+    keep.add(t.id);
+    left -= icon;
+  }
+  return {
+    width: ICON_TAB_WIDTH,
+    titled: false,
+    activeWidth: Math.min(ADDRESS_TAB, floor + Math.max(0, left)),
+    shown: tabs.filter((t) => keep.has(t.id)),
+    address: true,
   };
 }
 
@@ -132,7 +191,15 @@ export interface CompactTabsProps {
   prefix: string;
   iconFor: (url: string) => string | undefined;
   labelFor: (tab: CompactTab) => string;
-  addressFor: (tab: CompactTab) => string;
+  /// What hovering a tab shows: its title and its whole address.
+  hoverFor: (tab: CompactTab) => string;
+  /// A click on the tab already on show, while it is the address: the command
+  /// bar opens on its address.
+  onOpenAddress?: () => void;
+  /// Drawn inside the active tab while it is the address, before and after
+  /// its title: the padlock with the site's information, and the zoom.
+  addressLeading?: React.ReactNode;
+  addressTrailing?: React.ReactNode;
   /// A tab put to sleep, whose chip is drawn dimmed until it wakes.
   asleep?: (id: string) => boolean;
   onSelect: (id: string) => void;
@@ -174,7 +241,10 @@ export function CompactTabs({
   prefix,
   iconFor,
   labelFor,
-  addressFor,
+  hoverFor,
+  onOpenAddress,
+  addressLeading,
+  addressTrailing,
   asleep,
   onSelect,
   onClose,
@@ -217,10 +287,11 @@ export function CompactTabs({
       {shownTabs.flatMap((t) => {
         const i = tabs.indexOf(t);
         const active = t.id === activeId;
+        const address = active && metrics.address;
         // A pinned tab is its site's icon and nothing else, the way every
         // browser draws one, and it keeps that width however crowded the row
-        // gets.
-        const titled = !t.pinned && (active || metrics.titled);
+        // gets, unless it is the one on show and that is the address.
+        const titled = address || (!t.pinned && (active || metrics.titled));
         const closable = titled && (active || hovered === t.id);
         const marker =
           dropIndex === i ? [<separator key="drop" testID={`${prefix}tab-drop`} orientation="vertical" />] : [];
@@ -238,6 +309,7 @@ export function CompactTabs({
             style={{ minWidth: tabWidth(t, activeId, metrics), valign: "center", hexpand: false }}
             onHoverChanged={(e) => setHovered(e.checked ? t.id : "")}
           >
+            {address && addressLeading}
             <button
               testID={`${prefix}tab-item-${t.id}`}
               label={titled ? labelFor(t) : ""}
@@ -245,12 +317,10 @@ export function CompactTabs({
               iconName="web-browser-symbolic"
               labelAlign="start"
               ellipsize
-              // A tab narrowed to its favicon has no readable title left, so
-              // the tooltip carries both.
-              tooltip={titled ? addressFor(t) : `${labelFor(t)} (${addressFor(t)})`}
+              tooltip={hoverFor(t)}
               cssClasses={["flat"]}
               style={{ hexpand: true }}
-              onClick={() => onSelect(t.id)}
+              onClick={() => (address && onOpenAddress ? onOpenAddress() : onSelect(t.id))}
               contextMenu={menuFor?.(t)}
               onContextMenuSelected={onMenu ? (e) => onMenu(t, e.text) : undefined}
               draggable
@@ -258,6 +328,7 @@ export function CompactTabs({
               onDragStarted={(e) => onDragStart(e.text)}
               onDragEnded={onDragEnd}
             />
+            {address && addressTrailing}
             {titled &&
               (closable ? (
                 <button
@@ -297,6 +368,7 @@ export function CompactTabs({
 }
 
 function tabWidth(t: CompactTab, activeId: string, metrics: TabRunMetrics): number {
+  if (t.id === activeId && metrics.address) return metrics.activeWidth;
   if (t.pinned) return ICON_TAB_WIDTH;
   return t.id === activeId ? metrics.activeWidth : metrics.width;
 }

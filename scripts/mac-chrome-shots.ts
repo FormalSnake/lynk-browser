@@ -114,7 +114,7 @@ try {
 
   await step("pin the active tab", () => app.click("menu-pin-tab"));
   await Bun.sleep(800);
-  await measure("sidebar", ["split", "sidebar", "new-tab", "tab-list", "content", "omnibox"]);
+  await measure("sidebar", ["split", "sidebar", "new-tab", "tab-list", "content"]);
   capture("chrome-sidebar");
 
   await step("download an image", () => app.click("menu-ctx-save-image"));
@@ -139,7 +139,7 @@ try {
 
   await step("switch to the compact layout", () => app.click("menu-layout"));
   await Bun.sleep(1200);
-  await measure("compact", ["split", "sidebar", "omnibox", "downloads-anchor", "tabs-menu"]);
+  await measure("compact", ["split", "sidebar", "tab-strip", "downloads-anchor", "tabs-menu"]);
   capture("chrome-compact");
 
   await step("back to the sidebar layout", () => app.click("menu-layout"));

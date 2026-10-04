@@ -1461,9 +1461,8 @@ print(worst if worst is not None else -1)`,
       for (const width of [1280, 720]) {
         await app.setWindowSize(width, 800);
         await Bun.sleep(500);
-        // Compact's padlock is the address field's leading icon, which only
-        // the pointer or the test menu reaches.
-        const lock = "menu-site-info";
+        // Compact's padlock leads the active tab.
+        const lock = [...(await testIds())].find((id) => id.startsWith("security-")) ?? fail("no padlock in the active tab");
         await app.click(lock);
         await waitFor("the site-info popover", async () => (await app.find("site-info-popover"))?.visible, (v) => v === true);
         await Bun.sleep(600);

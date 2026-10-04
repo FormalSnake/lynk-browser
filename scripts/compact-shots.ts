@@ -60,10 +60,10 @@ async function capture(layout: "compact" | "sidebar", activeId: string, name: st
   seed(layout, activeId);
   const app = await launchApp({ entry: "src/main.tsx", env: { NB_STORE_DIR: STORE } });
   try {
-    await app.waitForPresent("omnibox", { timeoutMs: PATIENCE });
+    await app.waitForPresent(layout === "compact" ? "tab-strip" : "tab-list", { timeoutMs: PATIENCE });
     // The row is drawn from the session, but the titles only settle once each
     // restored tab's own page has reported one.
-    if (activeId !== "") await app.waitFor({ testId: "omnibox", state: "present" }, { timeoutMs: PATIENCE });
+    if (activeId !== "" && layout === "compact") await app.waitFor({ testId: `tab-item-${activeId}`, state: "present" }, { timeoutMs: PATIENCE });
     await Bun.sleep(6000);
     await shoot(app, `${name}-${scheme}`);
   } finally {
@@ -73,8 +73,7 @@ async function capture(layout: "compact" | "sidebar", activeId: string, name: st
 
 try {
   await capture("compact", "t2", "shot-compact");
-  // Two tabs at the same width: the address field has to take everything the
-  // tabs do not, which is what the reference shows.
+  // Two tabs: the active one is the address, at its full width.
   const many = tabs.splice(0, tabs.length, ...tabs.slice(1));
   await capture("compact", "t2", "shot-compact-two");
   tabs.splice(0, tabs.length, ...many);

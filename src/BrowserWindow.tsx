@@ -9,7 +9,6 @@ import {
   Platform,
   Spacing,
   clipboard,
-  createPortal,
   executeJavaScript,
   onAlertResult,
   onJavaScriptResult,
@@ -33,8 +32,8 @@ import type {
 } from "@nativedesktop/react";
 
 import { INSET, Sidebar } from "./Sidebar.tsx";
-import { ADDRESS_MIN_WIDTH, CompactTabs, LAYOUT_BUTTON_WIDTH, tabRunMetrics } from "./CompactTabs.tsx";
-import { ZoomFootControl, ZoomPopover, useZoomPopover, zoomFieldProps } from "./ZoomControl.tsx";
+import { CompactTabs, LAYOUT_BUTTON_WIDTH, tabRunMetrics } from "./CompactTabs.tsx";
+import { ZoomFootControl, useZoomPopover } from "./ZoomControl.tsx";
 import { stepZoom, zoomPercent } from "./lib/zoom.ts";
 import { DownloadRow, type DownloadActions } from "./Downloads.tsx";
 import { addBookmark, bookmarks, isBookmarked, removeBookmark } from "./lib/bookmarks.ts";
@@ -69,6 +68,7 @@ import {
   SECURITY_TOOLTIP,
   findFailed,
   findSummary,
+  tabHover,
   tabLabel,
   type FindState,
   type Runtime,
@@ -103,7 +103,7 @@ const DOWNLOADS_PANEL_WIDTH = 440;
 
 /// What the root asks of a window's own chrome. The menu bar belongs to one
 /// window and acts on whichever window is focused, so it reaches the others'
-/// palette, address field and popovers through these.
+/// palette and popovers through these.
 export interface WindowController {
   /// Opens the command bar holding `seed`. `target` is where Enter sends an
   /// address: "new-tab" for ⌘T, "current" (the default) otherwise.
@@ -112,9 +112,6 @@ export interface WindowController {
   openAddress(): void;
   /// ⌘K: the command bar as a tab switcher and command list.
   openSwitcher(): void;
-  /// Test-only: runs what Enter in the address field runs, on what the field
-  /// is holding.
-  commitAddress(): void;
   /// Test-only: what Esc in the command bar does.
   closePalette(): void;
   openDownloads(): void;
@@ -125,8 +122,6 @@ export interface WindowController {
   /// Bookmark This Page, or let the page go when it is already kept.
   bookmarkPage(): void;
   openSiteInfo(): void;
-  /// Fires the compact address field's padlock, or the sidebar's.
-  pressPadlock(): void;
   /// Arc's Cmd+S, for the sidebar layout.
   toggleSidebar(): void;
   /// Test-only: what the pointer at the leading edge does, for a backend with
@@ -293,12 +288,6 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// callback runs on every render, and focusing on each one would fight the
   /// user for the caret.
   const findFocused = useRef(0);
-  /// Compact's address field, which the zoom popover points at: its trailing
-  /// icon is the magnifier.
-  const addressField = useRef<NdNodeRef<"searchinput"> | null>(null);
-  /// What is in the address field right now. Only a test hook reads it: a
-  /// person presses Enter, which carries the text with it.
-  const typedAddress = useRef("");
   /// The open popup's view, and the id of the one whose window.close the app
   /// has already hooked.
   const popupView = useRef<NdNodeRef<"webview"> | null>(null);
@@ -319,7 +308,6 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     openPalette,
     openAddress,
     openSwitcher,
-    commitAddress: () => commitQuery(typedAddress.current, "current"),
     closePalette,
     // A download starting while the Downloads panel is up is already in view.
     openDownloads: () => panel !== "downloads" && openPanel("downloads"),
@@ -340,11 +328,6 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
       if (contentBars.current) sendCommand(contentBars.current, show ? "revealTopBars" : "concealTopBars");
     },
     openSiteInfo: () => openPanel("siteInfo"),
-    pressPadlock: () => {
-      if (compact && addressField.current) sendCommand(addressField.current, "activateLeadingIcon");
-      else if (siteInfoOpen) setSiteInfoOpen(false);
-      else openPanel("siteInfo");
-    },
     showPopup: (id, url) => {
       openPanel("popup");
       setPopupSize({ width: POPUP_DEFAULT_WIDTH, height: POPUP_DEFAULT_HEIGHT });
@@ -399,7 +382,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     setPaletteQuery("");
   }
 
-  /// ⌘L in both layouts, and a click on the sidebar's address: the command
+  /// ⌘L, and a click on the tab already on show in either layout: the command
   /// bar holding the address, all of it selected, so typing replaces it.
   function openAddress(): void {
     // A second ⌘L puts the bar away again.
@@ -774,9 +757,9 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   const openAction = rows.find((r) => r.id === popupId) ?? null;
   const unpinnedPopup = openAction && !prefs.pinnedExtensions.includes(openAction.id) ? openAction : null;
   /// The tab run is sized from the window rather than from hexpand: GTK would
-  /// hand every tab an equal share of the whole row, which is what left the
-  /// address field nowhere to go and every title at two characters.
-  const tabMetrics = tabRunMetrics(win.width, tabs, active.id, chromium ? pinnedActions.length + 1 : 0, gtk ? "gtk" : "appkit");
+  /// hand every tab an equal share of the whole row, which left every title
+  /// at two characters.
+  const tabMetrics = tabRunMetrics(win.width, tabs, active.id, chromium ? pinnedActions.length + 1 : 0, gtk ? "gtk" : "appkit", false);
   const targets = ctx.moveTargets(win.id);
   const dropIndex = ctx.dropHint?.windowId === win.id ? ctx.dropHint.index : null;
 
@@ -964,12 +947,11 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     ctx.denyPromptsFor(active.id);
   }
 
-  /// The sidebar's padlock: a button in its foot, so the popover opens upward
-  /// and stays inside the window. Opened downward GTK shrinks one to the room
-  /// left under the window and then closes it for being under its minimum
-  /// size. Compact draws the padlock inside the address field instead
-  /// (`leadingIconName`).
-  function siteInfoControl(): React.ReactNode {
+  /// The padlock. In the sidebar it is a button in the foot, so the popover
+  /// opens upward and stays inside the window: opened downward GTK shrinks one
+  /// to the room left under the window and then closes it for being under its
+  /// minimum size. In compact it leads the active tab and opens downward.
+  function siteInfoControl(position: "top" | "bottom"): React.ReactNode {
     return (
       <>
         {/* One indicator, updated in place. The state rides the testID
@@ -980,15 +962,19 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             this page is allowed to do hangs off it, and so does a
             permission the page is asking for right now. Boxed because a
             popover anchors on its tree parent. */}
-        <box testID={`${p}site-info-anchor`} orientation="horizontal">
+        <box testID={`${p}site-info-anchor`} orientation="horizontal" style={{ valign: "center" }}>
           <button
             testID={`${p}security-${activeRt.security}`}
             iconName={SECURITY_ICON[activeRt.security]}
             tooltip={SECURITY_TOOLTIP[activeRt.security]}
-            cssClasses={["flat"]}
+            cssClasses={position === "bottom" ? ["flat", "dimmed"] : ["flat"]}
+            size={position === "bottom" ? "small" : undefined}
+            // Inside the tab it is a glyph beside the favicon, not a button
+            // of the row's size; Adwaita's side padding would part the two.
+            style={position === "bottom" && gtk ? { padding: { left: 6, right: 0 } } : undefined}
             onClick={() => (siteInfoOpen ? setSiteInfoOpen(false) : openPanel("siteInfo"))}
           />
-          <popover testID={`${p}site-info-popover`} open={siteInfoOpen} position="top" onClosed={closeSiteInfo}>
+          <popover testID={`${p}site-info-popover`} open={siteInfoOpen} position={position} onClosed={closeSiteInfo}>
             {siteInfoPanel()}
           </popover>
         </box>
@@ -1493,9 +1479,6 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 label="Run test script"
                 onSelect={() => ctx.runTestJs(menuActive.id)}
               />
-              {/* Enter in the address field is a keystroke, and GTK synthesises
-                  none (-32003). This runs the handler that keystroke runs, on
-                  the text the field is actually holding. */}
               <menuitem
                 testID="menu-reveal-sidebar"
                 label="Reveal the hidden sidebar"
@@ -1516,20 +1499,8 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 label="Conceal the revealed window controls"
                 onSelect={() => menuTarget()?.revealStrip(false)}
               />
-              {/* The compact padlock is an icon inside the field, not a
-                  widget automation can click; this fires it the way a
-                  pointer press does. */}
-              <menuitem
-                testID="menu-site-info"
-                label="Open site information"
-                onSelect={() => menuTarget()?.pressPadlock()}
-              />
-              <menuitem
-                testID="menu-commit-address"
-                label="Commit the address field"
-                onSelect={() => menuTarget()?.commitAddress()}
-              />
-              {/* Esc in the command bar, for the same reason. */}
+              {/* Esc in the command bar: a keystroke, and GTK synthesises
+                  none (-32003). */}
               <menuitem
                 testID="menu-close-palette"
                 label="Close the command bar"
@@ -1620,14 +1591,15 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               activeId={active.id}
               loading={activeRt.loading}
               labelFor={tabLabel}
-              addressFor={(t) => displayUrl(t.url) || "New Tab"}
+              hoverFor={tabHover}
               iconFor={faviconFor}
               pinStyle={ctx.prefs.pinStyle}
               asleep={ctx.asleep}
-              siteInfo={siteInfoControl()}
+              siteInfo={siteInfoControl("top")}
               zoom={
                 <ZoomFootControl
                   open={zoomPopover.open && !sidebarHidden}
+                  position="top"
                   factor={zoomFactor}
                   prefix={p}
                   onToggle={zoomPopover.toggle}
@@ -1723,8 +1695,8 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 onClick={() => ctx.command(active.id, activeRt.loading ? "stop" : "reload")}
               />
 
-              {/* Compact puts the tabs in the row itself, between reload and
-                  the address field, and nothing below it. */}
+              {/* Compact puts the tabs in the row itself, after reload, and
+                  nothing below it. The active tab is the address. */}
               {compact && (
                 <CompactTabs
                   tabs={tabs}
@@ -1733,7 +1705,21 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                   prefix={p}
                   iconFor={faviconFor}
                   labelFor={tabLabel}
-                  addressFor={(t) => displayUrl(t.url) || "New Tab"}
+                  hoverFor={tabHover}
+                  onOpenAddress={openAddress}
+                  addressLeading={siteInfoControl("bottom")}
+                  addressTrailing={
+                    <ZoomFootControl
+                      open={zoomPopover.open}
+                      factor={zoomFactor}
+                      prefix={p}
+                      position="bottom"
+                      onToggle={zoomPopover.toggle}
+                      onStep={(direction) => ctx.setZoom(active.id, stepZoom(zoomFactor, direction))}
+                      onReset={() => ctx.setZoom(active.id, 1)}
+                      onClosed={zoomPopover.close}
+                    />
+                  }
                   asleep={ctx.asleep}
                   onSelect={selectTab}
                   onClose={ctx.closeTab}
@@ -1758,56 +1744,6 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                   cssClasses={["flat"]}
                   onClick={() => ctx.openTab(win.id, "")}
                 />
-              )}
-
-              {/* Compact is a standard browser row: the address is an editable
-                  field in it, and it takes whatever the row has left: the
-                  host makes a search entry packed straight into a header bar
-                  its title and fills the run between the start and end packs.
-                  Wrapping it in a box loses that. Typing and Enter commit
-                  from the field; ⌘L opens the command bar in both layouts.
-                  The padlock is the field's own leading icon, Chrome's site
-                  information button, and the panel hangs off the icon. */}
-              <searchinput
-                // The ref object itself, not a callback: React detaches and
-                // re-attaches a fresh callback ref on every commit, and the
-                // zoom popover's anchorRef reads this ref mid-commit.
-                ref={addressField}
-                testID={`${p}omnibox`}
-                text={shownUrl}
-                placeholder="Search or enter address"
-                leadingIconName={SECURITY_ICON[activeRt.security]}
-                leadingIconTooltip={SECURITY_TOOLTIP[activeRt.security]}
-                leadingIconLabel="Site information"
-                onLeadingIconClicked={() => (siteInfoOpen ? setSiteInfoOpen(false) : openPanel("siteInfo"))}
-                style={{ hexpand: true, minWidth: ADDRESS_MIN_WIDTH }}
-                // A ref, not state: feeding a keystroke back into the
-                // controlled `text` prop makes the host's set_text race the
-                // entry and blank it.
-                onChanged={(e) => (typedAddress.current = e.text)}
-                onActivate={(e) => commitQuery(e.text, "current")}
-                {...zoomFieldProps(zoomFactor, zoomPopover.open, zoomPopover.toggle)}
-              />
-              <ZoomPopover
-                anchor={addressField}
-                open={zoomPopover.open}
-                factor={zoomFactor}
-                prefix={p}
-                onStep={(direction) => ctx.setZoom(active.id, stepZoom(zoomFactor, direction))}
-                onReset={() => ctx.setZoom(active.id, 1)}
-                onClosed={zoomPopover.close}
-              />
-              {createPortal(
-                <popover
-                  testID={`${p}site-info-popover`}
-                  anchorRef={addressField}
-                  anchorSlot="leadingIcon"
-                  open={siteInfoOpen}
-                  position="bottom"
-                  onClosed={closeSiteInfo}
-                >
-                  {siteInfoPanel()}
-                </popover>,
               )}
 
               {/* A narrow row gives this one up first: the View menu and the

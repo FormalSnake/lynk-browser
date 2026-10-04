@@ -2,7 +2,8 @@
 // Walks the window from 1440 down to 720 px in 80 px steps, in both layouts,
 // and holds every step to the owner's bar for a narrow window: the window is
 // the width it was asked for (on GTK its minimum never holds it wider), the
-// address field is whole and on screen rather than in the toolbar's overflow,
+// compact row draws no address field and its active tab is the address
+// (padlock, title and close whole and centred in a chip of 200 px or more),
 // the active tab shows its title, and no control overlaps another or runs off
 // the window. Captures both layouts at 1440, 1024, 800 and 720.
 //
@@ -59,7 +60,8 @@ const server = Bun.serve({
 });
 const base = `http://127.0.0.1:${server.port}`;
 
-const tabs = TITLES.map((title, i) => ({ id: `t${i + 1}`, url: `${base}/${i}`, title, pinned: false }));
+// The first is pinned, so the sidebar draws a tile and the compact row an icon.
+const tabs = TITLES.map((title, i) => ({ id: `t${i + 1}`, url: `${base}/${i}`, title, pinned: i === 0 }));
 const ACTIVE = "t3";
 writeFileSync(
   `${STORE}/settings.json`,
@@ -147,9 +149,10 @@ async function settleAt(width: number): Promise<{ root: JsonNode; winWidth: numb
 }
 
 function capture(name: string): Promise<void> | void {
-  if (gtk) return shoot(app, name);
-  // The screenshot RPC paints a macOS 26 toolbar blank; ndshot takes the
-  // window as it is composited.
+  if (process.platform !== "darwin") return shoot(app, name);
+  // The screenshot RPC paints a macOS 26 toolbar blank, and on GTK under
+  // Quartz leaves out the header bar; ndshot takes the window as it is
+  // composited.
   const win = ndshotWindows(app.pid)[0] ?? fail("ndshot saw no app window");
   console.log(`  captured ${ndshotCapture(win.windowID, name)}`);
 }
@@ -171,12 +174,7 @@ async function compactStep(width: number): Promise<void> {
   check(`${at} window`, atWidth(winWidth, width), `window ${winWidth} px${min !== null ? `, content needs ${min}` : ""}`);
   if (gtk) check(`${at} minimum`, min !== null && min <= NARROWEST, `the window's minimum is ${min} px`);
 
-  const field = drawn(nodes.get("omnibox"));
-  check(
-    `${at} address field`,
-    field !== null && field.x >= 0 && right(field) <= width && field.w >= 120,
-    field ? `${Math.round(field.w)} px at ${Math.round(field.x)}..${Math.round(right(field))}` : "not drawn (in the overflow?)",
-  );
+  check(`${at} no address field`, !nodes.has("omnibox"), nodes.has("omnibox") ? "the row still draws one" : "the active tab is the address");
 
   const slot = drawn(nodes.get(`tab-slot-${ACTIVE}`));
   const item = nodes.get(`tab-item-${ACTIVE}`);
@@ -189,10 +187,34 @@ async function compactStep(width: number): Promise<void> {
       ? `"${title.slice(0, 24)}" in ${Math.round(slot.w)} px at ${Math.round(slot.x)}${clip ? `, clip ends ${Math.round(right(clip))}` : ""}`
       : "not drawn",
   );
+  // The address tab: padlock, title, close, left to right, each inside the
+  // chip and on its vertical centre.
+  const lockId = [...nodes.keys()].find((id) => id.startsWith("security-"));
+  const parts: Array<[string, Rect | null]> = [
+    ["padlock", drawn(lockId ? nodes.get(lockId) : undefined)],
+    ["title", drawn(item)],
+    ["close", drawn(nodes.get(`tab-close-${ACTIVE}`))],
+  ];
+  const bad: string[] = [];
+  if (!slot) bad.push("no chip");
+  else {
+    if (slot.w < 199.5) bad.push(`chip ${Math.round(slot.w)} px`);
+    let edge = slot.x - 0.5;
+    for (const [name, g] of parts) {
+      if (!g) {
+        bad.push(`${name} not drawn`);
+        continue;
+      }
+      if (g.x < edge || right(g) > right(slot) + 0.5) bad.push(`${name} ${Math.round(g.x)}..${Math.round(right(g))} outside or out of order`);
+      if (Math.abs(g.y + g.h / 2 - (slot.y + slot.h / 2)) > 1) bad.push(`${name} ${(g.y + g.h / 2 - (slot.y + slot.h / 2)).toFixed(1)} px off centre`);
+      edge = right(g) - 0.5;
+    }
+  }
+  check(`${at} address tab`, bad.length === 0, bad.join("; ") || `${Math.round(slot!.w)} px, padlock, title and close centred`);
 
   const controls: Array<[string, Rect]> = [];
   for (const [id, n] of nodes) {
-    const header = id === "reload" || id === "header-new-tab" || id === "omnibox" || id === "layout-toggle" ||
+    const header = id === "reload" || id === "header-new-tab" || id === "layout-toggle" ||
       id === "extensions-button" || id === "downloads-button" || id === "window-menu" ||
       id.startsWith("tab-slot-") || id.startsWith("ext-pin-");
     const g = header ? drawn(n) : null;
@@ -206,9 +228,26 @@ async function compactStep(width: number): Promise<void> {
   const missing = ["downloads-button", "window-menu"].filter((id) => nodes.has(id) && !drawn(nodes.get(id)));
   if (nodes.has("extensions-button") && !drawn(nodes.get("extensions-button"))) missing.push("extensions-button");
   check(`${at} end pack`, missing.length === 0, missing.length ? `${missing.join(", ")} not in the row` : "every end button in the row");
+  checkHover(at, nodes, "tab-item-");
   const tabsShown = controls.filter(([id]) => id.startsWith("tab-slot-")).length;
   console.log(`    ${tabsShown} of ${tabs.length} tabs in the row`);
   if (CAPTURED.includes(width)) await capture(`narrow-compact-${width}${SUFFIX}`);
+}
+
+/// Hovering any tab, tile, row or chip, in either layout, shows its title over
+/// its whole address. Both backends report a control's tooltip as its
+/// accessible name, which is what this reads.
+function checkHover(at: string, nodes: Map<string, JsonNode>, prefix: string): void {
+  const wrong: string[] = [];
+  let seen = 0;
+  for (const t of tabs) {
+    const n = nodes.get(`${prefix}${t.id}`);
+    if (!drawn(n)) continue;
+    seen += 1;
+    const want = `${t.title}\n${t.url}`;
+    if (n!.label !== want) wrong.push(`${t.id} says ${JSON.stringify(n!.label)}`);
+  }
+  check(`${at} hover`, seen > 0 && wrong.length === 0, wrong.join("; ") || `${seen} tabs show title and address`);
 }
 
 async function sidebarStep(width: number): Promise<void> {
@@ -227,6 +266,7 @@ async function sidebarStep(width: number): Promise<void> {
     list !== null && row !== null && title.length > 0 && row.w >= 60 && right(row) <= right(list) + 1,
     row ? `"${title.slice(0, 24)}" in ${Math.round(row.w)} px, list ${list ? Math.round(list.w) : "?"} px` : "not drawn",
   );
+  checkHover(at, nodes, "tab-");
   const page = drawn(nodes.get("view-slot"));
   check(`${at} page`, page !== null && page.w >= width / 2, page ? `${Math.round(page.w)} px wide` : "not drawn");
 
@@ -250,7 +290,7 @@ async function walkWidths(run: (width: number) => Promise<void>): Promise<void> 
 }
 
 try {
-  await app.waitForPresent("omnibox", { timeoutMs: PATIENCE });
+  await app.waitForPresent(`tab-item-${ACTIVE}`, { timeoutMs: PATIENCE });
   // Every restored tab's page has to report its title before a title can be
   // asserted.
   await Bun.sleep(5000);

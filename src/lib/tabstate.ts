@@ -106,6 +106,14 @@ export function tabLabel(t: { title: string; url: string }): string {
   return t.title || (t.url ? displayUrl(t.url) : "New Tab");
 }
 
+/// What hovering a tab says, the same in both layouts and on a pinned tile:
+/// its title, and under it the whole address, which a row or chip only ever
+/// shows cut down.
+export function tabHover(t: { title: string; url: string }): string {
+  if (!t.url) return "New Tab";
+  return t.title ? `${t.title}\n${t.url}` : t.url;
+}
+
 /// How a window is named where another window offers to send a tab to it:
 /// after the tab it is showing, the way Chrome's Move Tab menu names one.
 export function windowLabel(active: { title: string; url: string }, count: number): string {

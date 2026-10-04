@@ -178,13 +178,25 @@ async function waitLayout(app: AppHandle, ok: (l: Layout) => boolean, what: stri
   return fail(`${what}; last layout ${JSON.stringify({ ...l, rows: l.rows.length })}`);
 }
 
-/// No second omnibox: while the bar is up, the header's address is not also
-/// taking typing.
+/// No second omnibox: the bar is the only address field in either layout.
 async function assertOneOmnibox(app: AppHandle, label: string): Promise<void> {
-  const header = await app.find("omnibox");
-  check(!header?.focused, `${label}: the header address field holds focus under the bar`);
+  check(!(await app.find("omnibox")), `${label}: the window draws an address field besides the bar`);
   const opener = await app.find("new-tab-search");
   check(!opener || opener.type === "Button", `${label}: the new tab page draws a ${opener?.type} field`);
+}
+
+/// The tab on show, as the control a click lands on: the only row or chip
+/// drawing its close button while the pointer is elsewhere.
+async function liveTab(app: AppHandle, layout: "sidebar" | "compact"): Promise<string> {
+  let id = "";
+  const visit = (n: { testID?: string | null; visible?: boolean; children?: unknown[] }) => {
+    const m = n.testID?.match(/^tab-close-(.+)$/);
+    if (!id && m && n.visible) id = m[1]!;
+    for (const c of (n.children ?? []) as (typeof n)[]) visit(c);
+  };
+  visit((await app.tree()).root as never);
+  if (!id) fail(`${layout}: no tab draws its close button`);
+  return layout === "compact" ? `tab-item-${id}` : `tab-${id}`;
 }
 
 const app = await launchApp({
@@ -329,38 +341,18 @@ try {
       await step(`${tag}: Cmd+T over Cmd+L`, () => app.click("menu-new-tab"));
       l = await waitLayout(app, (x) => x.presented && x.fieldText === "", `${tag}: Cmd+T over an open bar kept ${JSON.stringify(l.fieldText)}`);
       await closePalette(app);
-    }
-    // Focus leaving the address field is not Return: nothing navigates, and
-    // an http:// page is not rewritten to https.
-    // The compact row's field sits in the toolbar overflow on macOS at narrow
-    // widths (another owner's bug), where nothing can focus it; the leg runs
-    // at the normal width, and only where it shows.
-    if (layout === "compact") {
-      await app.setWindowSize(1280, 820);
-      await Bun.sleep(700);
-    }
-    const fieldShown = layout === "compact" && (await app.find("omnibox"))?.visible === true;
-    if (layout === "compact" && !fieldShown) console.log("  blur leg skipped: the compact address field is in the toolbar overflow");
-    if (fieldShown) {
-      const deep = "/deep/path/that/goes/on/and/on/for/a/while/so/the/address/is/long";
-      const before = loads[deep] ?? 0;
-      const field = await app.mustFind("omnibox");
-      await step("focus the address field", () => app.getByTestId("omnibox").focus());
-      const page = (await app.tree()).root;
-      let pageId = "";
-      const visit = (n: { testID?: string | null; visible?: boolean; children?: unknown[] }) => {
-        if (!pageId && n.testID?.startsWith("page-t") && n.visible) pageId = n.testID;
-        for (const c of (n.children ?? []) as (typeof n)[]) visit(c);
-      };
-      visit(page as never);
-      await step("move focus to the page", () => app.getByTestId(pageId || "view-slot").focus());
-      await Bun.sleep(1500);
-      check((loads[deep] ?? 0) === before, `blurring the address field loaded the page again (${before} -> ${loads[deep]})`);
-      const held = String((await app.mustFind("omnibox")).text ?? "");
-      check(held === String(field.text ?? ""), `blurring the address field changed it to ${JSON.stringify(held)}`);
-      check(!app.stderrTail(4000).includes("setURL want=https://127.0.0.1"), "the page was sent to https");
-    }
 
+      // A click on the tab on show does what Cmd+L does, in both layouts.
+      const live = await liveTab(app, layout);
+      await step(`${tag}: click ${live}`, () => app.click(live));
+      l = await waitLayout(app, (x) => x.presented && x.fieldText !== "", `${tag}: a click on the tab on show never presented the bar`);
+      check(l.fieldText.includes("/deep/path"), `${tag}: the tab opened the bar on ${JSON.stringify(l.fieldText)}`);
+      check(l.selectionStart === 0 && l.selectionLength === l.fieldText.length, `${tag}: from the tab, selection ${l.selectionStart}+${l.selectionLength} of ${l.fieldText.length}`);
+      assertLayout(l, `${tag} from-tab`);
+      await assertOneOmnibox(app, `${tag} from-tab`);
+      await shot(app, `${tag}-from-tab`);
+      await closePalette(app);
+    }
     if (layout === "sidebar") {
       await step("switch to the compact layout", () => app.click("menu-layout"));
       await Bun.sleep(1200);

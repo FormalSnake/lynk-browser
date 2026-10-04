@@ -1,15 +1,10 @@
-// The zoom indicator: a magnifier at the trailing end of the address field
-// while the page is not at 100%, and a popover under it with the value and
-// the controls. It replaces Chromium's zoom bubble, which has no location bar
-// to anchor to in this browser and would sit over the middle of the page.
-//
-// Compact has an address field: `zoomFieldProps` goes on the field itself, and
-// `<ZoomPopover>` is portalled into the window and anchored to that field's
-// trailing icon. The sidebar layout has no address field, so `<ZoomFootControl>`
-// puts the magnifier among the small glyphs at the sidebar's foot, beside the
-// padlock, with the popover above it.
-import { Platform, Spacing, createPortal, useEffect, useRef, useState } from "@nativedesktop/react";
-import type { NdNodeRef } from "@nativedesktop/react";
+// The zoom indicator: a magnifier while the page is not at 100%, and a
+// popover off it with the value and the controls. It replaces Chromium's zoom
+// bubble, which has no location bar to anchor to in this browser and would sit
+// over the middle of the page. The sidebar puts it among the small glyphs at
+// its foot, beside the padlock, with the popover above it; compact puts it at
+// the end of the active tab, with the popover below.
+import { Platform, Spacing, useEffect, useRef, useState } from "@nativedesktop/react";
 import { ZOOM_MAX, ZOOM_MIN, ZOOM_NOTICE_MS, isDefaultZoom, zoomPercent } from "./lib/zoom.ts";
 
 /// The value label's width, sized for the widest value ("500%") so the
@@ -18,29 +13,10 @@ const VALUE_WIDTH = 48;
 
 /// A magnifier on both platforms. SF Symbols has one with the direction in it;
 /// Adwaita's zoom-in and zoom-out are a boxed plus and minus, which read as
-/// "add" in an address field, so GTK gets the plain magnifier.
+/// "add" beside a tab, so GTK gets the plain magnifier.
 function zoomIcon(factor: number): string {
   if (Platform.backend !== "appkit") return "system-search-symbolic";
   return factor < 1 ? "zoom-out-symbolic" : "zoom-in-symbolic";
-}
-
-export interface ZoomFieldProps {
-  trailingIconName: string;
-  trailingIconTooltip: string;
-  trailingIconLabel: string;
-  onTrailingIconClicked: () => void;
-}
-
-/// Props for the address field. The icon name is always passed, empty while
-/// hidden: GTK only gives a search field an icon slot when it mounts with one.
-export function zoomFieldProps(factor: number, shown: boolean, onClick: () => void): ZoomFieldProps {
-  const visible = shown || !isDefaultZoom(factor);
-  return {
-    trailingIconName: visible ? zoomIcon(factor) : "",
-    trailingIconTooltip: `Zoom: ${zoomPercent(factor)}`,
-    trailingIconLabel: "Page zoom",
-    onTrailingIconClicked: onClick,
-  };
 }
 
 /// Open state for the popover. A click opens it until it is dismissed; a
@@ -132,48 +108,31 @@ function ZoomPanel({ factor, prefix, onStep, onReset }: ZoomPanelProps): React.R
   );
 }
 
-export interface ZoomPopoverProps extends ZoomPanelProps {
-  anchor: React.RefObject<NdNodeRef<"searchinput"> | null>;
-  open: boolean;
-  onClosed: () => void;
-}
-
-export function ZoomPopover({ anchor, open, onClosed, ...panel }: ZoomPopoverProps): React.ReactNode {
-  return createPortal(
-    <popover
-      testID={`${panel.prefix}zoom-popover`}
-      anchorRef={anchor}
-      anchorSlot="trailingIcon"
-      open={open}
-      position="bottom"
-      onClosed={onClosed}
-    >
-      <ZoomPanel {...panel} />
-    </popover>,
-  );
-}
-
 export interface ZoomFootControlProps extends ZoomPanelProps {
   open: boolean;
+  /// Which side of the glyph the popover opens on: up from the sidebar's
+  /// foot, down from the compact row.
+  position: "top" | "bottom";
   onToggle: () => void;
   onClosed: () => void;
 }
 
 /// Nothing while the page is at 100% and the popover is closed.
-export function ZoomFootControl({ open, onToggle, onClosed, ...panel }: ZoomFootControlProps): React.ReactNode {
+export function ZoomFootControl({ open, position, onToggle, onClosed, ...panel }: ZoomFootControlProps): React.ReactNode {
   if (!open && isDefaultZoom(panel.factor)) return null;
   return (
     // Boxed: a popover anchors on its tree parent.
-    <box testID={`${panel.prefix}zoom-anchor`} orientation="horizontal">
+    <box testID={`${panel.prefix}zoom-anchor`} orientation="horizontal" style={{ valign: "center" }}>
       <button
         testID={`${panel.prefix}zoom-indicator`}
         iconName={zoomIcon(panel.factor)}
         tooltip={`Zoom: ${zoomPercent(panel.factor)}`}
         cssClasses={["flat"]}
+        size={position === "bottom" ? "small" : undefined}
         style={{ valign: "center" }}
         onClick={onToggle}
       />
-      <popover testID={`${panel.prefix}zoom-popover`} open={open} position="top" onClosed={onClosed}>
+      <popover testID={`${panel.prefix}zoom-popover`} open={open} position={position} onClosed={onClosed}>
         <ZoomPanel {...panel} />
       </popover>
     </box>
