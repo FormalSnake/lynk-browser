@@ -32,4 +32,9 @@ export default defineConfig({
   // Packaging (`nd package [mac|linux]`). Defaults: entry "src/main.tsx",
   // compile "auto" (runs the `compile` script when declared), outDir "dist",
   // no updates (opt in with package.updates).
+  package: {
+    // 1Password on macOS trusts a browser by its code signature; an ad-hoc
+    // signature changes with every build and cannot be added as a browser.
+    mac: { signIdentity: "Developer ID Application: CanaryCoders SL (8E7JB82GJK)" },
+  },
 });
