@@ -70,6 +70,18 @@ writeFileSync(
   for (const [url, title, ts] of visits) db.run("INSERT INTO visits (url, title, ts) VALUES (?, ?, ?)", [url, title, ts]);
   db.close();
 }
+// Icons for some of those sites and none for the rest, so the rows without
+// one show whether the slot is kept. GitHub's is the white mark it gives in
+// dark mode, which a light row must not draw.
+{
+  const HN = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4n8ZAEiJN9aiGUQ1DSgMAyh1lEEKSRAcAAAAASUVORK5CYII=";
+  const GITHUB_DARK = Buffer.from(`<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="14" fill="white"/></svg>`).toString("base64");
+  for (const look of ["light", "dark"]) mkdirSync(join(STORE, "favicons", look), { recursive: true });
+  for (const look of ["light", "dark"]) writeFileSync(join(STORE, "favicons", look, encodeURIComponent("https://news.ycombinator.com")), `data:image/png;base64,${HN}`);
+  writeFileSync(join(STORE, "favicons", "dark", encodeURIComponent("https://github.com")), `data:image/svg+xml;base64,${GITHUB_DARK}`);
+  // An icon neither toolkit can decode: the row keeps its placeholder.
+  for (const look of ["light", "dark"]) writeFileSync(join(STORE, "favicons", look, encodeURIComponent("https://duckduckgo.com")), "data:image/x-icon;base64,AAABAAEAEBA=");
+}
 writeFileSync(SEED, JSON.stringify({ items }));
 writeFileSync(
   join(STORE, "settings.json"),

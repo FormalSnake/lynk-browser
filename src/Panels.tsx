@@ -31,6 +31,12 @@ function rowAddress(url: string): string {
   return a.length > 58 ? `${a.slice(0, 36)}…${a.slice(-21)}` : a;
 }
 
+/// What a row without a usable favicon shows, so its title stays in line with
+/// the rows that have one. Rows take it alongside the favicon: the image wins
+/// when the toolkit can draw it, and an icon it cannot decode (an SVG on a GTK
+/// without the loader) leaves this in its place instead of an empty gap.
+const PLACEHOLDER_ICON = "web-browser-symbolic";
+
 /// The favicon when it is image bytes; a cached entry can still be an address.
 function icon(url: string): string | undefined {
   const f = faviconFor(url);
@@ -245,7 +251,7 @@ export function HistoryPanel({
                 title={rowTitle(v.title, v.url)}
                 subtitle={rowAddress(v.url)}
                 iconData={icon(v.url)}
-                iconName={icon(v.url) ? undefined : "web-browser-symbolic"}
+                iconName={PLACEHOLDER_ICON}
                 activatable
                 onActivate={() => onOpen(v.url)}
               >
@@ -339,7 +345,7 @@ export function BookmarksPanel({
               title={rowTitle(b.title, b.url)}
               subtitle={rowAddress(b.url)}
               iconData={icon(b.url)}
-              iconName={icon(b.url) ? undefined : "web-browser-symbolic"}
+              iconName={PLACEHOLDER_ICON}
               activatable
               onActivate={() => onOpen(b.url)}
             >
