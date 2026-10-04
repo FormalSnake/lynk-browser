@@ -795,6 +795,14 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
       .catch((e: unknown) => console.error(`ND_APP FLOAT failed ${String(e)}`));
   }
 
+  /// A floating window (a video, or a page's own picture in picture) is the
+  /// engine's; back to tab from it brings its tab forward.
+  function onPictureInPicture(tabId: string, data: unknown): void {
+    const { state, kind } = data as { state: string; kind: string };
+    if (TEST_HOOKS) console.error(`ND_APP PIP ${tabId} ${kind} ${state}`);
+    if (state === "returnToTab") selectTab(tabId);
+  }
+
   /// The sidebar pane is the only thing the two layouts disagree about, and it
   /// is a SIBLING of the content pane rather than its ancestor: dropping it
   /// leaves every window's page slot at the same place in the tree, so the
@@ -1776,6 +1784,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                     onFaviconChanged={(e) => onFavicon(t.url, e.data as { dataUrl?: string; iconUrl?: string })}
                     onSecurityChanged={(e) => patch(t.id, { security: securityOf(t.url, e.data) })}
                     onZoomChanged={(e) => onZoomChanged(t.id, e.data)}
+                    onPictureInPicture={(e) => onPictureInPicture(t.id, e.data)}
                     onScriptMessage={(e) => {
                       if ((e.data as { name?: string }).name !== READER_CHANNEL) return;
                       if (TEST_HOOKS) console.error(`ND_APP READER ${t.id} off`);
