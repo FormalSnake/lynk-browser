@@ -83,6 +83,7 @@ import { nativePage } from "./lib/pages.ts";
 import { extensionRows, pinnedRows, probeUrl, togglePinned, type ExtensionRow } from "./lib/extensions.ts";
 import { faviconAppearance, fetchFavicon, rememberFavicon, setFaviconAppearance } from "./lib/favicons.ts";
 import { FLOAT_SCRIPT, floatState } from "./lib/float.ts";
+import { fixWebStore } from "./lib/webstore.ts";
 import { clearVisits, recentVisits, recordTitle, recordVisit, type Visit } from "./lib/history.ts";
 import {
   forgetOrigin,
@@ -1760,6 +1761,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                     ref={(node) => {
                       views.current.set(t.id, node as NdNodeRef<"webview"> | null);
                       if (!node) return;
+                      fixWebStore(node as NdNodeRef<"webview">);
                       // The view exists now, so its menu can be pushed; the
                       // render-time sync could only skip it.
                       syncContextMenus(t.id);

@@ -23,6 +23,7 @@ import { permissionSentence, splitTypes, type PermissionPrompt } from "./lib/per
 import { settings } from "./lib/settings.ts";
 import { parseTabPayload, tabPayload } from "./lib/tabdrag.ts";
 import { displayUrl, hostOf, toUrl, fieldAddress } from "./lib/url.ts";
+import { fixWebStore } from "./lib/webstore.ts";
 
 const WINDOW_WIDTH = 1100;
 const WINDOW_HEIGHT = 720;
@@ -512,6 +513,7 @@ export function PrivateWindow({
                       <webview
                         ref={(node) => {
                           views.current.set(t.id, node as NdNodeRef<"webview"> | null);
+                          if (node) fixWebStore(node as NdNodeRef<"webview">);
                         }}
                         url={t.url}
                         profile={PRIVATE_PROFILE}
