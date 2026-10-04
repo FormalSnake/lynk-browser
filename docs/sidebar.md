@@ -2,8 +2,8 @@
 
 The browser has two layouts, switched with Shift+Cmd+S (View menu, Settings).
 **Sidebar** is the one this file specifies: a quiet column down the left and
-the page in a card beside it. **Compact** stays a standard browser row (tabs
-and one address field) and is not restyled; the rule for it here is only that
+the page in a card beside it. **Compact** is one toolbar row of tabs whose
+active tab is the address (docs/omnibox.md); the rule for it here is only that
 switching is clean both ways: no toolbar left behind in the sidebar layout, no
 controls row or card left in compact, the traffic lights where each layout puts
 them.

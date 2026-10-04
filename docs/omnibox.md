@@ -74,10 +74,15 @@ The commands cover every action:
 
 ## Layouts
 
-- Sidebar (Arc): the address is shown, not edited. A click does what ⌘L
+Both layouts act the same: the bar is the only address field.
+
+- Sidebar (Arc): the row on show is the address. A click on it does what ⌘L
   does.
-- Compact (a standard browser row): the row keeps an editable address field.
-  It never has focus while the bar is open, so only one field takes typing.
+- Compact: the tab on show is the address, wider than the others, with the
+  padlock at its start and the zoom glyph (while not at 100%) at its end. A
+  click on it does what ⌘L does; the padlock and zoom popovers open under it.
+- Hovering any tab, row or pinned tile in either layout shows its title over
+  its whole address. Link hover in the page keeps Chromium's status bubble.
 
 ## Not matched yet
 
