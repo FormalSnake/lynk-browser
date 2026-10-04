@@ -81,7 +81,7 @@ import {
 } from "./lib/downloads.ts";
 import { nativePage } from "./lib/pages.ts";
 import { extensionRows, pinnedRows, probeUrl, togglePinned, type ExtensionRow } from "./lib/extensions.ts";
-import { fetchFavicon, rememberFavicon } from "./lib/favicons.ts";
+import { faviconAppearance, fetchFavicon, rememberFavicon, setFaviconAppearance } from "./lib/favicons.ts";
 import { FLOAT_SCRIPT, floatState } from "./lib/float.ts";
 import { clearVisits, recentVisits, recordTitle, recordVisit, type Visit } from "./lib/history.ts";
 import {
@@ -735,10 +735,12 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
       .getAppearance()
       .then((a) => {
         appearance.current = a.appearance;
+        if (setFaviconAppearance(a.appearance)) setIconEpoch((n) => n + 1);
       })
       .catch(() => {});
     return system.onAppearanceChange((a) => {
       appearance.current = a.appearance;
+      if (setFaviconAppearance(a.appearance)) setIconEpoch((n) => n + 1);
       for (const [id, node] of views.current) {
         if (node && runtimeRef.current[id]?.reading) {
           void executeJavaScript(node, readerSchemeScript(a.appearance)).catch(() => {});
@@ -1249,14 +1251,17 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   // ------------------------------------------------------------ favicon ---
 
   function onFavicon(tabUrl: string, data: { dataUrl?: string; iconUrl?: string }): void {
+    // The page named this icon for the appearance it is showing now; the
+    // fetch below can land after a switch.
+    const shownIn = faviconAppearance();
     if (data.dataUrl) {
-      if (rememberFavicon(tabUrl, data.dataUrl)) setIconEpoch((n) => n + 1);
+      if (rememberFavicon(tabUrl, data.dataUrl, shownIn)) setIconEpoch((n) => n + 1);
       return;
     }
     // macOS reports the icon's ADDRESS rather than its bytes, so it has to be
     // fetched before it can go in a row.
     if (data.iconUrl) {
-      void fetchFavicon(tabUrl, data.iconUrl).then((changed) => {
+      void fetchFavicon(tabUrl, data.iconUrl, shownIn).then((changed) => {
         if (changed) setIconEpoch((n) => n + 1);
       });
     }
