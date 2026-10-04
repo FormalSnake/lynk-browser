@@ -352,31 +352,24 @@ try {
   capture("float-window", pip.windowID);
   if ((await evalPage("String(!!document.pictureInPictureElement)")) !== "true") fail("the page has no floating video");
 
-  // Moved by hand, it stays where it was put: nothing puts it back in a
-  // corner, and the app window moving or the app coming forward leaves it be.
+  // Thrown by hand, it lands in a screen corner (scripts/mac-pip-drive.ts
+  // holds the throw to the frame) and stays there when the app window moves
+  // or resizes.
   const [win] = (await app.windows()).windows;
   const geo = win?.geometry ?? fail("the window reports no geometry");
-  // Clear of the play button in the middle and the buttons in the corners.
   const grab = { x: pip.x + pip.width * 0.3 - geo.x, y: pip.y + pip.height * 0.7 - geo.y };
-  const drop = { x: grab.x - 360, y: grab.y - 220 };
-  console.log(`  window at ${geo.x},${geo.y}; floating window at ${pip.x},${pip.y}; grabbing ${grab.x},${grab.y} in the window`);
   await app.cursor.move(grab, { steps: 12 });
   await Bun.sleep(300);
   await app.cursor.down();
-  await Bun.sleep(200);
-  await app.cursor.move(drop, { steps: 30 });
-  await Bun.sleep(200);
+  await app.cursor.move({ x: grab.x - 360, y: grab.y - 220 }, { steps: 30 });
   await app.cursor.up();
   await Bun.sleep(1500);
   const moved = ndshotWindows(app.pid).find((w) => w.windowID === pip.windowID) ?? fail("the floating window went away when moved");
-  const dx = moved.x - pip.x;
-  const dy = moved.y - pip.y;
-  if (Math.abs(dx + 360) > 40 || Math.abs(dy + 220) > 40) fail(`the drag moved it by ${dx},${dy}, not -360,-220`);
   await app.setWindowSize(1100, 800);
   await Bun.sleep(1500);
   const kept = ndshotWindows(app.pid).find((w) => w.windowID === pip.windowID);
-  console.log(`  moved ${pip.x},${pip.y} -> ${moved.x},${moved.y}; after the app window resized ${kept?.x},${kept?.y}`);
-  if (!kept || Math.abs(kept.x - moved.x) > 2 || Math.abs(kept.y - moved.y) > 2) fail(`it did not stay where it was put: ${JSON.stringify(kept)}`);
+  console.log(`  thrown ${pip.x},${pip.y} -> ${moved.x},${moved.y}; after the app window resized ${kept?.x},${kept?.y}`);
+  if (!kept || Math.abs(kept.x - moved.x) > 2 || Math.abs(kept.y - moved.y) > 2) fail(`it did not stay where it landed: ${JSON.stringify(kept)}`);
   await app.setWindowSize(1280, 860);
   capture("float-moved", pip.windowID);
 

@@ -322,8 +322,11 @@ check("float.window", !!pip, pip ? `${pip.w}x${pip.h} "${pip.name}" class ${pip.
 // Chromium put up that a window list offers, and it has to read as ours.
 const toplevelClass = sh("xprop", "-id", toplevel()?.id ?? "0", "WM_CLASS");
 for (const w of added.filter((a) => a.name !== "")) {
+  // The app's class, with an instance of its own a window rule can tell
+  // apart from the app's main window.
   const cls = sh("xprop", "-id", w.id, "WM_CLASS");
-  check(`float.named ${w.id} "${w.name}"`, cls === toplevelClass, `${cls} vs app ${toplevelClass}`);
+  const classOf = (v: string) => v.split(",").at(-1)?.trim() ?? "";
+  check(`float.named ${w.id} "${w.name}"`, cls.includes('"picture-in-picture"') && classOf(cls) === classOf(toplevelClass), `${cls} vs app ${toplevelClass}`);
 }
 if (rig === "hypr") {
   // Hyprland reads no keep-above hint from XWayland; the host pins the window.
