@@ -131,6 +131,9 @@ export interface WindowController {
   revealStrip(show: boolean): void;
   showPopup(id: string, url: string): void;
   toast(title: string): void;
+  /// Asks, in this window's own dialog, whether to add a Web Store
+  /// extension. `lines` are what it can do, in Chrome's words.
+  confirmInstall(name: string, lines: string[]): Promise<boolean>;
 }
 
 /// A window a tab can be sent to. "private" is the private window.
@@ -336,6 +339,29 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     },
     toast: (title) => {
       if (toast.current) void showToast(toast.current, { title });
+    },
+    confirmInstall: (name, lines) => {
+      const node = windowRef.current;
+      if (!node) return Promise.resolve(false);
+      return showAlert(node, {
+        title: name ? `Add \u201c${name}\u201d?` : "Add this extension?",
+        body: lines.length > 0 ? `It can:\n${lines.map((l) => `\u2022 ${l}`).join("\n")}` : undefined,
+        // The first button is the leftmost on GTK and the rightmost on
+        // AppKit, and each platform puts the action on the right.
+        buttons: gtk
+          ? [
+              { id: "cancel", label: "Cancel" },
+              { id: "add", label: "Add extension", style: "suggested" },
+            ]
+          : [
+              { id: "add", label: "Add extension", style: "suggested" },
+              { id: "cancel", label: "Cancel" },
+            ],
+        defaultId: "add",
+        closeId: "cancel",
+      })
+        .then((answer) => answer.buttonId === "add")
+        .catch(() => false);
     },
   });
 

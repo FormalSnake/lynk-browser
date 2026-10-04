@@ -1,10 +1,12 @@
 import {
+  acceptExtensionInstall,
   createPortal,
   executeJavaScript,
   installExtension,
   listExtensionActions,
   listExtensions,
   moveNode,
+  newWindowRequest,
   onExtensionActions,
   onExtensionsChanged,
   onExtensionsList,
@@ -83,7 +85,6 @@ import { nativePage } from "./lib/pages.ts";
 import { extensionRows, pinnedRows, probeUrl, togglePinned, type ExtensionRow } from "./lib/extensions.ts";
 import { faviconAppearance, fetchFavicon, rememberFavicon, setFaviconAppearance } from "./lib/favicons.ts";
 import { FLOAT_SCRIPT, floatState } from "./lib/float.ts";
-import { fixWebStore } from "./lib/webstore.ts";
 import { clearVisits, recentVisits, recordTitle, recordVisit, type Visit } from "./lib/history.ts";
 import {
   forgetOrigin,
@@ -98,12 +99,14 @@ import {
   WINDOW_WIDTH,
   blankTab,
   moveTabIn,
+  placeOpenedTab,
   session,
   windowOfTab,
   type SessionState,
   type SessionTab,
 } from "./lib/session.ts";
 import { LAYOUTS, PIN_STYLES, SEARCH_ENGINES, engineOf, settings, type Layout } from "./lib/settings.ts";
+import { STORE_CHANNEL, STORE_ORIGINS, STORE_SCRIPT, fixWebStore, parseStoreRequest, permissionLines, storeAnswerScript } from "./lib/webstore.ts";
 import {
   READER_BRIDGE_SCRIPT,
   READER_CHANNEL,
@@ -238,6 +241,9 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   const [engine, setEngine] = useState<"unknown" | "chromium" | "system">("unknown");
   /// The engine's id for a download, per run, to the app's own, which lasts.
   const engineDownloads = useRef(new Map<string, string>());
+  /// A tab a page opened, to the tab that opened it: where the next one it
+  /// opens behind it goes.
+  const openers = useRef(new Map<string, string>());
   /// A retry restarts the download from its URL; the request that comes back
   /// for that URL takes over the row it came from.
   const retrying = useRef(new Map<string, string>());
@@ -340,15 +346,28 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     return created;
   }
 
-  /// A tab a PAGE asked for: `window.open`, target=_blank, and now an
-  /// extension's `chrome.tabs.create`. An empty or about:blank URL is not a
-  /// tab worth opening, it is a dead one; 0.4.10 carries the real URL, so a
-  /// blank one means the route had nothing to say. It opens behind the page
-  /// that asked, in that page's window, and loads when it is first shown.
-  function openTabFromPage(fromTab: string, url: string): void {
-    const target = url.trim();
+  /// A tab a PAGE asked for: `window.open`, target=_blank, a ctrl- or
+  /// middle-click, and an extension's `chrome.tabs.create`. An empty or
+  /// about:blank URL is not a tab worth opening, it is a dead one; 0.4.10
+  /// carries the real URL, so a blank one means the route had nothing to say.
+  /// It lands where Chrome puts it (`placeOpenedTab`), in the opener's window;
+  /// a background one loads when it is first shown.
+  function openTabFromPage(fromTab: string, e: { text: string }): void {
+    const request = newWindowRequest(e);
+    const target = request.url.trim();
     if (!target || target === "about:blank") return;
-    openTab(windowOfTab(session.get(), fromTab)?.id ?? focusedWindowId, target, true);
+    if (TEST_HOOKS) console.error(`ND_APP NEW_WINDOW from=${fromTab} how=${request.disposition ?? "-"} gesture=${request.userGesture ?? "-"} extension=${request.fromExtension ?? false} ${target}`);
+    if (request.disposition === "window") {
+      newWindow(target);
+      return;
+    }
+    const win = windowOfTab(session.get(), fromTab) ?? session.get().windows.find((w) => w.id === focusedWindowId);
+    if (!win) return;
+    // A tab Chrome made on its own has no opener: Chrome adds it at the end.
+    const opener = request.fromExtension ? "" : fromTab;
+    const place = placeOpenedTab(win.tabs, opener, openers.current, request.disposition);
+    const id = openTab(win.id, target, !place.foreground, place.index);
+    if (id && opener) openers.current.set(id, opener);
   }
 
   /// Where a native page's routes land: its panel in the focused window, the
@@ -814,11 +833,11 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
 
   // ------------------------------------------------------------- windows ---
 
-  function newWindow(): void {
+  function newWindow(url = ""): void {
     let created = "";
     session.update((s) => {
       created = `w${s.nextWindowId}`;
-      const tab = blankTab(`t${s.nextTabId}`);
+      const tab = { ...blankTab(`t${s.nextTabId}`), url };
       return {
         ...s,
         nextWindowId: s.nextWindowId + 1,
@@ -1061,9 +1080,51 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
         }
         knownExtensions.current = list.map((e) => e.id);
         setRegistry(list);
+        // Chrome's "added" bubble hangs off a toolbar the app never shows.
+        for (const [id, name] of storeInstalls.current) {
+          const added = list.find((e) => e.id === id);
+          if (!added) continue;
+          storeInstalls.current.delete(id);
+          if (TEST_HOOKS) console.error(`ND_APP STORE_ADDED id=${id}`);
+          toast(`Added \u201c${added.name || name}\u201d`);
+        }
       })
       .catch(() => {});
     void listExtensionActions(node).then(setExtActions).catch(() => {});
+  }
+
+  /// Store installs the user said yes to, by id, until they show up in the
+  /// registry.
+  const storeInstalls = useRef(new Map<string, string>());
+  /// Views the store hook is installed on; one install serves every document
+  /// the view loads.
+  const storeHooked = useRef(new Set<number>());
+  function hookStore(node: NdNodeRef<"webview">): void {
+    if (storeHooked.current.has(node.id)) return;
+    storeHooked.current.add(node.id);
+    sendCommand(node, "addUserScript", { id: "nb-store", source: STORE_SCRIPT, injectionTime: "start", allowList: STORE_ORIGINS });
+    sendCommand(node, "registerScriptMessage", { name: STORE_CHANNEL });
+  }
+
+  /// "Add to Chrome" on a store page: asked in the window's own dialog. A no
+  /// never reaches Chromium; a yes goes on to Chromium with its own prompt
+  /// answered by the engine.
+  async function onStoreRequest(tabId: string, body: unknown): Promise<void> {
+    const node = view(tabId);
+    const request = parseStoreRequest(body);
+    if (!node || !request) return;
+    const fromStore = (committed.current.get(tabId) ?? "").startsWith("https://chromewebstore.google.com/");
+    const win = windowOfTab(session.get(), tabId);
+    if (TEST_HOOKS) console.error(`ND_APP STORE_ASK id=${request.id} name=${JSON.stringify(request.name)} store=${fromStore}`);
+    const yes = fromStore && win
+      ? ((await controllers.current.get(win.id)?.confirmInstall(request.name, permissionLines(request.manifest))) ?? false)
+      : false;
+    if (TEST_HOOKS) console.error(`ND_APP STORE_ANSWER id=${request.id} ${yes ? "add" : "cancel"}`);
+    if (yes) {
+      storeInstalls.current.set(request.id, request.name);
+      acceptExtensionInstall(node);
+    }
+    void executeJavaScript(node, storeAnswerScript(request.id, yes)).catch(() => {});
   }
 
   function pinExtension(id: string): void {
@@ -1696,7 +1757,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     clickAction,
     installTestExtension,
     uninstallExtension,
-    newWindow,
+    newWindow: () => newWindow(),
     openPrivate: () => setPrivateOpen(true),
     openSettings: () => setSettingsOpen(true),
     moveTab,
@@ -1762,6 +1823,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                       views.current.set(t.id, node as NdNodeRef<"webview"> | null);
                       if (!node) return;
                       fixWebStore(node as NdNodeRef<"webview">);
+                      if (chromium) hookStore(node as NdNodeRef<"webview">);
                       // The view exists now, so its menu can be pushed; the
                       // render-time sync could only skip it.
                       syncContextMenus(t.id);
@@ -1777,7 +1839,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                     onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
                     onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
                     onLoadFailed={(e) => patch(t.id, { error: e.data as { url: string; error: string } })}
-                    onNewWindow={(e) => openTabFromPage(t.id, e.text)}
+                    onNewWindow={(e) => openTabFromPage(t.id, e)}
                     onBrowserCommand={(e) => onBrowserCommand(t.id, e.text)}
                     onJavaScriptResult={onJavaScriptResult}
                     // triggerExtensionAction answers on the tab it clicked for.
@@ -1788,7 +1850,12 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
                     onZoomChanged={(e) => onZoomChanged(t.id, e.data)}
                     onPictureInPicture={(e) => onPictureInPicture(t.id, e.data)}
                     onScriptMessage={(e) => {
-                      if ((e.data as { name?: string }).name !== READER_CHANNEL) return;
+                      const message = e.data as { name?: string; body?: unknown };
+                      if (message.name === STORE_CHANNEL) {
+                        void onStoreRequest(t.id, message.body);
+                        return;
+                      }
+                      if (message.name !== READER_CHANNEL) return;
                       if (TEST_HOOKS) console.error(`ND_APP READER ${t.id} off`);
                       patch(t.id, { reading: false });
                     }}

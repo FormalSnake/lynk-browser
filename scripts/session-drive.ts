@@ -12,8 +12,9 @@
 // Legs:
 //   1  a restored session: only the tab on show has a view and was fetched;
 //      the others read their stored titles, and one loads when it is shown
-//   2  a link opened behind the page (a ⌘/ctrl-click and a target=_blank
-//      click) builds no view and fetches nothing until it is shown
+//   2  a ⌘/ctrl-clicked link opens behind the page, right after it, and
+//      builds no view and fetches nothing until it is shown; a target=_blank
+//      click opens in front, right after the page, as in Chrome
 //   3  seven live pages, five put to sleep from the Tabs menu: their views go,
 //      and the renderer count and resident memory drop
 //   4  a sleeping tab shown again reloads its own address and scroll position
@@ -131,6 +132,25 @@ async function waitFor<T>(what: string, read: () => Promise<T> | T, ok: (v: T) =
     await Bun.sleep(150);
   }
   return fail(`timed out waiting for ${what} (last: ${JSON.stringify(last)})`);
+}
+
+/// A real ⌘/ctrl-click on the page's #link: Blink drops the modifiers of a
+/// click a script dispatches, and Chrome then opens the link in front. The
+/// link is stretched over the whole page for the click, so the view's centre
+/// lands on it.
+async function modifierClickLink(tab: string): Promise<void> {
+  await evalIn(tab, `(() => { document.getElementById("link").style.cssText = "position:fixed;inset:0;z-index:9;opacity:0"; return "ok"; })()`);
+  const box = (await app.getByTestId(`page-${tab}`).boundingBox()) ?? fail(`page-${tab} has no geometry`);
+  const at = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  if (darwin) {
+    await app.cursor.click(at, { modifiers: ["command"] });
+  } else {
+    const id = sh("xdotool", "search", "--onlyvisible", "--pid", String(app.pid), "").trim().split("\n").at(-1)!;
+    const geo = sh("xdotool", "getwindowgeometry", id);
+    const [ox, oy] = (/Position: (-?\d+),(-?\d+)/.exec(geo) ?? []).slice(1).map(Number);
+    sh("xdotool", "mousemove", String(ox! + Math.round(at.x)), String(oy! + Math.round(at.y)), "keydown", "ctrl", "click", "1", "keyup", "ctrl");
+  }
+  await evalIn(tab, `(() => { document.getElementById("link").style.cssText = ""; return "ok"; })()`);
 }
 
 /// Tab ids in the sidebar, in order, with what each row reads.
@@ -270,29 +290,31 @@ try {
   if (loads["c"] || loads["pin"]) fail("showing page B fetched another restored tab");
   console.log(`1. restore: 4 rows by stored title, one view (t2); showing t3 built its view and fetched /b once; /c and /pin untouched`);
 
-  // 2. Opened behind the page.
-  const before = (await rows()).length;
-  await evalIn(
-    "t3",
-    `(() => { const a = document.getElementById("link"); a.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ${
-      darwin ? "metaKey" : "ctrlKey"
-    }: true })); return "ok"; })()`,
-  );
-  await waitFor("a row for the modifier-clicked link", rows, (r) => r.length === before + 1);
+  // 2. Opened from the page, where Chrome puts each: a modifier-click behind
+  // the page, right after it; a target=_blank click in front, right after it.
+  const before = (await rows()).map((r) => r.id);
+  await modifierClickLink("t3");
+  const afterBg = await waitFor("a row for the modifier-clicked link", rows, (r) => r.length === before.length + 1);
+  const bgTab = afterBg.find((r) => !before.includes(r.id))!.id;
+  await Bun.sleep(1500);
+  if ((await activeTab()) !== "t3") fail(`a modifier-click moved the window to ${await activeTab()}`);
+  const opener = afterBg.findIndex((r) => r.id === "t3");
+  if (afterBg[opener + 1]?.id !== bgTab) fail(`the modifier-clicked tab sits at ${afterBg.findIndex((r) => r.id === bgTab)}, want right after t3 (${opener + 1})`);
+  if ((await views()).includes(bgTab)) fail(`a tab opened behind the page built a view`);
+  if (loads["bg"]) fail(`a tab opened behind the page was fetched (${JSON.stringify(loads)})`);
+  if (!afterBg[opener + 1]!.title.endsWith("/bg")) fail(`the waiting row reads ${JSON.stringify(afterBg[opener + 1]!.title)}, want its address`);
   await evalIn("t3", `(() => { document.getElementById("blank").click(); return "ok"; })()`);
-  const behind = await waitFor("a row for the target=_blank link", rows, (r) => r.length === before + 2);
-  await Bun.sleep(2000);
-  const [bgTab, blankTab] = [behind[before]!.id, behind[before + 1]!.id];
-  if ((await activeTab()) !== "t3") fail(`opening links behind the page moved the window to ${await activeTab()}`);
-  const early = await views();
-  if (early.includes(bgTab) || early.includes(blankTab)) fail(`a tab opened behind the page built a view: ${JSON.stringify(early)}`);
-  if (loads["bg"] || loads["blank"]) fail(`a tab opened behind the page was fetched (${JSON.stringify(loads)})`);
-  if (!behind[before]!.title.endsWith("/bg")) fail(`the waiting row reads ${JSON.stringify(behind[before]!.title)}, want its address`);
+  const afterBlank = await waitFor("a row for the target=_blank link", rows, (r) => r.length === before.length + 2);
+  const blankTab = afterBlank.find((r) => !before.includes(r.id) && r.id !== bgTab)!.id;
+  await waitFor("the target=_blank tab on show", activeTab, (a) => a === blankTab);
+  const order = afterBlank.map((r) => r.id);
+  const at = order.indexOf("t3");
+  if (order[at + 1] !== blankTab || order[at + 2] !== bgTab) fail(`after t3: ${JSON.stringify(order.slice(at + 1, at + 3))}, want [${blankTab}, ${bgTab}]`);
+  await waitFor("/blank fetched once it is shown", () => loads["blank"] ?? 0, (n) => n === 1);
   await step("show the modifier-clicked tab", () => app.click(`tab-${bgTab}`));
   await waitFor("/bg fetched once it is shown", () => loads["bg"] ?? 0, (n) => n === 1);
   await waitFor("its row takes the page's title", rows, (r) => r.find((x) => x.id === bgTab)?.title === "Behind page");
-  if (loads["blank"]) fail("showing one waiting tab fetched the other");
-  console.log(`2. behind the page: ${bgTab} (${darwin ? "cmd" : "ctrl"}-click) and ${blankTab} (target=_blank) had no view and no fetch; ${bgTab} loaded once shown`);
+  console.log(`2. from the page: ${bgTab} (${darwin ? "cmd" : "ctrl"}-click) behind t3 with no view or fetch until shown; ${blankTab} (target=_blank) in front, right after t3`);
 
   // 3. Put to Sleep, and the memory it gives back.
   for (const m of ["m1", "m2", "m3", "m4", "m5"]) {
@@ -319,7 +341,7 @@ try {
   const left = await views();
   console.log(`   after: ${left.length} views ${JSON.stringify(left)}, ${JSON.stringify(afterSleep)}`);
   if (slept.some((id) => left.includes(id))) fail(`a slept tab kept its view: slept ${JSON.stringify(slept)}, views ${JSON.stringify(left)}`);
-  if ((await rows()).length !== before + 7) fail("putting tabs to sleep changed the number of rows");
+  if ((await rows()).length !== before.length + 7) fail("putting tabs to sleep changed the number of rows");
   const fewer = beforeSleep.renderers - afterSleep.renderers;
   const freed = beforeSleep.rendererMb - afterSleep.rendererMb;
   if (fewer < 5) fail(`sleeping 5 tabs ended ${fewer} renderers (${beforeSleep.renderers} -> ${afterSleep.renderers})`);
@@ -367,12 +389,12 @@ try {
   console.log(`5. captured sleeping rows in both layouts at 1280 and 720; the command bar offers ${JSON.stringify(offered)}`);
 
   // A window's own menu, over a second window holding two tabs: the page it
-  // was given opens a link behind itself, which lands in its own window.
+  // was given opens a link, which lands in its own window.
   const moved = await activeTab();
   await step("move the tab on show to a new window", () => app.click("menu-move-new-window"));
   await app.waitForWindows(2, PATIENCE);
   const w2 = await waitFor("the second window", () => findAcross(app, "w2-tab-list"), (f) => f !== null);
-  await step("open a link behind the moved page", async () => {
+  await step("open a link from the moved page", async () => {
     const r = await app.evalInPage({ testId: `page-${moved}` }, `(() => { document.getElementById("blank").click(); return "ok"; })()`, {
       window: w2!.window,
       timeoutMs: 5000,
@@ -389,7 +411,11 @@ try {
   );
   let menuClick: Promise<unknown> = Promise.resolve();
   // Read before the menu opens: AppKit serves no tree while it tracks.
-  const titled = listRows((await findAcross(app, "w2-tab-list"))!.node).find((r) => r.testID.endsWith(`tab-${moved}`))?.title;
+  // The link's tab opened in front, so it names the window once it loads.
+  await Bun.sleep(1500);
+  const w2List = (await findAcross(app, "w2-tab-list"))!.node;
+  const shownId = listActive(w2List);
+  const titled = listRows(w2List).find((r) => r.testID.endsWith(`tab-${shownId}`))?.title;
   await step("open the second window's menu", async () => {
     const button = await waitFor("the second window's menu button", () => findAcross(app, "w2-window-menu"), (f) => f !== null);
     // AppKit answers the click only once the menu's tracking loop ends.

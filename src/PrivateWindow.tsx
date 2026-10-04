@@ -8,7 +8,7 @@
 // no command palette (its ranking reads history) and no downloads list; the
 // address field IS the address bar, which is also the only place in the app
 // that exercises `<searchinput>` on GTK.
-import { Platform, Spacing, executeJavaScript, sendCommand, useRef, useState, useStoreValue } from "@nativedesktop/react";
+import { Platform, Spacing, executeJavaScript, newWindowRequest, sendCommand, useRef, useState, useStoreValue } from "@nativedesktop/react";
 import type {
   NdNodeRef,
   SourceTreeAction,
@@ -20,6 +20,7 @@ import type { MoveTarget } from "./BrowserWindow.tsx";
 import { ADDRESS_MIN_WIDTH, CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
 import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
 import { permissionSentence, splitTypes, type PermissionPrompt } from "./lib/permissions.ts";
+import { placeOpenedTab } from "./lib/session.ts";
 import { settings } from "./lib/settings.ts";
 import { parseTabPayload, tabPayload } from "./lib/tabdrag.ts";
 import { tabHover } from "./lib/tabstate.ts";
@@ -125,13 +126,25 @@ export function PrivateWindow({
     setTabs((list) => list.map((t) => (t.id === id ? { ...t, ...part } : t)));
   }
 
-  function openTab(url = "", index?: number): void {
+  function openTab(url = "", index?: number, background = false): string {
     const id = `p${next.current++}`;
     setTabs((list) => {
       const at = index ?? list.length;
       return [...list.slice(0, at), { ...blankTab(id), url }, ...list.slice(at)];
     });
-    setActiveId(id);
+    if (!background) setActiveId(id);
+    return id;
+  }
+
+  /// A tab one of this window's pages asked for, placed the way Chrome
+  /// places it. "window" stays a tab: this window is the private one.
+  const openers = useRef(new Map<string, string>());
+  function openFromPage(fromTab: string, e: { text: string }): void {
+    const request = newWindowRequest(e);
+    const target = request.url.trim();
+    if (!target || target === "about:blank") return;
+    const place = placeOpenedTab(tabs, fromTab, openers.current, request.disposition);
+    openers.current.set(openTab(target, place.index, !place.foreground), fromTab);
   }
 
   bridge.current = { open: (url, index) => openTab(url, index), close: (tabId) => closeTab(tabId) };
@@ -525,10 +538,7 @@ export function PrivateWindow({
                         onLoadingChanged={(e) => patch(t.id, { loading: e.checked })}
                         onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
                         onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
-                        onNewWindow={(e) => {
-                      const target = e.text.trim();
-                      if (target && target !== "about:blank") openTab(target);
-                    }}
+                        onNewWindow={(e) => openFromPage(t.id, e)}
                     onPermissionRequest={(e) => onPermissionRequest(t.id, e.data)}
                         onBrowserCommand={(e) => {
                           // The page's own Chrome shortcuts, for the ones this

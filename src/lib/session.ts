@@ -133,6 +133,29 @@ export function windowOfTab(state: SessionState, tabId: string): SessionWindow |
   return state.windows.find((w) => w.tabs.some((t) => t.id === tabId)) ?? null;
 }
 
+/// How a page asked for a tab, as the engine reports it.
+export type OpenDisposition = "foregroundTab" | "backgroundTab" | "window" | "popup";
+
+/// Where Chrome puts a tab a page opened, and whether it is shown. A tab in
+/// front goes right after its opener. One behind it goes after the opener's
+/// other tabs that still sit next to it, so a run of ctrl-clicks reads left to
+/// right in click order. Neither lands in the pinned block. `openers` maps a
+/// tab to the tab that opened it.
+export function placeOpenedTab(
+  tabs: readonly { id: string; pinned?: boolean }[],
+  openerId: string,
+  openers: ReadonlyMap<string, string>,
+  disposition: OpenDisposition | undefined,
+): { index: number; foreground: boolean } {
+  const foreground = disposition !== "backgroundTab";
+  const from = tabs.findIndex((t) => t.id === openerId);
+  if (from < 0) return { index: tabs.length, foreground };
+  let index = from + 1;
+  if (!foreground) while (index < tabs.length && openers.get(tabs[index]!.id) === openerId) index++;
+  while (index < tabs.length && tabs[index]!.pinned) index++;
+  return { index, foreground };
+}
+
 /// Moves a tab to `index` in `toWindow`'s list, where it becomes the tab on
 /// show. Within one window this is a reorder. The source window keeps showing
 /// what it showed, or its neighbour when the moved tab was the one on show;

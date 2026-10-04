@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "ND Tabs Extension",
+  "version": "1.0",
+  "description": "Fixture for scripts/mac-ext-install-drive.ts and scripts/linux-ext-install-drive.ts: a page on 127.0.0.1 asks it for a tab, and it opens one with chrome.tabs.create, the way an extension opens its welcome page.",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "externally_connectable": {
+    "matches": ["http://127.0.0.1/*"]
+  }
+}

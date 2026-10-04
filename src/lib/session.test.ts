@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { DEFAULT_SESSION, freshStart, normalize, type SessionState } from "./session.ts";
+import { DEFAULT_SESSION, freshStart, normalize, placeOpenedTab, type SessionState } from "./session.ts";
 import { DEFAULT_SETTINGS, normalizeSettings, type SettingsState } from "./settings.ts";
 
 const tab = (id: string, url: string, pinned = false) => ({ id, url, title: id, pinned });
@@ -36,4 +36,23 @@ test("reopen-on-launch off becomes a fresh window", () => {
   expect(next.freshWindow).toBe(true);
   expect("restoreOnLaunch" in next).toBe(false);
   expect(normalizeSettings({ ...DEFAULT_SETTINGS }).freshWindow).toBe(false);
+});
+
+test("a page's tab lands where Chrome puts it", () => {
+  const tabs = [tab("p", "https://pin.test/", true), tab("a", "https://a.test/"), tab("b", "https://b.test/"), tab("c", "https://c.test/")];
+  const none = new Map<string, string>();
+  expect(placeOpenedTab(tabs, "a", none, "foregroundTab")).toEqual({ index: 2, foreground: true });
+  expect(placeOpenedTab(tabs, "a", none, "popup")).toEqual({ index: 2, foreground: true });
+  expect(placeOpenedTab(tabs, "a", none, undefined)).toEqual({ index: 2, foreground: true });
+  expect(placeOpenedTab(tabs, "a", none, "backgroundTab")).toEqual({ index: 2, foreground: false });
+  // Two earlier ctrl-clicks from a sit right after it: the third goes after them.
+  const run = [tab("a", "https://a.test/"), tab("x", "https://x.test/"), tab("y", "https://y.test/"), tab("c", "https://c.test/")];
+  const openers = new Map([["x", "a"], ["y", "a"]]);
+  expect(placeOpenedTab(run, "a", openers, "backgroundTab")).toEqual({ index: 3, foreground: false });
+  // A tab in front still goes right next to its opener.
+  expect(placeOpenedTab(run, "a", openers, "foregroundTab")).toEqual({ index: 1, foreground: true });
+  // From a pinned tab, the first place outside the pinned block.
+  expect(placeOpenedTab(tabs, "p", none, "foregroundTab")).toEqual({ index: 1, foreground: true });
+  // An opener that is gone: the end of the list.
+  expect(placeOpenedTab(tabs, "gone", none, "backgroundTab")).toEqual({ index: 4, foreground: false });
 });
