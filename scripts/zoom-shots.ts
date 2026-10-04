@@ -183,9 +183,40 @@ try {
     // Past NSPopover's fade-in, or the capture shows it half transparent.
     await Bun.sleep(600);
     capture();
-    // The click pinned it open; Escape puts it away before the find bar.
+    // Every way out has to take the popover window off the screen, not just
+    // flip the app's state: a panel left behind outlived even a relaunch of
+    // the page. Each check waits past ZOOM_NOTICE_MS so a popover that only
+    // went away on its timer still counts as left up.
+    const popoverUp = async () => (await census()).some((w) => w.alpha > 0 && w.layer === 0 && w.width < main.w && w.height < 200);
+    const pinOpen = async () => {
+      const g = await geometry(anchorId);
+      if (!g) fail(`${anchorId} is gone`);
+      await app.cursor.click({ x: layout === "compact" ? g!.x + g!.w - 12 : g!.x + g!.w / 2, y: g!.y + g!.h / 2 });
+      await poll(popoverUp, (up) => up, { timeoutMs: 8000 }).catch(() => fail("a click on the magnifier opened no popover"));
+    };
+    const expectGone = async (how: string) => {
+      await Bun.sleep(2000);
+      if (await popoverUp()) fail(`the zoom popover stayed on screen after ${how}`);
+      console.log(`  NB_ZOOM_DISMISS_OK ${tag} ${how}`);
+    };
     await app.cursor.press("Escape");
-    await Bun.sleep(500);
+    await expectGone("Escape");
+    await pinOpen();
+    await app.cursor.click({ x: view!.x + view!.w / 2, y: view!.y + view!.h - 40 });
+    await expectGone("a click on the page");
+    await pinOpen();
+    await app.getByTestId("zoom-reset").click();
+    await poll(async () => (await app.tree()).root, (root) => findNode(root, "zoom-value") == null, { timeoutMs: 5000 }).catch(() => {});
+    await expectGone("Reset");
+    // The owner's path: a chord shows it for a moment, Cmd+0 takes the page
+    // back to 100% while it is up.
+    await app.cursor.click({ x: view!.x + 40, y: view!.y + view!.h - 40 });
+    await app.cursor.press("Meta++");
+    await poll(popoverUp, (up) => up, { timeoutMs: 5000 }).catch(() => fail("a real Cmd++ showed no popover"));
+    await app.cursor.press("Meta+0");
+    await expectGone("Cmd+0");
+    await app.getByTestId("menu-zoom-in").click();
+    await Bun.sleep(1800);
   }
   console.log(`  capture ${SHOTS}/zoom-${tag}.png`);
 
@@ -206,6 +237,20 @@ try {
     else await app.cursor.press("Escape");
     await app.waitFor({ testId: "find-bar", state: "gone" }, { timeoutMs: 5000 }).catch(() => fail("Escape left the find bar up"));
     console.log(`  NB_FIND_ESCAPE_OK ${tag}`);
+  }
+  if (!gtk) {
+    // Pinned open, then the other layout: the anchor it pointed at is gone.
+    await Bun.sleep(1800);
+    const main = (await app.windows()).windows[0]!.geometry!;
+    const g = await geometry(layout === "compact" ? "omnibox" : "zoom-indicator");
+    if (!g) fail("no zoom anchor before the layout switch");
+    await app.cursor.click({ x: layout === "compact" ? g!.x + g!.w - 12 : g!.x + g!.w / 2, y: g!.y + g!.h / 2 });
+    const up = async () => (await census()).some((w) => w.alpha > 0 && w.layer === 0 && w.width < main.w && w.height < 200);
+    await poll(up, (u) => u, { timeoutMs: 8000 }).catch(() => fail("a click on the magnifier opened no popover"));
+    await app.getByTestId("menu-layout").click();
+    await Bun.sleep(2000);
+    if (await up()) fail("the zoom popover stayed on screen after a layout switch");
+    console.log(`  NB_ZOOM_DISMISS_OK ${tag} a layout switch`);
   }
   console.log(`NB_ZOOM_OK ${tag}`);
 } finally {

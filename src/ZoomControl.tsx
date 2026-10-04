@@ -44,10 +44,13 @@ export function zoomFieldProps(factor: number, shown: boolean, onClick: () => vo
 }
 
 /// Open state for the popover. A click opens it until it is dismissed; a
-/// `notice` bump on the same tab (a chord, a menu step) opens it for
+/// `notice` bump in the same scope (a chord, a menu step) opens it for
 /// ZOOM_NOTICE_MS unless the user already opened it, and calls `onNotice`.
+/// `scope` names the tab and the layout: another tab or the other layout
+/// closes it. It also closes once the page is back at 100%.
 export function useZoomPopover(
-  tabId: string,
+  scope: string,
+  factor: number,
   notice: number,
   onNotice?: () => void,
 ): {
@@ -57,13 +60,14 @@ export function useZoomPopover(
   close: () => void;
 } {
   const [mode, setMode] = useState<"closed" | "notice" | "pinned">("closed");
-  const seen = useRef({ tabId, notice });
+  const atDefault = isDefaultZoom(factor);
+  const seen = useRef({ scope, notice });
   useEffect(() => {
     const last = seen.current;
-    seen.current = { tabId, notice };
+    seen.current = { scope, notice };
     // Another tab's count is not a new change, and the popover belongs to the
-    // page that was showing.
-    if (last.tabId !== tabId) {
+    // page and the anchor that were showing.
+    if (last.scope !== scope) {
       setMode("closed");
       return;
     }
@@ -72,9 +76,12 @@ export function useZoomPopover(
     setMode((m) => (m === "pinned" ? m : "notice"));
     const timer = setTimeout(() => setMode((m) => (m === "notice" ? "closed" : m)), ZOOM_NOTICE_MS);
     return () => clearTimeout(timer);
-  }, [tabId, notice]);
+  }, [scope, notice]);
+  useEffect(() => {
+    if (atDefault) setMode("closed");
+  }, [atDefault]);
   return {
-    open: mode !== "closed",
+    open: mode !== "closed" && !atDefault,
     pinned: mode === "pinned",
     toggle: () => setMode((m) => (m === "pinned" ? "closed" : "pinned")),
     close: () => setMode("closed"),

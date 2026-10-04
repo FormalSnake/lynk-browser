@@ -309,7 +309,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   const compact = prefs.layout === "compact";
   const gtk = Platform.backend === "gtk";
   const zoomFactor = ctx.zoomFor(active.url);
-  const zoomPopover = useZoomPopover(active.id, activeRt.zoomNotice, () => {
+  const zoomPopover = useZoomPopover(`${prefs.layout}/${active.id}`, zoomFactor, activeRt.zoomNotice, () => {
     // The sidebar's foot is out of sight with the sidebar hidden, so the new
     // value is said the way the reference browser says it.
     if (!compact && sidebarHidden && toast.current) void showToast(toast.current, { title: `Zoom ${zoomPercent(zoomFactor)}` });
