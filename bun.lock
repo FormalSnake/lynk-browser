@@ -6,10 +6,10 @@
       "name": "nativebrowser",
       "dependencies": {
         "@mozilla/readability": "^0.6.0",
-        "@nativedesktop/cli": "^0.4.51",
-        "@nativedesktop/data": "^0.4.51",
-        "@nativedesktop/native": "^0.4.51",
-        "@nativedesktop/react": "^0.4.51",
+        "@nativedesktop/cli": "^0.4.52",
+        "@nativedesktop/data": "^0.4.52",
+        "@nativedesktop/native": "^0.4.52",
+        "@nativedesktop/react": "^0.4.52",
         "react": "19.2.7",
       },
       "devDependencies": {
@@ -17,10 +17,10 @@
         "@babel/core": "8.0.1",
         "@babel/plugin-transform-react-jsx": "8.0.1",
         "@babel/preset-typescript": "8.0.1",
-        "@nativedesktop/test": "^0.4.51",
+        "@nativedesktop/test": "^0.4.52",
         "@types/bun": "1.3.13",
         "@types/react": "19.2.17",
-        "babel-plugin-nativedesktop": "^0.4.51",
+        "babel-plugin-nativedesktop": "^0.4.52",
         "babel-plugin-react-compiler": "1.0.0",
       },
     },
@@ -96,21 +96,21 @@
 
     "@mozilla/readability": ["@mozilla/readability@0.6.0", "", {}, "sha512-juG5VWh4qAivzTAeMzvY9xs9HY5rAcr2E4I7tiSSCokRFi7XIZCAu92ZkSTsIj1OPceCifL3cpfteP3pDT9/QQ=="],
 
-    "@nativedesktop/cli": ["@nativedesktop/cli@0.4.51", "", { "dependencies": { "@nativedesktop/host": "0.4.51" }, "bin": { "nd": "src/index.ts" } }, "sha512-bf1Be/THUqbX3i044atjns05J09o2jzCdDIbRyvPxz5zO+SgFZS/B/rGkaZopuvp9o+vcXx9Y72NlD7J1rvPUQ=="],
+    "@nativedesktop/cli": ["@nativedesktop/cli@0.4.52", "", { "dependencies": { "@nativedesktop/host": "0.4.52" }, "bin": { "nd": "src/index.ts" } }, "sha512-JSZ4zTJ8ZxkHm5DQeZaMNblJ1Z1V5VHVMk5ZNmSSmESosc8SXgMWzR4gQ7A/OtKsN3ojm7nDy5w/R5BgbQk0TA=="],
 
-    "@nativedesktop/data": ["@nativedesktop/data@0.4.51", "", { "peerDependencies": { "@nativedesktop/react": "^0.4.51" }, "optionalPeers": ["@nativedesktop/react"] }, "sha512-WpFkrBmz0cOIgg7xm1Jx7EhlcU69nN/PgTuijLMjpUE1yYzX6mnoFCFIJTdOHOT5ZaNx01XArejpAUQYowtD7w=="],
+    "@nativedesktop/data": ["@nativedesktop/data@0.4.52", "", { "peerDependencies": { "@nativedesktop/react": "^0.4.52" }, "optionalPeers": ["@nativedesktop/react"] }, "sha512-hc0SxD/a54TvfDkEydypbizZveSLis81ZzmA8rnAGPCA+34q+NrCVodfUhyqyKz+NMrgsijYwi6Ud4vOVKgyDw=="],
 
-    "@nativedesktop/host": ["@nativedesktop/host@0.4.51", "", { "optionalDependencies": { "@nativedesktop/host-darwin-arm64": "0.4.51", "@nativedesktop/host-linux-x64": "0.4.51" } }, "sha512-8IeIEcE45jOjrtZwGZWooCzyfZqnXOZzP4ZPLZjDaNDX3Jkbv5uuGdQHK27PO3v4aWyqhrPsp1MwFh+e90bs0A=="],
+    "@nativedesktop/host": ["@nativedesktop/host@0.4.52", "", { "optionalDependencies": { "@nativedesktop/host-darwin-arm64": "0.4.52", "@nativedesktop/host-linux-x64": "0.4.52" } }, "sha512-G2o7MDLPLQ4R25HxsGvcXaDRmF72b3AmEKAACkduXLBFRoIdVOejOWpiuC5EUKG/E7jhGa7aRCRx/GHMK/DPrw=="],
 
-    "@nativedesktop/host-darwin-arm64": ["@nativedesktop/host-darwin-arm64@0.4.51", "", { "os": "darwin", "cpu": "arm64" }, "sha512-YCjGv+0N3EqDCz8FLzQNFIjYFb5FoR05do0lmYa6OO+/X0/iGnSPbd5ME2alWLkas09KQHfEheBdKom75kTRLg=="],
+    "@nativedesktop/host-darwin-arm64": ["@nativedesktop/host-darwin-arm64@0.4.52", "", { "os": "darwin", "cpu": "arm64" }, "sha512-qF15089CPWPmUT9cybyN5HQuV0ZJ5E6b+c72pIQ7Cijjo+2Q9DAk2CI9Rs9CMzrJfbFs9DCg1cD/ZMJ/kysFog=="],
 
-    "@nativedesktop/host-linux-x64": ["@nativedesktop/host-linux-x64@0.4.51", "", { "os": "linux", "cpu": "x64" }, "sha512-DGB1uAg1X33jOYRMvQAfVK+brN74Vtf+V1VnXxzeu0CfKBw0X3uufWyY3nVy5EYWjM9zRNiiqO75H4WxgrO58g=="],
+    "@nativedesktop/host-linux-x64": ["@nativedesktop/host-linux-x64@0.4.52", "", { "os": "linux", "cpu": "x64" }, "sha512-YRKZ1WOZfT/8TFL5QnIRELAk+kI0LOyDyca+HoneDAiWNWPs7HxI5gxrIfUkEWWIwT1WfhGh+VJHI5ZYMp3xdQ=="],
 
-    "@nativedesktop/native": ["@nativedesktop/native@0.4.51", "", {}, "sha512-Z5nWAghKOxYMEcrmMCuywGZ0yHOVMsI+igCO1I041grWIuC0m5AVj4HDPX6BFAeu8j40z82bNDJPh9Ftd77qdw=="],
+    "@nativedesktop/native": ["@nativedesktop/native@0.4.52", "", {}, "sha512-9kE6pgW1wlLiFNxQvXV5OUA+j/Mo5+cpgS5qQzQr0f2pC4CB33at9zG8tAEWEmCzg4oCb8yi3EXf8ByyI1PBaw=="],
 
-    "@nativedesktop/react": ["@nativedesktop/react@0.4.51", "", { "dependencies": { "react-reconciler": "0.33.0", "react-refresh": "0.17.0" }, "peerDependencies": { "react": "^19.2.7" } }, "sha512-LAu1u+xpOWLB7IMuXTNfNIB2jDcPhpbQFYqXCUr3NUp5iB8tvVThKalMdGth9ZLoBCr971HSWWgA3wp7ILnJqw=="],
+    "@nativedesktop/react": ["@nativedesktop/react@0.4.52", "", { "dependencies": { "react-reconciler": "0.33.0", "react-refresh": "0.17.0" }, "peerDependencies": { "react": "^19.2.7" } }, "sha512-IF5VgUqzfm/l6Wh5cLHLFAfH1rR3iIrdu4Tvz87jXFssxMvctgLoFBEVk4erBQg/1tikYF8rjyHQpApfiM8aIw=="],
 
-    "@nativedesktop/test": ["@nativedesktop/test@0.4.51", "", { "dependencies": { "@nativedesktop/host": "0.4.51", "@nativedesktop/react": "0.4.51" } }, "sha512-RZeDYJM12K7Ho+9P8uO1KXiK34WKtZiqILoBM4NH5z4oa7mrZJ5jvfZcBHChOUWeNZnuxSMaonY10BRUW/4/5A=="],
+    "@nativedesktop/test": ["@nativedesktop/test@0.4.52", "", { "dependencies": { "@nativedesktop/host": "0.4.52", "@nativedesktop/react": "0.4.52" } }, "sha512-LTUHda+HvzPxa6KEYjR1h7VCma63SL6RKEiPF50F24Hb8lRU2XAAZMhdVA1bqhUtpilLYKpz3oOJVLoTQMV6jQ=="],
 
     "@types/bun": ["@types/bun@1.3.13", "", { "dependencies": { "bun-types": "1.3.13" } }, "sha512-9fqXWk5YIHGGnUau9TEi+qdlTYDAnOj+xLCmSTwXfAIqXr2x4tytJb43E9uCvt09zJURKXwAtkoH4nLQfzeTXw=="],
 
@@ -122,7 +122,7 @@
 
     "@types/react": ["@types/react@19.2.17", "", { "dependencies": { "csstype": "^3.2.2" } }, "sha512-MXfmqaVPEVgkBT/aY0aGCkRWWtByiYQXo3xdQ8r5RzuFrPiRn8Gar2tQdXSUQ2GKV3bkXckek89V8wQBY2Q/Aw=="],
 
-    "babel-plugin-nativedesktop": ["babel-plugin-nativedesktop@0.4.51", "", {}, "sha512-qXS+X+oPQLl07qt2Mw1q/1X6oX9jL98hWGwnzINTMeeFaGPSjqox91qNgOszDvqo+ykMYd27MHMH4CmqJQySyQ=="],
+    "babel-plugin-nativedesktop": ["babel-plugin-nativedesktop@0.4.52", "", {}, "sha512-70Z7eBwv7JHFFd58uCTDhlNytcHLwBJ8WtsaLMeGInZEjV1JhlpSJLNsEx95rrUVMcxOlx9FlyWf/A/od9bdAA=="],
 
     "babel-plugin-react-compiler": ["babel-plugin-react-compiler@1.0.0", "", { "dependencies": { "@babel/types": "^7.26.0" } }, "sha512-Ixm8tFfoKKIPYdCCKYTsqv+Fd4IJ0DQqMyEimo+pxUOMUR9cVPlwTrFt9Avu+3cb6Zp3mAzl+t1MrG2fxxKsxw=="],
 
