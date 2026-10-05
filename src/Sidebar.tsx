@@ -93,6 +93,8 @@ export interface SidebarProps {
   /// address, the one place the address is edited.
   onOpenAddress: () => void;
   onOpenSettings: () => void;
+  /// Whether the desktop puts any window controls on the leading side.
+  onLeadingControlsChanged: (present: boolean) => void;
   dragPayload: (tab: SessionTab) => string;
   /// Where a dragged tab would land, as an index into `tabs`; null while no
   /// drag is over the column.
@@ -299,7 +301,10 @@ export function Sidebar(props: SidebarProps): React.ReactNode {
             testID={`${p}controls-start`}
             side="start"
             style={{ valign: "center" }}
-            onEmptyChanged={(e) => setLeadingControls(!e.checked)}
+            onEmptyChanged={(e) => {
+              setLeadingControls(!e.checked);
+              props.onLeadingControlsChanged(!e.checked);
+            }}
           />
           <box testID={`${p}controls-gap`} orientation="horizontal" style={{ hexpand: true }} />
         </box>

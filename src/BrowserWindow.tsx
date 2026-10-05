@@ -290,6 +290,10 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// Whether the desktop's decoration layout puts window buttons on the
   /// trailing side (GTK); they then get the strip over the page.
   const [trailingControls, setTrailingControls] = useState(false);
+  /// The same for the leading side, which the sidebar places. With neither
+  /// (a tiling compositor) there is no frame to draw: the page runs to the
+  /// window's edges.
+  const [leadingControls, setLeadingControls] = useState(false);
 
   const toast = useRef<NdNodeRef<"toastoverlay">>(null);
   const split = useRef<NdNodeRef<"splitview">>(null);
@@ -1657,8 +1661,9 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
           edgeReveal={!compact}
           // AppKit's glass sidebar reflects the page beside it, so the page
           // runs to the window's edges there, as in Search; libadwaita keeps
-          // it in an inset card on the sidebar's colour.
-          contentStyle={compact || !gtk ? "plain" : "card"}
+          // it in an inset card on the sidebar's colour, unless the desktop
+          // draws no window controls at all.
+          contentStyle={compact || !gtk || (!leadingControls && !trailingControls) ? "plain" : "card"}
           testID={`${p}split`}
           onRevealChanged={(e) => setRevealed(e.checked)}
         >
@@ -1696,6 +1701,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               onNewTab={() => ctx.openTab(win.id, "")}
               onOpenAddress={openAddress}
               onOpenSettings={ctx.openSettings}
+              onLeadingControlsChanged={setLeadingControls}
               dragPayload={(t) => tabPayload({ profile: "default", tabId: t.id, url: t.url })}
               dropIndex={dropIndex}
               onDragOverIndex={(index) => {
