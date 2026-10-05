@@ -40,6 +40,7 @@ import type {
   DownloadRequest,
   DownloadUpdate,
   ExtensionAction,
+  ExtensionsChange,
   ExtensionActionState,
   InstalledExtension,
   NdNodeRef,
@@ -1169,8 +1170,57 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// Badges and titles are per tab, so every change of the tab on show and
   /// every change the registry reports reads them again, for the window in
   /// front.
-  function refreshActionStates(): void {
-    for (const id of probes.current.keys()) void readActionFor(id, focusedWindowId, 4);
+  function refreshActionStates(only?: ReadonlySet<string>): void {
+    for (const id of probes.current.keys()) {
+      if (!only || only.has(id)) void readActionFor(id, focusedWindowId, 4);
+    }
+  }
+
+  /// The registry view's first reads can reach it before chrome://extensions
+  /// has committed, and a watch that failed then was never attached again: the
+  /// toolbar stayed empty for the whole session. So the watch is retried until
+  /// it attaches, and the list is read once it has.
+  function watchRegistry(node: NdNodeRef<"webview">, attempt: number): void {
+    void watchExtensions(node, onRegistryChange)
+      .then((watched) => {
+        // An empty answer means the watcher attached to nothing, and a Web
+        // Store install would then never show up until the panel was opened
+        // by hand.
+        if (watched.length === 0) console.error("ND_APP EXTWATCH attached to nothing");
+        else if (TEST_HOOKS) console.error(`ND_APP EXTWATCH watching ${watched.length}`);
+        refreshExtensions();
+      })
+      .catch((e: unknown) => {
+        if (attempt < 20 && extRegistry.current === node) {
+          setTimeout(() => watchRegistry(node, attempt + 1), 250);
+          return;
+        }
+        console.error(`ND_APP EXTWATCH failed ${String(e)}`);
+      });
+  }
+
+  /// The registry reports in bursts: a service worker starting and stopping,
+  /// every page an extension opens, an install's loaded, installed and prefs
+  /// events. One registry read and one badge read per extension named, ~100 ms
+  /// after the burst, instead of a full re-read of everything per event.
+  const registryBurst = useRef<{ timer: ReturnType<typeof setTimeout> | null; ids: Set<string>; all: boolean }>({
+    timer: null,
+    ids: new Set(),
+    all: false,
+  });
+  function onRegistryChange(change: ExtensionsChange): void {
+    const burst = registryBurst.current;
+    if (change.extensionId) burst.ids.add(change.extensionId);
+    else burst.all = true;
+    if (burst.timer) return;
+    burst.timer = setTimeout(() => {
+      const ids = burst.all ? undefined : new Set(burst.ids);
+      burst.timer = null;
+      burst.ids.clear();
+      burst.all = false;
+      refreshExtensions();
+      refreshActionStates(ids);
+    }, 100);
   }
 
   async function probeFor(id: string): Promise<NdNodeRef<"webview"> | null> {
@@ -1638,19 +1688,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
               return;
             }
             if (!chromium || registryYields) return;
-            refreshExtensions();
-            // An empty answer means the watcher attached to nothing, and a
-            // Web Store install would then never show up until the panel was
-            // opened by hand.
-            void watchExtensions(registryView, () => {
-              refreshExtensions();
-              refreshActionStates();
-            })
-              .then((watched) => {
-                if (watched.length === 0) console.error("ND_APP EXTWATCH attached to nothing");
-                else if (TEST_HOOKS) console.error(`ND_APP EXTWATCH watching ${watched.length}`);
-              })
-              .catch((e: unknown) => console.error(`ND_APP EXTWATCH failed ${String(e)}`));
+            watchRegistry(registryView, 0);
           }}
           url={chromium && !registryYields ? "chrome://extensions" : "about:blank"}
           testID="extensions-registry-view"
