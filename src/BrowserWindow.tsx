@@ -260,6 +260,8 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteTarget, setPaletteTarget] = useState<OmniTarget>("current");
   const [historyHits, setHistoryHits] = useState<Visit[]>([]);
+  /// The latest history lookup the bar asked for; older answers are dropped.
+  const hitsAsked = useRef(0);
   const [completions, setCompletions] = useState<string[]>([]);
   const [paletteMode, setPaletteMode] = useState<OmniMode>("address");
   /// Tab ids of this window, most recently shown first, so the switcher lists
@@ -410,8 +412,15 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   }
 
   function refreshHits(text: string): void {
-    void searchHistory(text).then(setHistoryHits);
-    void completionCandidates(text).then(setCompletions);
+    // Typing runs one query per key; an answer for an older text that lands
+    // late must not replace a newer one.
+    const ask = ++hitsAsked.current;
+    void searchHistory(text).then((hits) => {
+      if (ask === hitsAsked.current) setHistoryHits(hits);
+    });
+    void completionCandidates(text).then((urls) => {
+      if (ask === hitsAsked.current) setCompletions(urls);
+    });
   }
 
   function closePalette(): void {

@@ -265,8 +265,17 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   const downloadTabs = useRef(new Map<string, string[]>());
 
   const rt = (id: string): Runtime => runtime[id] ?? IDLE;
+  /// An event that changes nothing renders nothing: every page event lands
+  /// here, and each new map re-renders every window.
   const patch = (id: string, part: Partial<Runtime>): void =>
-    setRuntime((r) => ({ ...r, [id]: { ...(r[id] ?? IDLE), ...part } }));
+    setRuntime((r) => {
+      const now = r[id] ?? IDLE;
+      for (const k in part) {
+        const key = k as keyof Runtime;
+        if (!Object.is(now[key], part[key])) return { ...r, [id]: { ...now, ...part } };
+      }
+      return r;
+    });
   const view = (id: string): NdNodeRef<"webview"> | null => views.current.get(id) ?? null;
   const tabOf = (id: string): SessionTab | null =>
     session
@@ -327,7 +336,13 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   });
 
   function refreshHistory(): void {
-    void recentVisits().then(setHistory);
+    // Unchanged rows keep the old list, so a title or visit that does not move
+    // the recent list renders nothing.
+    void recentVisits().then((next) =>
+      setHistory((h) =>
+        h.length === next.length && h.every((v, i) => v.url === next[i]!.url && v.title === next[i]!.title && v.ts === next[i]!.ts) ? h : next,
+      ),
+    );
   }
 
   // ---------------------------------------------------------------- tabs ---
@@ -613,6 +628,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   }
 
   function setTabUrl(id: string, url: string): void {
+    if (tabOf(id)?.url === url) return;
     session.update((s) => ({
       ...s,
       windows: s.windows.map((w) =>
@@ -696,12 +712,13 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     // for it. Taking it would relabel a real tab "about:blank" in the row and
     // in the restored session, which is what the owner saw.
     if (title === "about:blank" && url !== "") return;
-    session.update((s) => ({
-      ...s,
-      windows: s.windows.map((w) =>
-        w.tabs.some((t) => t.id === id) ? { ...w, tabs: w.tabs.map((t) => (t.id === id ? { ...t, title } : t)) } : w,
-      ),
-    }));
+    if (tabOf(id)?.title !== title)
+      session.update((s) => ({
+        ...s,
+        windows: s.windows.map((w) =>
+          w.tabs.some((t) => t.id === id) ? { ...w, tabs: w.tabs.map((t) => (t.id === id ? { ...t, title } : t)) } : w,
+        ),
+      }));
     void recordTitle(url, title).then(refreshHistory);
   }
 
@@ -1420,12 +1437,13 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// changes, which is what makes calling it per render safe. Keyed by tab and
   /// by view, not by window: a view that moved windows keeps its menu.
   function syncContextMenus(only?: string): void {
+    // One tree for every tab, built once per call rather than once per tab.
+    const items = appContextMenuItems();
+    const shape = JSON.stringify(items);
     for (const tab of allTabs) {
       if (only !== undefined && tab.id !== only) continue;
       const node = views.current.get(tab.id);
       if (!node) continue;
-      const items = appContextMenuItems();
-      const shape = JSON.stringify(items);
       // Keyed on the widget as well as the tree: a remounted view (Try Again
       // bumps the webview's key) starts with no items of its own.
       const stamp = `${node.id}|${shape}`;
