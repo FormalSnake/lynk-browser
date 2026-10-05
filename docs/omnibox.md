@@ -60,8 +60,10 @@ The commands cover every action:
   height, so the field does not move while results change. Narrower windows
   keep a 20 pt margin. The panel is as tall as its rows, up to ten; more
   rows scroll.
-- The whole window dims behind it (black at about 15 percent), toolbar and
-  sidebar included.
+- The whole window dims behind it (black at about 15 percent), toolbar,
+  sidebar and the page included. The page stays on show and live under the
+  bar on both platforms; on GTK a theme in the user's `gtk.css` does not
+  change that.
 - At the top is a large single-line field (20 pt text) with a leading search
   symbol. A long address stops short of the right edge by as much as it
   starts from the left. Below it are a hairline and the rows. With no rows,
@@ -86,7 +88,5 @@ Both layouts act the same: the bar is the only address field.
 
 ## Not matched yet
 
-- On GTK the page behind the bar is blank grey, because a Chromium X11 page
-  cannot be drawn under a dialog. On AppKit you see the dimmed page.
 - Arc's site search on Tab ("Search YouTube"), its per-Space accent colour,
   and Little Arc.
