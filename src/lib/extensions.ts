@@ -46,10 +46,12 @@ export function pinnedRows(rows: ExtensionRow[], pinned: string[]): ExtensionRow
 }
 
 /// The page a hidden view shows so the action's live state can be read: any
-/// document of the extension answers for it. The popup is the one every action
-/// with something to open declares, and the manifest is one every extension has.
+/// document of the extension answers for it, so it is the manifest, which runs
+/// none of the extension's code. A popup document runs as if opened: 1Password's
+/// asked the desktop app to unlock on every launch, then closed itself and left
+/// the probe dead.
 export function probeUrl(row: ExtensionRow): string {
-  return row.popupUrl || row.optionsUrl || `chrome-extension://${row.id}/manifest.json`;
+  return `chrome-extension://${row.id}/manifest.json`;
 }
 
 /// The badge colour an extension asked for, as the nearest of the app's own

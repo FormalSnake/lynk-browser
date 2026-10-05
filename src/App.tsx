@@ -1729,7 +1729,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// The actions whose live state is wanted: every toolbar button, for its
   /// badge, and the one a click is being decided for.
   const probeRows = rows.filter(
-    (r) => r.enabled && probeUrl(r) !== "" && (prefs.pinnedExtensions.includes(r.id) || r.id === checkingAction),
+    (r) => r.enabled && (prefs.pinnedExtensions.includes(r.id) || r.id === checkingAction),
   );
 
   const hiddenViews = (
