@@ -221,6 +221,10 @@ function shot(name: string): void {
   console.log(`  shot ${out}`);
 }
 
+async function shownTitle(): Promise<string> {
+  return (await app.windows()).windows[0]?.title ?? "";
+}
+
 async function panelShown(): Promise<boolean> {
   return !!(await app.find("extensions-panel"))?.visible;
 }
@@ -281,6 +285,15 @@ try {
     await clickWhenReady(`ext-pin-toggle-${action}`);
     await closePanel();
     await app.waitFor({ testId: `ext-action-${action}`, state: "present" }, { timeoutMs: PATIENCE });
+    // An install's own tabs (the test fixture's options page, 1Password's
+    // welcome) come up in front, as in Chrome, and onClicked gets the tab on
+    // show: bring the page back first.
+    if ((await shownTitle()) !== "Page action") {
+      const tab = (await nodes()).find((n) => /^tab-t\d+$/.test(n.testID ?? "") && n.text === "Page action");
+      if (!tab) fail("no tab row for the page");
+      await clickWhenReady(tab.testID!);
+      await poll("the page to be on show", shownTitle, (t) => t === "Page action");
+    }
     const before = await tabCount();
     await press(`ext-action-${action}`);
     const trigger = await poll(
