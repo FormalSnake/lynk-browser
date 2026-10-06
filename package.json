@@ -26,5 +26,6 @@
   "overrides": {
     "@nativedesktop/host": "file:../NativeDesktop-solid/packages/host",
     "@nativedesktop/core": "file:../NativeDesktop-solid/packages/core"
-  }
+  },
+  "license": "MIT"
 }
