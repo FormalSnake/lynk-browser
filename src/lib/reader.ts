@@ -1,4 +1,4 @@
-// Reading mode: the page's article, alone, in Search's type and colours.
+// Reading mode: the page's article, alone, in the app's type and colours.
 //
 // Readability (Firefox's reader view) picks the article. It runs on a clone of
 // the page, so the page underneath is never touched: the reader is laid over it
@@ -31,8 +31,8 @@ export type ReaderState = "on" | "off" | "none";
 /// id, so a page with an element of that id cannot be mistaken for it.
 const KEY = "__ndReader";
 
-// Design.swift's pairs, light then dark. Muted is neutral-500 rather than
-// Search's lighter grey: the site line is 12 px and needs 4.5:1 on white.
+// Light then dark. Muted is neutral-500 rather than a lighter grey: the
+// site line is 12 px and needs 4.5:1 on white.
 const STYLE = `
 :host { all: initial; }
 .scroll {

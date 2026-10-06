@@ -2,15 +2,70 @@
 
 Goal: a Chromium browser on macOS and Linux with 1:1 Chrome extension
 compatibility, native UI, never a stray Chromium window, tested against the real
-app. UI and features follow the Search browser (driceroland/Search, read-only
-clone at `~/Developer/nativebrowser-ref/Search`, screenshot `search.png` beside
-it): Arc-like but minimal, driven from a keyboard-first command bar, no buttons
+app. Arc-like but minimal, driven from a keyboard-first command bar, no buttons
 needed. Built in: panels (bookmarks, history, downloads), pinned tiles, lazy
-tabs, Search's keyboard map, reader (⇧⌘R), floating video (⇧⌘P), a built-in ad
+tabs, a full keyboard map, reader (⇧⌘R), floating video (⌥⌘P, clear of 1Password), a built-in ad
 blocker that behaves like uBlock Origin. To resume, tell Claude: "read RESUME.md
 and continue".
 
 Development is paused. Every agent is stopped; nothing is running on purpose.
+
+## State on 2026-09-28 (read this first)
+
+Released since the 09-23 handoff: v0.4.18 dock-gap-app, v0.4.19 min-width,
+v0.4.20 cdp-detach-crash, v0.4.21 mock-keychain + native-messaging. Framework
+main `9c6f517`, app main `b775ee6 chore(deps): 0.4.21` (app not pushed).
+
+Left to merge, each rebased on v0.4.21 by a final-merge agent (brief in the
+orchestrator scratchpad `final-merge.md`):
+- `omnibox` (fw + app): final gates in progress.
+- `no-escape` / `escape`: final gates in progress.
+- `sidebar` (fw `4ac3c87`, app `98ac0ed`): gates green, blocked on the mac
+  bottom-row popover being see-through over the page (needs NSPopover's
+  material, contrast >= 4.5:1).
+After `sidebar`: Liquid Glass pinned tiles and traffic lights that ride with a
+peeking sidebar (owner requirements below).
+
+Host rules learned: capture only with the approved
+`~/Developer/NativeDesktop/tools/ndshot/bin/ndshot` (every new capturing binary
+path raises a macOS approval prompt); mac test hosts set `NATIVE_AUTOMATION=1`
+and `ND_CEF_CACHE` (mock keychain); Linux runs always set their own
+`XDG_DATA_HOME` and `ND_CEF_CACHE` (a rig once wrote into the owner's
+`~/.local/share/nd-webview-cef`); rigs one at a time under
+`flock -o /tmp/nd-<host>-rig.lock`, detached with nohup. SIP is off on the mac on purpose:
+grant every new dev bundle with `NDShell --nd-grant` right after building it
+(never leave a Screen Recording prompt for the owner). e1504g no longer
+suspends on idle and FormalShell caffeinates it at login.
+
+## Overnight wave, started 2026-09-29 (read after the state above)
+
+Released since: v0.4.24 to v0.4.33 (sidebar, glass tiles, peek lights, pin grid +
+reorder, omnibox, no-escape, native messaging, mock keychain, cdp-detach, compact
+field centring, titlebar click fixes, extension tabs on both platforms, mac
+type-ahead after cmd+T). App main `8d4408d` on 0.4.33, not pushed.
+
+Agents running on branches (shared brief: orchestrator scratchpad `wave.md`):
+`bar-first-keys-linux` (keys after ctrl+T on Linux, findings in
+`~/Developer/nd-bar-keys-linux/FINDINGS.md`), `narrow-widths` (both layouts to
+720 px), `bubbles`, `pages`, `reader`, and `focus-return` / `focus-return-mac` /
+`permission-states`. Next wave: `ext-click` (1Password icon click), `adblock`,
+`drag-point`, sidebar tab context menu, the keyboard map, lazy restored tabs,
+nix package for g815 (1Password needs a root-owned binary), macOS 26 glass press.
+
+## Features adopted (2026-09-29)
+
+Queued, in order, each after the branch it would collide with merges:
+1-3 one bar branch after `bar-first-keys-linux`: site search on Tab with a site
+chip and keywords; Esc closes an untouched new tab and a new tab keeps unsent
+text; Cmd+Return opens in a background tab. 4 after `bubbles`: find "3 of 17",
+wrap, Match case (CEF already gives the ordinal, engine drops it). 5 and 11 after
+`narrow-widths`: pinned rows under the tiles with a divider and Clear; the folded
+sidebar peeks on overshooting the left edge. 6 and 10 now (`session` branch):
+background tabs wait to load, Put to Sleep, lazy restore, "start with a fresh
+window". 7 after `pages`: progress ring, pause/resume/retry downloads. 8 later:
+Ctrl+Tab visual switcher. 9 with `adblock`: collapse blocked ad boxes
+(easylist_general_hide, display:none !important). Not adopting: split view, AI,
+spaces, imports, WebKit-only shims.
 
 ## How this project is run
 
@@ -53,8 +108,8 @@ Framework `~/Developer/NativeDesktop` main = `ff3e5eb release: v0.4.17`
 | `nd-omnibox` + `nativebrowser-omnibox` | `omnibox` (+17) / `omnibox` (+9, then `wip:`) | Two-omnibox cause fixed (new-tab field + header field). Bar keeps the owner-approved look (restyle reverted on request). GTK panel hugs its rows, AppKit dim covers the window, long URL inset, ⌘K tab switcher, every action a command, history-only completion, one shortcut table feeds menu and bar (⇧⌘[ ⇧⌘] tabs, ⇧⌘N private). | Finish wip, fix: blur on the address field re-navigates and rewrites http→https. Rebased onto v0.4.17 already. Send me gate commands, merge. |
 | `nd-sidebar` + `nativebrowser-sidebar` | `sidebar` (+1, `wip:`) each | Early. Spec in `nativebrowser-sidebar/docs/sidebar.md`. | See owner requirements below. |
 | `nd-bubbles` + `nativebrowser-bubbles` | `bubbles` (+3/+2, then `wip:`) | Native zoom (magnifier in the field, popover −/value/+/Reset, `zoomChanged` event, trailing-icon popover anchor), Chromium bubbles refused, password manager/autofill-save/translate off per profile. `app.cursor.press` sends real key chords. Table in `nd-bubbles/BUBBLES.md`. | Linux: Chromium's zoom bubble still flashes in the page (try `is_chrome_page_action_icon_visible(ZOOM)`=false). Find popover survives Escape and swallows the pointer: that is why select/wheel/textSelection are red on main. Verify 1Password still fills with password manager off. Rebase over no-escape. |
-| `nd-pages` + `nativebrowser-pages` | `pages` (+6 / +2, then `wip:`) | History, bookmarks, downloads as Search-style searchable panels one keystroke away; mac app drive green. | Real-cursor drag of a download out to Finder was running; filename showed as "…" on g815 earlier. |
-| `nd-reader` + `nativebrowser-reader` | `reader` (+3 / +1) | ⇧⌘R reading mode and ⇧⌘P floating video; PiP window keeps its corner and carries the app class. Mac drive green with real keystrokes. | Captures by eye were in progress; Linux run; add both as bar commands. |
+| `nd-pages` + `nativebrowser-pages` | `pages` (+6 / +2, then `wip:`) | History, bookmarks, downloads as searchable panels one keystroke away; mac app drive green. | Real-cursor drag of a download out to Finder was running; filename showed as "…" on g815 earlier. |
+| `nd-reader` + `nativebrowser-reader` | `reader` (+3 / +1) | ⇧⌘R reading mode and ⌥⌘P floating video; PiP window keeps its corner and carries the app class. Mac drive green with real keystrokes. | Captures by eye were in progress; Linux run; add both as bar commands. |
 | `nd-adblock` + `nativebrowser-adblock` | `adblock` (+4, `wip:` / `wip:` only) | Built-in blocker instead of uBO MV2 (stock CEF 151 cannot run MV2 at all; no flag, policy or prebuilt helps). Engine brave/adblock-rust behind our own C ABI, network blocking via `on_before_resource_load`, cosmetic + scriptlets at document start, cross-site frames reached on GTK, OOPIF path on AppKit in progress. App side: lists, per-site off, ⇧⌘H element hider. | Adds Rust to both hosts, the flake and release.yml. Estimate was 3 to 5 days total. |
 | `nd-ext-click` + `nativebrowser-ext-click` | `ext-click` (`wip:` only, large) | Extension icon clicks without a CEF build. mac: page BrowserView asks CEF_CTT_NORMAL then hides the toolbar, and CDP `Extensions.triggerAction` over a browser-target pipe fires `chrome.action.onClicked` + grants `activeTab` (proven). Linux: `ND_CEF_VIEWS_HOSTED=1` prototype, engine gate 16/17 incl. actionClick; uninstall's Chrome dialog never maps (anchored to the hidden toolbar). | Owner-approved order: AppKit registry commands (list, listActions, readAction, watch, then install/uninstall/setEnabled; the mac toolbar is empty today), real icon click on mac with 1Password; uninstall silent with an app-native confirmation; then real-app rigs x11/wlr/hypr with the Views switch, stop within a day if focus/XWayland regresses. |
 | `nd-dragpoint` | `drag-point` (`wip:` only) | AppKit `ndDragPoint` disagrees with `ndNodeBounds` for views in the header bar (drop x 19 pt left, tab lands one slot early). Fix + `examples/dragpoint` in progress. | Finish, then `nativebrowser` `scripts/mac-tabdrag.ts` legs 3 to 5. |
@@ -63,20 +118,20 @@ Framework `~/Developer/NativeDesktop` main = `ff3e5eb release: v0.4.17`
 The app agent's own queue (on app `main`): drop-index fix above, then narrow
 widths (both layouts to ~720 px, address field never in the overflow, tabs
 shrink to favicon with the active one keeping its title; windows refuse under
-977 / 1195 px today), Search's keyboard map, pinned letter tiles, lazy restored
+977 / 1195 px today), the keyboard map, pinned letter tiles, lazy restored
 tabs, and adopting 0.4.17 in compact (drop `addressWidth`, padlock via
 `leadingIconName`, drop the bold-title workaround).
 
 ## Owner requirements given today (not all built yet)
 
-- Two layouts: sidebar ("Arc mode", Search look) and compact standard row,
+- Two layouts: sidebar ("Arc mode") and compact standard row,
   ⇧⌘S toggles.
-- Sidebar: quiet and flat like Search: pinned tiles at the top, tab list, faint
+- Sidebar: quiet and flat: pinned tiles at the top, tab list, faint
   "+ New tab", one settings glyph at the bottom, no back/forward/reload buttons.
   macOS 26/27: a real glass sidebar (split-view sidebar item) so it shows the
   native reflections; the webview does NOT extend under it. The glow must also
   reach the frame around the page card; if public API can't, drop the frame
-  like Search (page full-bleed). With the sidebar hidden, equal inset on all
+  (page full-bleed). With the sidebar hidden, equal inset on all
   sides (or none, if the frame goes).
 - GTK: window controls follow `gtk-decoration-layout`: on the right they sit in
   a Zen-style strip that the browser area grows along its top (nothing overlays
@@ -84,7 +139,21 @@ tabs, and adopting 0.4.17 in compact (drop `addressWidth`, padlock via
   strip and no reserved space. Bottom row: downloads left, bare plus right.
 - Command bar: keep the current look. Keyboard first; the owner never uses UI
   buttons.
-- Loading bar: quiet, Arc/Search-like, no layout shift, both layouts.
+- macOS traffic lights sit on the sidebar's content margin (same leading x as
+  the pinned tiles and tab rows), centred in their strip. (2026-09-25)
+- Pinned tiles: two styles, favicon tiles by default, letter tiles as a
+  selectable minimalist look. (2026-09-25)
+- Pinned tiles on macOS 26+: Liquid Glass tiles (NSGlassEffectView), the
+  active tile a raised glass pill, like the owner's Arc-style reference
+  screenshot `~/Developer/nativebrowser-ref/arc-glass-pinned.png`. GTK keeps flat tiles. Queued after `sidebar` merges. (2026-09-27)
+- macOS, sidebar collapsed: the traffic lights ride with the sidebar. Hidden,
+  they are hidden with it; when a hover at the left edge peeks the sidebar in,
+  they slide in with it at the same inset and animation, and slide out with it.
+  Queued after `sidebar` merges, with the glass tiles. (2026-09-27)
+- GTK control strip slides away like Zen and returns on hover at the top
+  edge; mandatory with the sidebar hidden (immersive, no visible frame, no
+  reflow). (2026-09-25)
+- Loading bar: quiet, Arc-like, no layout shift, both layouts.
 - Chromium pages worth replacing become native (downloads, history, bookmarks,
   no NTP); chrome://settings, extensions, passwords stay Chromium.
 - Page bubbles anchored natively or suppressed; zoom native.
@@ -122,7 +191,7 @@ tabs, and adopting 0.4.17 in compact (drop `addressWidth`, padlock via
   ndshot used to livelock when two ran at once (replayd keys clients by path);
   fixed in 0.4.17, it now serialises and exits 5 after 15 s.
 - GTK widget layer runs on this mac: `bun run dev -- --backend gtk` (Quartz
-  gdk, brew libadwaita). No CEF, no cursor, no lock. Capture every Arc/Search
+  gdk, brew libadwaita). No CEF, no cursor, no lock. Capture every Arc-style
   surface on AppKit and GTK side by side.
 
 ## Open owner reports

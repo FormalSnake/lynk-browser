@@ -19,8 +19,7 @@
   <a href="#development"><img src="https://img.shields.io/badge/tests-54-345ec3?style=for-the-badge&labelColor=161616&logo=bun&logoColor=white" alt="54 unit tests"></a>
 </p>
 
-A keyboard-first browser in the style of Arc and
-[Search](https://github.com/driceroland/Search). Tabs sit in a quiet sidebar,
+A keyboard-first browser in the style of Arc. Tabs sit in a quiet sidebar,
 and one command bar takes addresses, open tabs and every action the window has,
 so you never reach for a button. Pages render in Chromium through CEF on both platforms. The window
 around them is native: every row, field, popover and dialog is a real AppKit or
@@ -38,7 +37,7 @@ written in React with no HTML in the interface.
 
 | | |
 |---|---|
-| Two layouts | Sidebar (Search's look: pinned tiles, tab list, "+ New tab") or a compact row of tabs where the active tab is the address. `Alt+Cmd+S` switches. |
+| Two layouts | Sidebar (pinned tiles, tab list, "+ New tab") or a compact row of tabs where the active tab is the address. `Alt+Cmd+S` switches. |
 | Command bar | `Cmd+T` and `Cmd+L` rank a completed address, the typed search, open tabs, history, then commands. `Cmd+K` lists tabs by recency, then every command. Nothing leaves the machine before Return. |
 | Pinned tiles | Favicon tiles, or letter tiles as a plainer look. A pinned tab remembers its page and can reset to it. |
 | Native panels | History (SQLite), bookmarks and downloads as searchable sheets instead of Chromium's pages. |
@@ -176,6 +175,5 @@ Built on [NativeDesktop](https://github.com/FormalSnake/NativeDesktop) and the
 [Chromium Embedded Framework](https://bitbucket.org/chromiumembedded/cef). Ad
 blocking runs [brave/adblock-rust](https://github.com/brave/adblock-rust) over
 [uBlock Origin](https://github.com/gorhill/uBlock)'s lists, and reading mode is
-Mozilla's [Readability](https://github.com/mozilla/readability). The layout,
-the command bar and the keyboard map follow
-[Search](https://github.com/driceroland/Search).
+Mozilla's [Readability](https://github.com/mozilla/readability). The sidebar
+and command bar take after [Arc](https://arc.net).

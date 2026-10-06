@@ -21,7 +21,7 @@ const ROW_GAP = 2;
 export const INSET = 8;
 /// AppKit: the column's leading and trailing margin, and the traffic lights'
 /// gap from the window's left edge and from its top, which a toolbar window
-/// gives them (Search's 19 pt). The first row is 32 tall and the close button
+/// gives them (19 pt). The first row is 32 tall and the close button
 /// 14, so a top padding of 10 puts its top edge the same 19 down.
 const MAC_MARGIN = 19;
 const MAC_TOP = MAC_MARGIN + 7 - 16;
