@@ -1,4 +1,4 @@
-import { createStore } from "@nativedesktop/react";
+import { createStore } from "@nativedesktop/solid";
 
 export interface SessionTab {
   id: string;

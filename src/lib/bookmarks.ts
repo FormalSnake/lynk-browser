@@ -1,4 +1,4 @@
-import { createStore } from "@nativedesktop/react";
+import { createStore } from "@nativedesktop/solid";
 
 /// A page kept on purpose. Flat: the sidebar's pinned tabs are where a set of
 /// pages is organised; this is the list of addresses worth coming back to.

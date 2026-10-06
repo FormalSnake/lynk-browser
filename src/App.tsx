@@ -1,12 +1,14 @@
 import {
+  Activity,
+  Portal,
   acceptExtensionInstall,
-  createPortal,
   executeJavaScript,
   installExtension,
   listExtensionActions,
   listExtensions,
   moveNode,
   newWindowRequest,
+  nextCommit,
   onExtensionActions,
   onExtensionsChanged,
   onExtensionsList,
@@ -24,17 +26,12 @@ import {
   triggerExtensionAction,
   uninstallExtension as removeExtension,
   setContextMenuItems,
-  useLayoutEffect,
-  useMountEffect,
   watchExtensions,
-  useRef,
-  useState,
   useStoreValue,
   Spacing,
   system,
-} from "@nativedesktop/react";
+} from "@nativedesktop/solid";
 import type {
-  Appearance,
   ContextMenuItem,
   ContextMenuItemClick,
   DownloadRequest,
@@ -44,14 +41,8 @@ import type {
   ExtensionActionState,
   InstalledExtension,
   NdNodeRef,
-} from "@nativedesktop/react";
-// <Activity mode="hidden"> is React's own keep-mounted-but-hidden primitive; it
-// drives the renderer's hideInstance/unhideInstance hooks, which the host turns
-// into gtk_widget_set_visible. That is what lets every tab keep a LIVE webview:
-// switching tabs hides a widget instead of unmounting a subtree, so the page,
-// its scroll position and its JS state all survive. @nativedesktop/react does
-// not re-export it, hence the direct react import.
-import { Activity, Fragment } from "react";
+} from "@nativedesktop/solid";
+import { For, Show, createEffect, createMemo, createSignal, createStore, onSettled } from "solid-js";
 
 import {
   BrowserWindow,
@@ -84,9 +75,10 @@ import {
 } from "./lib/downloads.ts";
 import { nativePage } from "./lib/pages.ts";
 import { extensionRows, pinnedRows, probeUrl, togglePinned, type ExtensionRow } from "./lib/extensions.ts";
-import { faviconAppearance, fetchFavicon, rememberFavicon, setFaviconAppearance } from "./lib/favicons.ts";
+import { faviconAppearance, faviconFor, fetchFavicon, rememberFavicon, setFaviconAppearance } from "./lib/favicons.ts";
 import { FLOAT_SCRIPT, floatState } from "./lib/float.ts";
 import { clearVisits, recentVisits, recordTitle, recordVisit, type Visit } from "./lib/history.ts";
+import { trackStore } from "./lib/live.ts";
 import {
   forgetOrigin,
   rememberDecision,
@@ -149,12 +141,6 @@ function withoutEmptyWindows(s: SessionState): SessionState {
   return s.windows.every((w) => w.tabs.length > 0) ? s : { ...s, windows: s.windows.filter((w) => w.tabs.length > 0) };
 }
 
-function without<T>(map: Record<string, T>, id: string): Record<string, T> {
-  if (!(id in map)) return map;
-  const { [id]: _gone, ...rest } = map;
-  return rest;
-}
-
 function tabNumber(id: string): number {
   return Number(id.slice(1)) || 0;
 }
@@ -168,115 +154,129 @@ export interface AppProps {
 /// store, and draws one BrowserWindow per window in it. A tab moving between
 /// windows therefore changes which window LISTS it and which window's slot
 /// its page is shown in, and nothing else.
-export function App({ initialHistory }: AppProps): React.ReactNode {
-  const state = useStoreValue(session);
-  const prefs = useStoreValue(settings);
+export function App(props: AppProps) {
+  const state = trackStore(session);
+  const prefs = trackStore(settings);
   const blockingState = useStoreValue(blocking);
-  const windows = state.windows.filter((w) => w.tabs.length > 0);
-  const allTabs = windows.flatMap((w) => w.tabs);
+  const windows = createMemo(() => state.windows.filter((w) => w.tabs.length > 0));
+  const allTabs = createMemo(() => windows().flatMap((w) => w.tabs));
+  /// Resolves once the first CommitBatch is on its way, the earliest the host
+  /// takes system calls. Asked for before anything renders, so it cannot miss it.
+  const firstCommit = nextCommit();
 
-  const [runtime, setRuntime] = useState<Record<string, Runtime>>({});
-  // A tab's webview is created with no URL and navigates one render later: a
-  // background tab mounted straight into a hidden Activity never attaches its
-  // ref, so it "arms" visibly for one frame first (see the arming comment
-  // below).
-  const [armedTabs, setArmedTabs] = useState<Record<string, boolean>>({});
-  const [history, setHistory] = useState<Visit[]>(initialHistory);
-  const [finds, setFinds] = useState<Record<string, FindState>>({});
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  /// Per tab, per field: a load-progress tick writes `progress` on its own tab
+  /// and reaches only what reads it, the load bar.
+  const [runtime, setRuntime] = createStore<Record<string, Runtime>>({});
+  const [history, setHistory] = createSignal<Visit[]>(props.initialHistory);
+  const [finds, setFinds] = createStore<Record<string, FindState>>({});
+  const [settingsOpen, setSettingsOpen] = createSignal(false);
   /// Permission requests waiting for an answer, oldest first. A request is
   /// per tab and per id: concurrent ones queue, and a background tab's waits
   /// until that tab is active.
-  const [prompts, setPrompts] = useState<PermissionPrompt[]>([]);
+  const [prompts, setPrompts] = createSignal<PermissionPrompt[]>([]);
   /// The queue the handlers act on; `prompts` is its rendered copy.
-  const pending = useRef<PermissionPrompt[]>([]);
+  let pending: PermissionPrompt[] = [];
   /// The two halves of an extension row, each from its own framework call.
-  const [registry, setRegistry] = useState<InstalledExtension[]>([]);
+  const [registry, setRegistry] = createSignal<InstalledExtension[]>([]);
   /// The ids the last registry read listed, to see which one went.
-  const knownExtensions = useRef<string[]>([]);
-  const [extActions, setExtActions] = useState<ExtensionAction[]>([]);
+  let knownExtensions: string[] = [];
+  const [extActions, setExtActions] = createSignal<ExtensionAction[]>([]);
   /// The action a click is being decided for. Nothing opens until its live
   /// state is in, because the manifest's popup may be one the extension has
   /// switched off.
-  const [checkingAction, setCheckingAction] = useState("");
-  const checkingRef = useRef("");
+  const [checkingAction, setCheckingAction] = createSignal("");
+  let checking = "";
   /// Each action's live state, as last read for a tab some window is showing.
-  const [actionStates, setActionStates] = useState<Record<string, ExtensionActionState>>({});
+  const [actionStates, setActionStates] = createSignal<Record<string, ExtensionActionState>>({});
   /// Each action's state as read on its probe's own tab: its defaults.
-  const [actionDefaults, setActionDefaults] = useState<Record<string, ExtensionActionState>>({});
+  const [actionDefaults, setActionDefaults] = createSignal<Record<string, ExtensionActionState>>({});
   /// Hidden views on a page of each extension whose state the toolbar needs.
   /// Chromium answers an action's live state to its own extension's pages and
   /// to nothing else, so these are the only way to read it.
-  const probes = useRef(new Map<string, NdNodeRef<"webview">>());
-  const probeArmed = useRef(new Map<string, number>());
-  const [privateOpen, setPrivateOpen] = useState(false);
-  /// Bumped when a favicon lands. The cache lives outside React, so this is
-  /// what tells the windows to re-read it.
-  const [iconEpoch, setIconEpoch] = useState(0);
+  const probes = new Map<string, NdNodeRef<"webview">>();
+  const [privateOpen, setPrivateOpen] = createSignal(false);
+  /// Bumped when a favicon lands. The cache lives outside the reactive graph,
+  /// so this is what tells the windows to re-read it.
+  const [iconEpoch, setIconEpoch] = createSignal(0);
   /// The window the menu bar and its accelerators act on.
-  const [focusedId, setFocusedId] = useState(windows[0]?.id ?? "");
-  const focusedWindowId = windows.some((w) => w.id === focusedId) ? focusedId : (windows[0]?.id ?? "");
-  const [dropHint, setDropHintState] = useState<{ windowId: string; index: number } | null>(null);
+  const [focusedId, setFocusedId] = createSignal(windows()[0]?.id ?? "");
+  const focusedWindowId = createMemo(() => {
+    const id = focusedId();
+    return windows().some((w) => w.id === id) ? id : (windows()[0]?.id ?? "");
+  });
+  const [dropHint, setDropHintState] = createSignal<{ windowId: string; index: number } | null>(null);
 
-  const closed = useRef<{ url: string; title: string }[]>([]);
+  const closed: { url: string; title: string }[] = [];
   /// Tabs that have a browser. A tab gets one the first time it is shown and
   /// keeps it until it is put to sleep or closed: a restored tab, one opened
   /// behind the page and a sleeping one all wait to be looked at.
-  const [live, setLive] = useState<Record<string, true>>({});
+  const [live, setLive] = createStore<Record<string, true>>({});
   /// Tabs put to sleep, which their rows draw dimmed until they wake.
-  const [asleep, setAsleep] = useState<Record<string, true>>({});
+  const [asleep, setAsleep] = createStore<Record<string, true>>({});
   /// Where a sleeping page was scrolled to, put back once it has loaded again.
-  const scrollMemory = useRef(new Map<string, [number, number]>());
+  const scrollMemory = new Map<string, [number, number]>();
   /// Last URL the engine actually committed per tab, so a download can put the
   /// tab back where it was.
-  const committed = useRef(new Map<string, string>());
-  const views = useRef(new Map<string, NdNodeRef<"webview"> | null>());
-  /// Each window's page slot, and the slot each tab's view was last moved
-  /// into, as "view id>slot id": a remounted view or a rebuilt window both
-  /// change it, and either means the view has to be moved again.
-  const slots = useRef(new Map<string, NdNodeRef<"box">>());
-  const placed = useRef(new Map<string, string>());
-  const controllers = useRef(new Map<string, WindowController>());
-  const privateBridge = useRef<PrivateBridge | null>(null);
+  const committed = new Map<string, string>();
+  /// Each tab's mounted view and each window's page slot, set once the native
+  /// node exists. `placed` is the slot each tab's view was last moved into, as
+  /// "view id>slot id": a remounted view or a rebuilt window both change it,
+  /// and either means the view has to be moved again.
+  const views = new Map<string, NdNodeRef<"webview">>();
+  const slots = new Map<string, NdNodeRef<"box">>();
+  const placed = new Map<string, string>();
+  /// Bumped whenever a view or a slot comes or goes, which is what runs the
+  /// placement again.
+  const [mounts, setMounts] = createSignal(0);
+  const remounted = (): void => void setMounts((n) => n + 1);
+  const controllers = new Map<string, WindowController>();
+  const privateBridge: { current: PrivateBridge | null } = { current: null };
   /// Last context-menu tree sent to each tab's view, so an unchanged one is
   /// never re-sent.
-  const sentMenus = useRef(new Map<string, string>());
+  const sentMenus = new Map<string, string>();
   /// The hidden `chrome://extensions` view. Chromium exposes its extension
   /// registry to that page and nowhere else, so every list and every install
   /// goes through this one rather than through a tab the user can navigate.
-  const extRegistry = useRef<NdNodeRef<"webview">>(null);
-  const registryArmed = useRef(0);
+  let extRegistry: NdNodeRef<"webview"> | null = null;
   /// Set once the engine probe has an answer, so no retry outlives it.
-  const engineProbed = useRef(false);
+  let engineProbed = false;
   /// Which engine actually drew a page, read off the first one this app put
   /// up. Not the config and not the platform: `ND_WEBVIEW_ENGINE=chromium`
   /// against a host that cannot start CEF falls back to the system engine and
   /// says so only on stderr, and everything chrome:// is a dead end there.
-  const [engine, setEngine] = useState<"unknown" | "chromium" | "system">("unknown");
+  const [engine, setEngine] = createSignal<"unknown" | "chromium" | "system">("unknown");
   /// The engine's id for a download, per run, to the app's own, which lasts.
-  const engineDownloads = useRef(new Map<string, string>());
+  const engineDownloads = new Map<string, string>();
   /// A tab a page opened, to the tab that opened it: where the next one it
   /// opens behind it goes.
-  const openers = useRef(new Map<string, string>());
+  const openers = new Map<string, string>();
   /// A retry restarts the download from its URL; the request that comes back
   /// for that URL takes over the row it came from.
-  const retrying = useRef(new Map<string, string>());
+  const retrying = new Map<string, string>();
   /// Tabs left on a download's address until it ends, by engine id.
-  const downloadTabs = useRef(new Map<string, string[]>());
+  const downloadTabs = new Map<string, string[]>();
 
   const rt = (id: string): Runtime => runtime[id] ?? IDLE;
-  /// An event that changes nothing renders nothing: every page event lands
-  /// here, and each new map re-renders every window.
-  const patch = (id: string, part: Partial<Runtime>): void =>
+  /// An event that changes nothing writes nothing: every page event lands
+  /// here, and only the fields that moved notify their readers.
+  const patch = (id: string, part: Partial<Runtime>): void => {
+    const now = runtime[id] ?? IDLE;
+    let changed = false;
+    for (const k in part) {
+      const key = k as keyof Runtime;
+      if (!Object.is(now[key], part[key])) changed = true;
+    }
+    if (!changed) return;
     setRuntime((r) => {
-      const now = r[id] ?? IDLE;
-      for (const k in part) {
-        const key = k as keyof Runtime;
-        if (!Object.is(now[key], part[key])) return { ...r, [id]: { ...now, ...part } };
+      const cur = r[id];
+      if (!cur) {
+        r[id] = { ...IDLE, ...part };
+        return;
       }
-      return r;
+      Object.assign(cur, part);
     });
-  const view = (id: string): NdNodeRef<"webview"> | null => views.current.get(id) ?? null;
+  };
+  const view = (id: string): NdNodeRef<"webview"> | null => views.get(id) ?? null;
   const tabOf = (id: string): SessionTab | null =>
     session
       .get()
@@ -284,56 +284,65 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
       .find((t) => t.id === id) ?? null;
   /// Whether a tab is the one its window is showing.
   const isShown = (id: string): boolean => session.get().windows.some((w) => w.activeId === id);
-  const toast = (title: string): void => controllers.current.get(focusedWindowId)?.toast(title);
+  const toast = (title: string): void => controllers.get(focusedWindowId())?.toast(title);
   /// Extensions are Chromium's. On the system engine there is no registry to
   /// list, no popup to open and no chrome:// page to reach, so the toolbar
   /// does not offer any of it rather than offering a dead button.
-  const chromium = engine === "chromium";
+  const chromium = (): boolean => engine() === "chromium";
 
   /// Whether a tab has, or is about to get, a browser: every tab a window is
   /// showing does.
-  const isLive = (id: string): boolean => live[id] === true || windows.some((w) => w.activeId === id);
+  const isLive = (id: string): boolean => live[id] === true || windows().some((w) => w.activeId === id);
 
   // A tab on show keeps its browser once it is shown elsewhere. Every path
   // that changes the tab on show (a click, a close landing on a neighbour, a
   // move, a new window) ends here, so none of them has to remember to.
-  useLayoutEffect(() => {
-    const woken = windows.map((w) => w.activeId).filter((id) => id !== "" && live[id] !== true);
-    if (woken.length === 0) return;
-    setLive((l) => ({ ...l, ...Object.fromEntries(woken.map((id) => [id, true as const])) }));
-    setAsleep((a) => {
-      if (!woken.some((id) => id in a)) return a;
-      const rest = { ...a };
-      for (const id of woken) delete rest[id];
-      return rest;
-    });
-    if (TEST_HOOKS) for (const id of woken) console.error(`ND_APP WAKE tab=${id}`);
-  });
+  createEffect(
+    () => windows().map((w) => w.activeId).filter((id) => id !== "" && live[id] !== true),
+    (woken) => {
+      if (woken.length === 0) return;
+      setLive((l) => {
+        for (const id of woken) l[id] = true;
+      });
+      setAsleep((a) => {
+        for (const id of woken) delete a[id];
+      });
+      if (TEST_HOOKS) for (const id of woken) console.error(`ND_APP WAKE tab=${id}`);
+    },
+  );
 
-  // A tab navigating or a new search engine both change what a right-click
-  // should show, and both land as a render. The push is skipped when the tree
-  // is unchanged.
-  syncContextMenus();
-
-  // Every live view is shown in the slot of the window that lists its tab.
-  // After every commit, because a tab moving windows, a view being created or
-  // remounted and a window being rebuilt all land as one: the view and the
-  // slot it belongs in are both known only once the commit has attached them.
-  useLayoutEffect(() => {
-    for (const w of windows) {
-      const slot = slots.current.get(w.id);
-      if (!slot) continue;
-      for (const t of w.tabs) {
-        const node = views.current.get(t.id);
-        if (!node) continue;
-        const where = `${node.id}>${slot.id}`;
-        if (placed.current.get(t.id) === where) continue;
-        moveNode(node, slot);
-        placed.current.set(t.id, where);
-        if (TEST_HOOKS) console.error(`ND_APP PLACE tab=${t.id} window=${w.id}`);
+  // Every live view is shown in the slot of the window that lists its tab:
+  // a tab moving windows, a view being created or remounted and a window
+  // being rebuilt all land here, once the view and the slot it belongs in
+  // both exist.
+  createEffect(
+    () => {
+      mounts();
+      return windows().map((w) => ({ id: w.id, tabs: w.tabs.map((t) => t.id) }));
+    },
+    (layout) => {
+      for (const w of layout) {
+        const slot = slots.get(w.id);
+        if (!slot) continue;
+        for (const id of w.tabs) {
+          const node = views.get(id);
+          if (!node) continue;
+          const where = `${node.id}>${slot.id}`;
+          if (placed.get(id) === where) continue;
+          moveNode(node, slot);
+          placed.set(id, where);
+          if (TEST_HOOKS) console.error(`ND_APP PLACE tab=${id} window=${w.id}`);
+        }
       }
-    }
-  });
+    },
+  );
+
+  // A new search engine changes what a right-click should show; a view that
+  // mounts pushes its own. The push is skipped when the tree is unchanged.
+  createEffect(
+    () => [JSON.stringify(appContextMenuItems()), mounts()] as const,
+    () => syncContextMenus(),
+  );
 
   function refreshHistory(): void {
     // Unchanged rows keep the old list, so a title or visit that does not move
@@ -390,20 +399,20 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
       newWindow(target);
       return;
     }
-    const win = windowOfTab(session.get(), fromTab) ?? session.get().windows.find((w) => w.id === focusedWindowId);
+    const win = windowOfTab(session.get(), fromTab) ?? session.get().windows.find((w) => w.id === focusedWindowId());
     if (!win) return;
     // A tab Chrome made on its own has no opener: Chrome adds it at the end.
     const opener = request.fromExtension ? "" : fromTab;
-    const place = placeOpenedTab(win.tabs, opener, openers.current, request.disposition);
+    const place = placeOpenedTab(win.tabs, opener, openers, request.disposition);
     const id = openTab(win.id, target, !place.foreground, place.index);
-    if (id && opener) openers.current.set(id, opener);
+    if (id && opener) openers.set(id, opener);
   }
 
   /// Where a native page's routes land: its panel in the focused window, the
   /// command bar for tab search. The new tab page is a tab with no address,
   /// so its routes never reach here.
   function openNativePage(page: "downloads" | "history" | "bookmarks" | "tabSearch"): void {
-    const controller = controllers.current.get(focusedWindowId);
+    const controller = controllers.get(focusedWindowId());
     if (page === "tabSearch") controller?.openSwitcher();
     else controller?.openPanel(page);
   }
@@ -413,13 +422,13 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// command instead; this runs the app's equivalent, and drops the ones the
   /// app has none for.
   function onBrowserCommand(fromTab: string, name: string): void {
-    const windowId = windowOfTab(session.get(), fromTab)?.id ?? focusedWindowId;
-    const controller = controllers.current.get(windowId);
+    const windowId = windowOfTab(session.get(), fromTab)?.id ?? focusedWindowId();
+    const controller = controllers.get(windowId);
     switch (name) {
       case "newWindow":
         return newWindow();
       case "newPrivateWindow":
-        return setPrivateOpen(true);
+        return void setPrivateOpen(true);
       case "newTab":
         openTab(windowId, "");
         return;
@@ -438,7 +447,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
       case "bookmarkPage":
         return controller?.bookmarkPage();
       case "settings":
-        return setSettingsOpen(true);
+        return void setSettingsOpen(true);
       case "extensions":
         openTab(windowId, "chrome://extensions");
         return;
@@ -462,17 +471,13 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// Everything a tab leaves behind at the root, for a tab that is gone.
   function forgetTab(id: string): void {
     denyPromptsFor(id);
-    views.current.delete(id);
-    placed.current.delete(id);
-    sentMenus.current.delete(id);
-    scrollMemory.current.delete(id);
-    setLive((l) => without(l, id));
-    setAsleep((a) => without(a, id));
-    setFinds((f) => {
-      if (!(id in f)) return f;
-      const { [id]: _gone, ...rest } = f;
-      return rest;
-    });
+    views.delete(id);
+    placed.delete(id);
+    sentMenus.delete(id);
+    scrollMemory.delete(id);
+    setLive((l) => void delete l[id]);
+    setAsleep((a) => void delete a[id]);
+    setFinds((f) => void delete f[id]);
   }
 
   /// The last tab takes its window with it. When that is the last window the
@@ -481,7 +486,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   function closeTab(id: string): void {
     const gone = tabOf(id);
     if (!gone) return;
-    closed.current.push({ url: gone.url, title: gone.title });
+    closed.push({ url: gone.url, title: gone.title });
     forgetTab(id);
     session.update((s) =>
       withoutEmptyWindows({
@@ -503,9 +508,9 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   function onWindowClosed(windowId: string): void {
     const s = session.get();
     const w = s.windows.find((x) => x.id === windowId);
-    if (!w || windows.length <= 1) return;
+    if (!w || windows().length <= 1) return;
     for (const t of w.tabs) {
-      closed.current.push({ url: t.url, title: t.title });
+      closed.push({ url: t.url, title: t.title });
       forgetTab(t.id);
     }
     session.update((x) => ({ ...x, windows: x.windows.filter((y) => y.id !== windowId) }));
@@ -553,7 +558,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
         Bun.sleep(500).then(() => null),
       ]);
       const [x, y] = String(answer ?? "").split(",").map(Number);
-      if ((x || y) && Number.isFinite(x) && Number.isFinite(y)) scrollMemory.current.set(id, [x!, y!]);
+      if ((x || y) && Number.isFinite(x) && Number.isFinite(y)) scrollMemory.set(id, [x!, y!]);
     }
     // The page may have been closed or shown while its scroll was read.
     if (!canSleep(id)) return;
@@ -567,28 +572,27 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
       selectTab(others[0]!.t.id);
     }
     denyPromptsFor(id);
-    views.current.delete(id);
-    placed.current.delete(id);
-    sentMenus.current.delete(id);
-    committed.current.delete(id);
-    setFinds((f) => without(f, id));
-    setArmedTabs((a) => without(a, id));
-    setLive((l) => without(l, id));
-    setAsleep((a) => ({ ...a, [id]: true }));
+    views.delete(id);
+    placed.delete(id);
+    sentMenus.delete(id);
+    committed.delete(id);
+    setFinds((f) => void delete f[id]);
+    setLive((l) => void delete l[id]);
+    setAsleep((a) => void (a[id] = true));
     patch(id, { loading: false, progress: 0, canGoBack: false, canGoForward: false, error: null });
-    if (TEST_HOOKS) console.error(`ND_APP SLEEP tab=${id} scroll=${scrollMemory.current.get(id)?.join(",") ?? "top"}`);
+    if (TEST_HOOKS) console.error(`ND_APP SLEEP tab=${id} scroll=${scrollMemory.get(id)?.join(",") ?? "top"}`);
   }
 
   /// A woken page is put back where it was scrolled to once it has loaded.
   function onLoading(id: string, loading: boolean): void {
     // A new document has no reader over it, whatever the last one had.
     patch(id, loading ? { loading, reading: false } : { loading });
-    const at = scrollMemory.current.get(id);
+    const at = scrollMemory.get(id);
     const node = view(id);
     // Until the page has committed, the view is still on the blank page it
     // was created with.
-    if (loading || !at || !node || !committed.current.has(id)) return;
-    scrollMemory.current.delete(id);
+    if (loading || !at || !node || !committed.has(id)) return;
+    scrollMemory.delete(id);
     void executeJavaScript(node, `window.scrollTo(${at[0]}, ${at[1]})`).catch(() => {});
     if (TEST_HOOKS) console.error(`ND_APP SCROLLBACK tab=${id} to=${at[0]},${at[1]}`);
   }
@@ -607,7 +611,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   }
 
   function reopenTab(windowId: string): void {
-    const last = closed.current.pop();
+    const last = closed.pop();
     if (last) openTab(windowId, last.url);
   }
 
@@ -621,7 +625,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   }
 
   function cycleTab(windowId: string, step: number): void {
-    const w = windows.find((x) => x.id === windowId);
+    const w = session.get().windows.find((x) => x.id === windowId && x.tabs.length > 0);
     if (!w || w.tabs.length < 2) return;
     const at = w.tabs.findIndex((t) => t.id === w.activeId);
     selectTab(w.tabs[(at + step + w.tabs.length) % w.tabs.length]!.id);
@@ -655,8 +659,8 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     setTabUrl(id, target);
     // A view already showing a page cannot walk to one of these (see
     // createAtUrl), so the address bar builds the view again at the address
-    // instead of sending the existing one to it. `attempt` is the webview's
-    // key, which is what remounts it.
+    // instead of sending the existing one to it. `attempt` keys the view, so
+    // a new one is a new view.
     if (createAtUrl(target)) patch(id, { attempt: rt(id).attempt + 1 });
   }
 
@@ -665,7 +669,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// macOS "no application set to open the URL" dialog came from.
   function reachable(url: string): boolean {
     if (!createAtUrl(url)) return true;
-    if (chromium) return true;
+    if (chromium()) return true;
     toast("This address needs the Chromium engine");
     return false;
   }
@@ -682,7 +686,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     const page = nativePage(url);
     if (page) {
       if (page !== "newtab") openNativePage(page);
-      const back = committed.current.get(id);
+      const back = committed.get(id);
       if (page !== "newtab" && rt(id).canGoBack && back) command(id, "goBack");
       else setTabUrl(id, "");
       return;
@@ -692,13 +696,13 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     denyPromptsFor(id);
     // A page that changes its address without loading a new document keeps
     // the reader up over an article it no longer shows.
-    const before = committed.current.get(id);
+    const before = committed.get(id);
     if (rt(id).reading && before !== url) {
       patch(id, { reading: false });
       const node = view(id);
       if (node) void executeJavaScript(node, leaveReaderScript()).catch(() => {});
     }
-    committed.current.set(id, url);
+    committed.set(id, url);
     setTabUrl(id, url);
     applyZoom(id, url);
     if (isShown(id)) refreshActionStates();
@@ -723,12 +727,12 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   }
 
   function zoomFor(url: string): number {
-    return session.get().zoomByHost[hostOf(url)] ?? 1;
+    return state.zoomByHost[hostOf(url)] ?? 1;
   }
 
   function applyZoom(id: string, url: string): void {
     const node = view(id);
-    if (node) sendCommand(node, "setZoom", zoomFor(url));
+    if (node) sendCommand(node, "setZoom", session.get().zoomByHost[hostOf(url)] ?? 1);
   }
 
   function setZoom(tabId: string, next: number): void {
@@ -740,13 +744,17 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// A step from the menu, the palette or the zoom popover. The popover shows
   /// for a moment so the new value is visible, as it is after a chord.
   function zoomStep(tabId: string, direction: 1 | -1 | 0): void {
-    const current = zoomFor(tabOf(tabId)?.url ?? "");
+    const current = session.get().zoomByHost[hostOf(tabOf(tabId)?.url ?? "")] ?? 1;
     setZoom(tabId, direction === 0 ? 1 : stepZoom(current, direction));
     bumpZoomNotice(tabId);
   }
 
   function bumpZoomNotice(tabId: string): void {
-    setRuntime((r) => ({ ...r, [tabId]: { ...(r[tabId] ?? IDLE), zoomNotice: (r[tabId] ?? IDLE).zoomNotice + 1 } }));
+    setRuntime((r) => {
+      const cur = r[tabId];
+      if (cur) cur.zoomNotice += 1;
+      else r[tabId] = { ...IDLE, zoomNotice: 1 };
+    });
   }
 
   function rememberZoom(tabId: string, factor: number): boolean {
@@ -776,34 +784,40 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
 
   /// The app's own light or dark, which the reader follows. The app has no
   /// appearance setting of its own: it is the system's.
-  const appearance = useRef<Appearance>("light");
-  /// The runtime the appearance listener reads: it outlives the render that
-  /// subscribed it.
-  const runtimeRef = useRef(runtime);
-  runtimeRef.current = runtime;
-  useMountEffect(() => {
-    void system
-      .getAppearance()
-      .then((a) => {
-        appearance.current = a.appearance;
+  let appearance: "light" | "dark" = "light";
+  onSettled(() => {
+    let stop: (() => void) | undefined;
+    let gone = false;
+    void firstCommit.then(() => {
+      if (gone) return;
+      void system
+        .getAppearance()
+        .then((a) => {
+          appearance = a.appearance;
+          if (setFaviconAppearance(a.appearance)) setIconEpoch((n) => n + 1);
+        })
+        .catch(() => {});
+      stop = system.onAppearanceChange((a) => {
+        appearance = a.appearance;
         if (setFaviconAppearance(a.appearance)) setIconEpoch((n) => n + 1);
-      })
-      .catch(() => {});
-    return system.onAppearanceChange((a) => {
-      appearance.current = a.appearance;
-      if (setFaviconAppearance(a.appearance)) setIconEpoch((n) => n + 1);
-      for (const [id, node] of views.current) {
-        if (node && runtimeRef.current[id]?.reading) {
-          void executeJavaScript(node, readerSchemeScript(a.appearance)).catch(() => {});
+        for (const [id, node] of views) {
+          if (runtime[id]?.reading) void executeJavaScript(node, readerSchemeScript(a.appearance)).catch(() => {});
         }
-      }
+      });
+      // The lists reach the host while Chromium is still starting, and the
+      // window never waits on them.
+      startContentBlocking();
     });
+    return () => {
+      gone = true;
+      stop?.();
+    };
   });
 
   function toggleReader(tabId: string): void {
     const node = view(tabId);
-    if (!node || !chromium) return;
-    void executeJavaScript(node, toggleReaderScript(appearance.current))
+    if (!node || !chromium()) return;
+    void executeJavaScript(node, toggleReaderScript(appearance))
       .then((answer) => {
         const state = readerState(answer);
         if (TEST_HOOKS) console.error(`ND_APP READER ${tabId} ${state}`);
@@ -824,24 +838,19 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
 
   // ----------------------------------------------------------- blocking ---
 
-  // After the first commit, the earliest the host takes system calls: the
-  // lists reach it while Chromium is still starting, and the window never
-  // waits on them.
-  useMountEffect(() => startContentBlocking());
-
   /// The ⇧⌘H picker, asleep in an isolated world of each tab's main frame.
-  /// Guarded by widget id: the ref callback runs on every render.
-  const hiderArmed = useRef(new Set<number>());
+  /// Guarded by widget id: a view is armed once.
+  const hiderArmed = new Set<number>();
   function armHider(node: NdNodeRef<"webview">): void {
-    if (!chromium || hiderArmed.current.has(node.id)) return;
-    hiderArmed.current.add(node.id);
+    if (!chromium() || hiderArmed.has(node.id)) return;
+    hiderArmed.add(node.id);
     sendCommand(node, "addUserScript", { id: "nb-hide", source: HIDER_SOURCE, injectionTime: "start", world: HIDER_WORLD });
     sendCommand(node, "registerScriptMessage", { name: HIDER_CHANNEL, world: HIDER_WORLD });
   }
 
   function toggleHiding(tabId: string): void {
     const node = view(tabId);
-    if (!node || !chromium || !siteOf(tabOf(tabId)?.url ?? "")) return;
+    if (!node || !chromium() || !siteOf(tabOf(tabId)?.url ?? "")) return;
     void executeJavaScript(node, "window.__nbHide && window.__nbHide.toggle()", HIDER_WORLD).catch(() => {});
   }
 
@@ -883,18 +892,18 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     const site = siteOf(tabOf(tabId)?.url ?? "");
     return {
       site,
-      on: blockingOn(site, blockingState),
-      hidden: hiddenOn(site, blockingState).length,
+      on: blockingOn(site, blockingState()),
+      hidden: hiddenOn(site, blockingState()).length,
       blocked: rt(tabId).blocked,
     };
   }
 
   /// Views whose reader channel is registered; one registration serves every
   /// document the view loads.
-  const readerChannels = useRef(new Set<number>());
+  const readerChannels = new Set<number>();
   function hearReaderEscape(node: NdNodeRef<"webview">): void {
-    if (!readerChannels.current.has(node.id)) {
-      readerChannels.current.add(node.id);
+    if (!readerChannels.has(node.id)) {
+      readerChannels.add(node.id);
       sendCommand(node, "registerScriptMessage", { name: READER_CHANNEL, world: READER_WORLD });
     }
     void executeJavaScript(node, READER_BRIDGE_SCRIPT, READER_WORLD).catch(() => {});
@@ -902,7 +911,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
 
   function toggleFloat(tabId: string): void {
     const node = view(tabId);
-    if (!node || !chromium) return;
+    if (!node || !chromium()) return;
     void executeJavaScript(node, FLOAT_SCRIPT, undefined, { userGesture: true })
       .then((answer) => {
         const state = floatState(answer);
@@ -958,18 +967,18 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     // session changes: a window its last tab left is taken down in the very
     // commit that lists the tab elsewhere, and the host would take the live
     // view down with it before the placement effect ran.
-    const node = views.current.get(tabId);
-    const slot = slots.current.get(toWindowId);
+    const node = views.get(tabId);
+    const slot = slots.get(toWindowId);
     if (node && slot && from.id !== toWindowId) {
       moveNode(node, slot);
-      placed.current.set(tabId, `${node.id}>${slot.id}`);
+      placed.set(tabId, `${node.id}>${slot.id}`);
     }
     session.set(withoutEmptyWindows(moveTabIn(s, tabId, toWindowId, index)));
     setFocusedId(toWindowId);
     if (TEST_HOOKS) console.error(`ND_APP MOVE tab=${tabId} from=${from.id} to=${toWindowId} index=${index}`);
     // A request the page is still waiting on is answered from the window it
     // is in now.
-    if (pending.current.some((q) => q.tabId === tabId)) controllers.current.get(toWindowId)?.openSiteInfo();
+    if (pending.some((q) => q.tabId === tabId)) controllers.get(toWindowId)?.openSiteInfo();
   }
 
   function moveTabBy(tabId: string, step: number): void {
@@ -1027,13 +1036,13 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   }
 
   function moveTargets(fromWindowId: string): MoveTarget[] {
-    const targets: MoveTarget[] = windows
+    const targets: MoveTarget[] = windows()
       .filter((w) => w.id !== fromWindowId)
       .map((w) => ({
         id: w.id,
         label: windowLabel(w.tabs.find((t) => t.id === w.activeId) ?? w.tabs[0]!, w.tabs.length),
       }));
-    if (privateOpen) targets.push({ id: "private", label: "Private Browsing" });
+    if (privateOpen()) targets.push({ id: "private", label: "Private Browsing" });
     return targets;
   }
 
@@ -1041,7 +1050,9 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
 
   const findFor = (tabId: string): FindState => finds[tabId] ?? NO_FIND;
   const setFind = (tabId: string, next: (f: FindState) => FindState): void =>
-    setFinds((all) => ({ ...all, [tabId]: next(all[tabId] ?? NO_FIND) }));
+    void setFinds((all) => {
+      all[tabId] = next(all[tabId] ?? NO_FIND);
+    });
 
   /// Find is per tab: a search runs on that tab's page and stays with it,
   /// whichever window the tab is in.
@@ -1065,12 +1076,12 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
 
   // ---------------------------------------------------- permissions ---
 
-  /// The queue is a ref with the state mirroring it, because the two exits
-  /// from it can happen in one turn: answering the prompt on show closes the
-  /// popover, and the close handler must then find the queue already short of
-  /// it rather than answer the same id twice.
+  /// The queue is a plain array with the signal mirroring it, because the two
+  /// exits from it can happen in one turn: answering the prompt on show closes
+  /// the popover, and the close handler must then find the queue already
+  /// short of it rather than answer the same id twice.
   function setQueue(next: PermissionPrompt[]): void {
-    pending.current = next;
+    pending = next;
     setPrompts(next);
   }
 
@@ -1082,7 +1093,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
 
   function answerPrompt(prompt: PermissionPrompt, allow: boolean): void {
     respond(prompt.tabId, prompt.id, allow);
-    setQueue(pending.current.filter((q) => q.id !== prompt.id));
+    setQueue(pending.filter((q) => q.id !== prompt.id));
   }
 
   /// Everything that takes a prompt away without the user choosing: escape, a
@@ -1091,10 +1102,10 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// a dismissed bubble. An id left unanswered would leave the page waiting
   /// for ever.
   function denyPromptsFor(tabId: string): void {
-    const doomed = pending.current.filter((q) => q.tabId === tabId);
+    const doomed = pending.filter((q) => q.tabId === tabId);
     if (doomed.length === 0) return;
     for (const prompt of doomed) respond(tabId, prompt.id, false);
-    setQueue(pending.current.filter((q) => q.tabId !== tabId));
+    setQueue(pending.filter((q) => q.tabId !== tabId));
   }
 
   function onPermissionRequest(tabId: string, data: unknown): void {
@@ -1102,16 +1113,16 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     if (!request.id) return;
     const types = splitTypes(request.types ?? "");
     const origin = request.origin ?? "";
-    const decided = rememberedDecision(prefs.sitePermissions, origin, types);
+    const decided = rememberedDecision(settings.get().sitePermissions, origin, types);
     if (decided) {
       respond(tabId, request.id, decided === "allow");
       return;
     }
-    setQueue([...pending.current, { id: request.id, tabId, origin, types }]);
+    setQueue([...pending, { id: request.id, tabId, origin, types }]);
     // The bubble opens itself for a tab being looked at, the way Chrome's
     // does; a background tab's request waits for the tab.
     const w = windowOfTab(session.get(), tabId);
-    if (w && w.activeId === tabId) controllers.current.get(w.id)?.openSiteInfo();
+    if (w && w.activeId === tabId) controllers.get(w.id)?.openSiteInfo();
   }
 
   /// Allow and Block are the only answers that are remembered, and answering
@@ -1137,14 +1148,14 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// WKWebView both report AppleWebKit and Safari and neither reports Chrome.
   function probeEngine(node: NdNodeRef<"webview">, attempt = 0): void {
     // One chain, and none once the answer is in. A retry that outlived the
-    // answer would keep evaluating against a view the `key` has already
-    // rebuilt, and an executeJavaScript aimed at a widget that is gone stops
-    // the host answering anything at all.
-    if (engineProbed.current || extRegistry.current !== node) return;
+    // answer would keep evaluating against a view the registry key has
+    // already rebuilt, and an executeJavaScript aimed at a widget that is
+    // gone stops the host answering anything at all.
+    if (engineProbed || extRegistry !== node) return;
     if (attempt > 0 && TEST_HOOKS) console.error(`ND_APP ENGINE retry=${attempt}`);
     void executeJavaScript(node, "navigator.userAgent")
       .then((ua) => {
-        if (engineProbed.current) return;
+        if (engineProbed) return;
         const agent = String(ua ?? "");
         // A view that has not committed a document yet answers with nothing,
         // which is not an answer about the engine.
@@ -1153,12 +1164,12 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
           return;
         }
         const found = /Chrome\//.test(agent) ? "chromium" : "system";
-        engineProbed.current = true;
+        engineProbed = true;
         if (TEST_HOOKS) console.error(`ND_APP ENGINE ${found}`);
         setEngine(found);
       })
       .catch((e: unknown) => {
-        if (engineProbed.current) return;
+        if (engineProbed) return;
         if (TEST_HOOKS) console.error(`ND_APP ENGINE failed=${String(e)}`);
         if (attempt < 20) setTimeout(() => probeEngine(node, attempt + 1), 400);
       });
@@ -1169,22 +1180,22 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// what that reports, plus once when the panel is opened: a list nobody is
   /// watching is worse than one read a moment too often.
   function refreshExtensions(): void {
-    const node = extRegistry.current;
+    const node = extRegistry;
     if (!node) return;
     void listExtensions(node)
       .then((list) => {
-        for (const gone of knownExtensions.current) {
+        for (const gone of knownExtensions) {
           if (!list.some((e) => e.id === gone)) closeExtensionTabs(gone);
         }
-        knownExtensions.current = list.map((e) => e.id);
+        knownExtensions = list.map((e) => e.id);
         setRegistry(list);
         // Chrome's "added" bubble hangs off a toolbar the app never shows.
-        for (const [id, name] of storeInstalls.current) {
+        for (const [id, name] of storeInstalls) {
           const added = list.find((e) => e.id === id);
           if (!added) continue;
-          storeInstalls.current.delete(id);
+          storeInstalls.delete(id);
           if (TEST_HOOKS) console.error(`ND_APP STORE_ADDED id=${id}`);
-          toast(`Added \u201c${added.name || name}\u201d`);
+          toast(`Added “${added.name || name}”`);
         }
       })
       .catch(() => {});
@@ -1193,13 +1204,13 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
 
   /// Store installs the user said yes to, by id, until they show up in the
   /// registry.
-  const storeInstalls = useRef(new Map<string, string>());
+  const storeInstalls = new Map<string, string>();
   /// Views the store hook is installed on; one install serves every document
   /// the view loads.
-  const storeHooked = useRef(new Set<number>());
+  const storeHooked = new Set<number>();
   function hookStore(node: NdNodeRef<"webview">): void {
-    if (storeHooked.current.has(node.id)) return;
-    storeHooked.current.add(node.id);
+    if (storeHooked.has(node.id)) return;
+    storeHooked.add(node.id);
     sendCommand(node, "addUserScript", { id: "nb-store", source: STORE_SCRIPT, injectionTime: "start", allowList: STORE_ORIGINS });
     sendCommand(node, "registerScriptMessage", { name: STORE_CHANNEL });
   }
@@ -1211,15 +1222,15 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     const node = view(tabId);
     const request = parseStoreRequest(body);
     if (!node || !request) return;
-    const fromStore = (committed.current.get(tabId) ?? "").startsWith("https://chromewebstore.google.com/");
+    const fromStore = (committed.get(tabId) ?? "").startsWith("https://chromewebstore.google.com/");
     const win = windowOfTab(session.get(), tabId);
     if (TEST_HOOKS) console.error(`ND_APP STORE_ASK id=${request.id} name=${JSON.stringify(request.name)} store=${fromStore}`);
     const yes = fromStore && win
-      ? ((await controllers.current.get(win.id)?.confirmInstall(request.name, permissionLines(request.manifest))) ?? false)
+      ? ((await controllers.get(win.id)?.confirmInstall(request.name, permissionLines(request.manifest))) ?? false)
       : false;
     if (TEST_HOOKS) console.error(`ND_APP STORE_ANSWER id=${request.id} ${yes ? "add" : "cancel"}`);
     if (yes) {
-      storeInstalls.current.set(request.id, request.name);
+      storeInstalls.set(request.id, request.name);
       acceptExtensionInstall(node);
     }
     void executeJavaScript(node, storeAnswerScript(request.id, yes)).catch(() => {});
@@ -1245,7 +1256,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     let last: ExtensionActionState | null = null;
     for (let attempt = 0; attempt < tries; attempt++) {
       if (attempt > 0) await Bun.sleep(400);
-      const node = probes.current.get(id);
+      const node = probes.get(id);
       if (!node) continue;
       const state = await readExtensionAction(node).catch(() => null);
       if (!state) continue;
@@ -1268,8 +1279,8 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// every change the registry reports reads them again, for the window in
   /// front.
   function refreshActionStates(only?: ReadonlySet<string>): void {
-    for (const id of probes.current.keys()) {
-      if (!only || only.has(id)) void readActionFor(id, focusedWindowId, 4);
+    for (const id of probes.keys()) {
+      if (!only || only.has(id)) void readActionFor(id, focusedWindowId(), 4);
     }
   }
 
@@ -1288,7 +1299,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
         refreshExtensions();
       })
       .catch((e: unknown) => {
-        if (attempt < 20 && extRegistry.current === node) {
+        if (attempt < 20 && extRegistry === node) {
           setTimeout(() => watchRegistry(node, attempt + 1), 250);
           return;
         }
@@ -1300,13 +1311,13 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// every page an extension opens, an install's loaded, installed and prefs
   /// events. One registry read and one badge read per extension named, ~100 ms
   /// after the burst, instead of a full re-read of everything per event.
-  const registryBurst = useRef<{ timer: ReturnType<typeof setTimeout> | null; ids: Set<string>; all: boolean }>({
+  const registryBurst: { timer: ReturnType<typeof setTimeout> | null; ids: Set<string>; all: boolean } = {
     timer: null,
     ids: new Set(),
     all: false,
-  });
+  };
   function onRegistryChange(change: ExtensionsChange): void {
-    const burst = registryBurst.current;
+    const burst = registryBurst;
     if (change.extensionId) burst.ids.add(change.extensionId);
     else burst.all = true;
     if (burst.timer) return;
@@ -1323,7 +1334,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   async function probeFor(id: string): Promise<NdNodeRef<"webview"> | null> {
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
-      const node = probes.current.get(id);
+      const node = probes.get(id);
       if (node) return node;
       await Bun.sleep(100);
     }
@@ -1335,8 +1346,8 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// which cannot fire without a Chromium toolbar, so the nearest thing it
   /// would do is open its own setup page.
   function clickAction(windowId: string, row: ExtensionRow): void {
-    if (checkingRef.current === row.id) return;
-    checkingRef.current = row.id;
+    if (checking === row.id) return;
+    checking = row.id;
     setCheckingAction(row.id);
     void decideAction(windowId, row);
   }
@@ -1344,8 +1355,8 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   async function decideAction(windowId: string, row: ExtensionRow): Promise<void> {
     await probeFor(row.id);
     const read = await readActionFor(row.id, windowId, 6);
-    if (checkingRef.current !== row.id) return;
-    checkingRef.current = "";
+    if (checking !== row.id) return;
+    checking = "";
     setCheckingAction("");
     // No answer at all is an engine that cannot say, not an extension that
     // switched its popup off: the manifest is all there is to go on. An
@@ -1357,7 +1368,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
       await runAction(windowId, row);
       return;
     }
-    controllers.current.get(windowId)?.showPopup(row.id, live);
+    controllers.get(windowId)?.showPopup(row.id, live);
   }
 
   /// An action with no popup is Chromium's to run: `onClicked` with the tab on
@@ -1376,7 +1387,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
       : "no page on show";
     if (TEST_HOOKS) console.error(`ND_APP ACTION_TRIGGER id=${row.id} ${error ?? "ok"}`);
     if (error === null) {
-      if (probes.current.has(row.id)) void readActionFor(row.id, windowId, 2);
+      if (probes.has(row.id)) void readActionFor(row.id, windowId, 2);
       return;
     }
     if (row.optionsUrl) openTab(windowId, row.optionsUrl);
@@ -1386,7 +1397,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// `--load-extension`, and the Web Store needs the network. The app's own
   /// install API is the one route left.
   function installTestExtension(dir: string | undefined): void {
-    const node = extRegistry.current;
+    const node = extRegistry;
     if (!node || !dir) return;
     void installExtension(node, dir)
       .then(() => refreshExtensions())
@@ -1406,7 +1417,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   }
 
   function uninstallExtension(id: string): void {
-    const node = extRegistry.current;
+    const node = extRegistry;
     if (!node) return;
     // Before the extension goes: once it is unloaded its pages navigate
     // away from its address and can no longer be told apart.
@@ -1434,29 +1445,27 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   }
 
   /// Pushes each tab's menu to its own view. Sent only when the tree actually
-  /// changes, which is what makes calling it per render safe. Keyed by tab and
-  /// by view, not by window: a view that moved windows keeps its menu.
+  /// changes, which is what makes calling it on every mount safe. Keyed by tab
+  /// and by view, not by window: a view that moved windows keeps its menu.
   function syncContextMenus(only?: string): void {
     // One tree for every tab, built once per call rather than once per tab.
     const items = appContextMenuItems();
     const shape = JSON.stringify(items);
-    for (const tab of allTabs) {
-      if (only !== undefined && tab.id !== only) continue;
-      const node = views.current.get(tab.id);
-      if (!node) continue;
+    for (const [id, node] of views) {
+      if (only !== undefined && id !== only) continue;
       // Keyed on the widget as well as the tree: a remounted view (Try Again
-      // bumps the webview's key) starts with no items of its own.
+      // gives the tab a new view) starts with no items of its own.
       const stamp = `${node.id}|${shape}`;
-      if (sentMenus.current.get(tab.id) === stamp) continue;
-      sentMenus.current.set(tab.id, stamp);
+      if (sentMenus.get(id) === stamp) continue;
+      sentMenus.set(id, stamp);
       setContextMenuItems(node, items);
-      if (TEST_HOOKS) console.error(`ND_APP CTXMENU tab=${tab.id} ${shape}`);
+      if (TEST_HOOKS) console.error(`ND_APP CTXMENU tab=${id} ${shape}`);
     }
   }
 
   /// An item the user chose in a page's context menu: one of the three above.
   function onContextMenuItem(tabId: string, click: ContextMenuItemClick): void {
-    const windowId = windowOfTab(session.get(), tabId)?.id ?? focusedWindowId;
+    const windowId = windowOfTab(session.get(), tabId)?.id ?? focusedWindowId();
     switch (click.id) {
       case "nb-search-selection":
         if (click.selectionText) openTab(windowId, toUrl(click.selectionText) ?? "", true);
@@ -1495,15 +1504,12 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// Any live Chromium view carries a download command: a download is the
   /// engine's, not the tab's.
   function engineView(): NdNodeRef<"webview"> | null {
-    for (const t of allTabs) {
-      const node = views.current.get(t.id);
-      if (node) return node;
-    }
-    return extRegistry.current;
+    for (const node of views.values()) return node;
+    return extRegistry;
   }
 
   function showDownloads(): void {
-    controllers.current.get(focusedWindowId)?.openDownloads();
+    controllers.get(focusedWindowId())?.openDownloads();
   }
 
   /// A download is not a navigation: whichever tab aimed at its URL goes back
@@ -1519,7 +1525,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
         ...w,
         tabs: w.tabs.map((t) => {
           if (t.url !== url) return t;
-          const back = committed.current.get(t.id);
+          const back = committed.get(t.id);
           if (back === undefined && engineId) {
             waiting.push(t.id);
             return t;
@@ -1528,31 +1534,31 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
         }),
       })),
     }));
-    if (engineId && waiting.length) downloadTabs.current.set(engineId, waiting);
+    if (engineId && waiting.length) downloadTabs.set(engineId, waiting);
   }
 
   function settleDownloadTabs(engineId: string): void {
-    const ids = downloadTabs.current.get(engineId);
+    const ids = downloadTabs.get(engineId);
     if (!ids) return;
-    downloadTabs.current.delete(engineId);
-    for (const id of ids) setTabUrl(id, committed.current.get(id) ?? "");
+    downloadTabs.delete(engineId);
+    for (const id of ids) setTabUrl(id, committed.get(id) ?? "");
   }
 
   async function onDownloadRequested(node: NdNodeRef<"webview"> | null, req: DownloadRequest): Promise<void> {
     // One answer per download: a request can reach the app on more than one
     // view's handler, and a second answer would cancel the first.
-    if (TEST_HOOKS) console.error(`ND_APP DL request ${req.id ?? "-"} ${req.url} known=${req.id ? engineDownloads.current.has(req.id) : false}`);
-    if (req.id && engineDownloads.current.has(req.id)) return;
+    if (TEST_HOOKS) console.error(`ND_APP DL request ${req.id ?? "-"} ${req.url} known=${req.id ? engineDownloads.has(req.id) : false}`);
+    if (req.id && engineDownloads.has(req.id)) return;
     leaveDownloadTab(req.url, req.id);
     if (!req.id) {
       void fetchDownload(req.url, req.suggestedFilename);
       return;
     }
     const engineId = req.id;
-    const retryOf = retrying.current.get(req.url);
-    retrying.current.delete(req.url);
+    const retryOf = retrying.get(req.url);
+    retrying.delete(req.url);
     const id = retryOf ?? newDownloadId();
-    engineDownloads.current.set(engineId, id);
+    engineDownloads.set(engineId, id);
     const name = downloadName(req.url, req.suggestedFilename);
     const fresh: DownloadItem = {
       id,
@@ -1570,15 +1576,16 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     else addDownload(fresh);
     showDownloads();
 
-    const dir = ensureDir(downloadDir(prefs.downloadDir));
+    const prefsNow = settings.get();
+    const dir = ensureDir(downloadDir(prefsNow.downloadDir));
     let path = uniquePath(dir, name, reservedPaths(downloads.get().items));
-    if (prefs.askWhereToSave) {
+    if (prefsNow.askWhereToSave) {
       const chosen = await dialog.saveFile({ defaultPath: path }).catch(() => null);
       if (!chosen) {
         const target = engineView() ?? node;
         if (target) respondDownload(target, engineId);
         settleDownloadTabs(engineId);
-        engineDownloads.current.delete(engineId);
+        engineDownloads.delete(engineId);
         removeDownload(id);
         return;
       }
@@ -1598,7 +1605,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   }
 
   function onDownloadUpdated(u: DownloadUpdate): void {
-    const id = engineDownloads.current.get(u.id);
+    const id = engineDownloads.get(u.id);
     if (TEST_HOOKS && u.state !== "running") console.error(`ND_APP DL update ${u.id} ${u.state} row=${id ?? "-"}`);
     if (!id) return;
     const d = downloads.get().items.find((x) => x.id === id);
@@ -1618,12 +1625,12 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
         return;
       case "cancelled":
         settleDownloadTabs(u.id);
-        engineDownloads.current.delete(u.id);
+        engineDownloads.delete(u.id);
         patchDownload(id, { speed: 0, state: "cancelled", engineId: undefined, endedAt: Date.now() });
         return;
       case "done":
         settleDownloadTabs(u.id);
-        engineDownloads.current.delete(u.id);
+        engineDownloads.delete(u.id);
         patchDownload(id, {
           received: u.received,
           total: total || u.received,
@@ -1640,7 +1647,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   }
 
   async function fetchDownload(url: string, suggested?: string, retryOf?: string): Promise<void> {
-    const dir = ensureDir(downloadDir(prefs.downloadDir));
+    const dir = ensureDir(downloadDir(settings.get().downloadDir));
     const name = downloadName(url, suggested);
     const path = uniquePath(dir, name, reservedPaths(downloads.get().items));
     const id = retryOf ?? newDownloadId();
@@ -1690,13 +1697,13 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     retry: (d) => {
       // Chromium resumes an interrupted download it still has from where it
       // stopped; anything else starts over from the URL.
-      const node = chromium ? engineView() : null;
-      if (node && d.engineId && engineDownloads.current.has(d.engineId) && d.state === "interrupted") {
+      const node = chromium() ? engineView() : null;
+      if (node && d.engineId && engineDownloads.has(d.engineId) && d.state === "interrupted") {
         resumeDownload(node, d.engineId);
         return;
       }
       if (node) {
-        retrying.current.set(d.url, d.id);
+        retrying.set(d.url, d.id);
         patchDownload(d.id, { state: "pending", received: 0, speed: 0, reason: undefined });
         engineStartDownload(node, d.url);
         return;
@@ -1724,7 +1731,7 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     },
     discard: (d) => discardDangerous(d),
     clear: clearDownloads,
-    openFolder: () => void openPath(ensureDir(downloadDir(prefs.downloadDir))).catch(() => {}),
+    openFolder: () => void openPath(ensureDir(downloadDir(settings.get().downloadDir))).catch(() => {}),
     showAll: () => openNativePage("downloads"),
   };
 
@@ -1741,125 +1748,243 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
   /// answering), so the hidden registry view stands down while a TAB is
   /// showing that page. The tab is the one the user asked for; the registry
   /// comes back when it closes.
-  const registryYields = allTabs.some((t) => t.url.startsWith("chrome://extensions"));
-  const rows = extensionRows(registry, extActions);
-  const pinnedActions = pinnedRows(rows, prefs.pinnedExtensions);
+  const registryYields = createMemo(() => allTabs().some((t) => t.url.startsWith("chrome://extensions")));
+  const rows = createMemo(() => extensionRows(registry(), extActions()));
+  const pinnedActions = createMemo(() => pinnedRows(rows(), prefs.pinnedExtensions));
   /// The actions whose live state is wanted: every toolbar button, for its
   /// badge, and the one a click is being decided for.
-  const probeRows = rows.filter(
-    (r) => r.enabled && (prefs.pinnedExtensions.includes(r.id) || r.id === checkingAction),
+  const probeRows = createMemo(() =>
+    chromium() ? rows().filter((r) => r.enabled && (prefs.pinnedExtensions.includes(r.id) || r.id === checkingAction())) : [],
   );
 
-  const hiddenViews = (
-    <>
-      {/* Chromium answers listExtensions and listExtensionActions on a view
-          showing chrome://extensions and nowhere else, so the toolbar keeps
-          one of its own. It is a floating layer of the first window's
-          overlay rather than a row, so it takes no layout, and it is where
-          the app's own installs go too. 2px, not 1: the engine holds a
-          browser back while its view is 1px or less on a side, and only
-          gives up waiting after 20 s.
+  /// The registry view. It starts on about:blank and only becomes the
+  /// registry once the page it is showing has said which engine drew it. A
+  /// host that fell back to WebKit hands chrome:// to the OS, which puts up
+  /// "There is no application set to open the URL chrome://extensions" on
+  /// macOS. A new engine or a change of `registryYields` is a new view:
+  /// Chromium refuses to walk to the registry address from about:blank.
+  function RegistryView() {
+    let node!: NdNodeRef<"webview">;
+    const at = untrackedRegistryUrl();
+    onSettled(() => {
+      extRegistry = node;
+      if (engine() === "unknown") probeEngine(node);
+      else if (chromium() && !registryYields()) watchRegistry(node, 0);
+      return () => {
+        if (extRegistry === node) extRegistry = null;
+      };
+    });
+    return (
+      <webview
+        ref={node}
+        url={at}
+        testID="extensions-registry-view"
+        style={{ minWidth: 2, minHeight: 2 }}
+        // Without this the engine's answer has nowhere to land and every
+        // executeJavaScript on this view hangs, which is how the engine
+        // probe came back with nothing.
+        onJavaScriptResult={onJavaScriptResult}
+        onExtensionsList={onExtensionsList}
+        onExtensionActions={onExtensionActions}
+        onExtensionsChanged={onExtensionsChanged}
+        {...downloadHandlers(() => extRegistry)}
+      />
+    );
+  }
+  const untrackedRegistryUrl = (): string => (chromium() && !registryYields() ? "chrome://extensions" : "about:blank");
 
-          It starts on about:blank and only becomes the registry once the
-          page it is showing has said which engine drew it. A host that fell
-          back to WebKit hands chrome:// to the OS, which puts up "There is no
-          application set to open the URL chrome://extensions" on macOS.
-          `key` is what rebuilds the view at the registry address: Chromium
-          refuses to walk there from about:blank. */}
+  /// One hidden view per action whose live state is wanted, created at a page
+  /// of that extension (see probes). A new probe address is a new view.
+  function ProbeView(p: { row: ExtensionRow }) {
+    let node!: NdNodeRef<"webview">;
+    const id = p.row.id;
+    const at = probeUrl(p.row);
+    onSettled(() => {
+      probes.set(id, node);
+      void readActionFor(id, focusedWindowId(), 10);
+      return () => {
+        if (probes.get(id) === node) probes.delete(id);
+      };
+    });
+    return (
+      <webview
+        ref={node}
+        url={at}
+        testID={`ext-probe-view-${id}`}
+        style={{ minWidth: 2, minHeight: 2 }}
+        onJavaScriptResult={onJavaScriptResult}
+        onExtensionActions={onExtensionActions}
+        {...downloadHandlers(() => probes.get(id) ?? null)}
+      />
+    );
+  }
+
+  /// Chromium answers listExtensions and listExtensionActions on a view
+  /// showing chrome://extensions and nowhere else, so the toolbar keeps one of
+  /// its own. It is a floating layer of the first window's overlay rather
+  /// than a row, so it takes no layout, and it is where the app's own installs
+  /// go too. 2px, not 1: the engine holds a browser back while its view is
+  /// 1px or less on a side, and only gives up waiting after 20 s.
+  const hiddenViews = () => (
+    <>
       <box
         testID="extensions-registry"
         orientation="horizontal"
         style={{ halign: "start", valign: "end", minWidth: 2, minHeight: 2 }}
       >
-        <webview
-          key={`${engine}:${registryYields}`}
-          ref={(node) => {
-            // Guarded by widget id and never reset: an inline ref callback
-            // runs on every render, and a refresh that re-renders would arm
-            // itself again for ever.
-            const registryView = node as NdNodeRef<"webview"> | null;
-            extRegistry.current = registryView;
-            if (!registryView || registryArmed.current === registryView.id) return;
-            registryArmed.current = registryView.id;
-            if (engine === "unknown") {
-              probeEngine(registryView);
-              return;
-            }
-            if (!chromium || registryYields) return;
-            watchRegistry(registryView, 0);
-          }}
-          url={chromium && !registryYields ? "chrome://extensions" : "about:blank"}
-          testID="extensions-registry-view"
-          style={{ minWidth: 2, minHeight: 2 }}
-          // Without this the engine's answer has nowhere to land and every
-          // executeJavaScript on this view hangs, which is how the engine
-          // probe came back with nothing.
-          onJavaScriptResult={onJavaScriptResult}
-          onExtensionsList={onExtensionsList}
-          onExtensionActions={onExtensionActions}
-          onExtensionsChanged={onExtensionsChanged}
-          {...downloadHandlers(() => extRegistry.current)}
-        />
+        <Show when={`${engine()}:${registryYields()}`} keyed>
+          {(_engine) => <RegistryView />}
+        </Show>
       </box>
-
-      {/* One hidden view per action whose live state is wanted, created at a
-          page of that extension (see probes). 2px for the same reason as the
-          registry view. */}
-      {chromium &&
-        probeRows.map((row) => (
+      <For each={probeRows()} keyed={(r) => r.id}>
+        {(row) => (
           <box
-            key={row.id}
-            testID={`ext-probe-${row.id}`}
+            testID={`ext-probe-${row().id}`}
             orientation="horizontal"
             style={{ halign: "start", valign: "end", minWidth: 2, minHeight: 2 }}
           >
-            <webview
-              key={probeUrl(row)}
-              ref={(node) => {
-                const probe = node as NdNodeRef<"webview"> | null;
-                // The null call comes on every render too, so the armed id
-                // survives it; a rebuilt probe arrives with a new id.
-                if (!probe) {
-                  probes.current.delete(row.id);
-                  return;
-                }
-                probes.current.set(row.id, probe);
-                if (probeArmed.current.get(row.id) === probe.id) return;
-                probeArmed.current.set(row.id, probe.id);
-                void readActionFor(row.id, focusedWindowId, 10);
-              }}
-              url={probeUrl(row)}
-              testID={`ext-probe-view-${row.id}`}
-              style={{ minWidth: 2, minHeight: 2 }}
-              onJavaScriptResult={onJavaScriptResult}
-              onExtensionActions={onExtensionActions}
-              {...downloadHandlers(() => probes.current.get(row.id) ?? null)}
-            />
+            <Show when={probeUrl(row())} keyed>
+              {(_url) => <ProbeView row={row()} />}
+            </Show>
           </box>
-        ))}
+        )}
+      </For>
     </>
   );
 
+  /// A tab's page. Created with no address and given it once the view
+  /// exists, so the user scripts below are in place before its first
+  /// document starts. A view that has to be created AT its address
+  /// (createAtUrl) is the exception.
+  function PageView(p: { tab: SessionTab }) {
+    const id = p.tab.id;
+    let node!: NdNodeRef<"webview">;
+    const [armed, setArmed] = createSignal(false);
+    onSettled(() => {
+      views.set(id, node);
+      fixWebStore(node);
+      if (chromium()) hookStore(node);
+      // The menu can be pushed now that the view exists.
+      syncContextMenus(id);
+      armHider(node);
+      setArmed(true);
+      remounted();
+      return () => {
+        if (views.get(id) === node) views.delete(id);
+        remounted();
+      };
+    });
+    // The engine is known a moment after the first pages mount; their hooks
+    // go in then. Both are guarded by widget id, so a view armed above is not
+    // armed twice.
+    createEffect(chromium, (on) => {
+      if (!on || views.get(id) !== node) return;
+      hookStore(node);
+      armHider(node);
+    });
+    return (
+      <webview
+        ref={node}
+        url={armed() || createAtUrl(p.tab.url) ? p.tab.url : ""}
+        testID={`page-${id}`}
+        style={{ hexpand: true, vexpand: true }}
+        onNavigate={(e) => onNavigated(id, e.text)}
+        onTitleChanged={(e) => onTitled(id, e.text)}
+        onLoadingChanged={(e) => onLoading(id, e.checked)}
+        onLoadProgress={(e) => patch(id, { progress: e.value })}
+        onBackAvailable={(e) => patch(id, { canGoBack: e.checked })}
+        onForwardAvailable={(e) => patch(id, { canGoForward: e.checked })}
+        onLoadFailed={(e) => patch(id, { error: e.data as { url: string; error: string } })}
+        onNewWindow={(e) => openTabFromPage(id, e)}
+        onBrowserCommand={(e) => onBrowserCommand(id, e.text)}
+        onJavaScriptResult={onJavaScriptResult}
+        // triggerExtensionAction answers on the tab it clicked for.
+        onExtensionActions={onExtensionActions}
+        onPermissionRequest={(e) => onPermissionRequest(id, e.data)}
+        onFaviconChanged={(e) => onFavicon(p.tab.url, e.data as { dataUrl?: string; iconUrl?: string })}
+        onSecurityChanged={(e) => patch(id, { security: securityOf(p.tab.url, e.data) })}
+        onZoomChanged={(e) => onZoomChanged(id, e.data)}
+        onPictureInPicture={(e) => onPictureInPicture(id, e.data)}
+        onContentBlocked={(e) => {
+          const count = (e.data as { count: number }).count;
+          patch(id, { blocked: count });
+          if (TEST_HOOKS) console.error(`ND_APP BLOCKED ${id} ${count}`);
+        }}
+        onScriptMessage={(e) => {
+          const message = e.data as { name?: string; body?: unknown };
+          if (message.name === STORE_CHANNEL) {
+            void onStoreRequest(id, message.body);
+            return;
+          }
+          if (message.name === HIDER_CHANNEL && message.body) return onHiderMessage(id, message.body as HiderMessage);
+          if (message.name !== READER_CHANNEL) return;
+          if (TEST_HOOKS) console.error(`ND_APP READER ${id} off`);
+          patch(id, { reading: false });
+        }}
+        onFindResult={(e) => {
+          // Two events per search on GTK: `done` carries the outcome,
+          // `done: false` carries the total from the separate counting pass,
+          // which AppKit never sends.
+          const r = e.data as { matchFound: boolean; matchCount?: number; done: boolean };
+          setFind(id, (f) => (r.done ? { ...f, found: r.matchFound } : { ...f, count: r.matchCount ?? null }));
+        }}
+        onContextMenuItemClicked={(e) => onContextMenuItem(id, e.data as ContextMenuItemClick)}
+        {...downloadHandlers(() => view(id))}
+      />
+    );
+  }
+
+  const iconFor = (url: string): string | undefined => {
+    iconEpoch();
+    return faviconFor(url);
+  };
+
   const ctx: BrowserContext = {
-    session: state,
-    prefs,
-    chromium,
-    history,
+    get session() {
+      return state;
+    },
+    get prefs() {
+      return prefs;
+    },
+    get chromium() {
+      return chromium();
+    },
+    get history() {
+      return history();
+    },
     downloadActions,
     clearHistory: () => clearVisits().then(refreshHistory),
-    prompts,
-    rows,
-    pinnedActions,
-    checkingAction,
-    privateOpen,
-    focusedWindowId,
-    dropHint,
-    iconEpoch,
+    get prompts() {
+      return prompts();
+    },
+    get rows() {
+      return rows();
+    },
+    get pinnedActions() {
+      return pinnedActions();
+    },
+    get checkingAction() {
+      return checkingAction();
+    },
+    get privateOpen() {
+      return privateOpen();
+    },
+    get focusedWindowId() {
+      return focusedWindowId();
+    },
+    get dropHint() {
+      return dropHint();
+    },
+    iconFor,
     hiddenViews,
     rt,
     findFor,
-    actionStates,
-    actionDefaults,
+    get actionStates() {
+      return actionStates();
+    },
+    get actionDefaults() {
+      return actionDefaults();
+    },
     moveTargets,
     openTab,
     closeTab,
@@ -1899,16 +2024,16 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     installTestExtension,
     uninstallExtension,
     newWindow: () => newWindow(),
-    openPrivate: () => setPrivateOpen(true),
-    openSettings: () => setSettingsOpen(true),
+    openPrivate: () => void setPrivateOpen(true),
+    openSettings: () => void setSettingsOpen(true),
     moveTab,
     moveTabBy,
     moveTabTo,
     onTabDropped,
     setDropHint: (windowId, index) =>
-      setDropHintState((h) => (h && h.windowId === windowId && h.index === index ? h : { windowId, index })),
+      void setDropHintState((h) => (h && h.windowId === windowId && h.index === index ? h : { windowId, index })),
     onDragStart: () => {},
-    onDragEnd: () => setDropHintState(null),
+    onDragEnd: () => void setDropHintState(null),
     onWindowFocused: (windowId, focused) => {
       if (focused) setFocusedId(windowId);
     },
@@ -1919,11 +2044,12 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
         windows: s.windows.map((w) => (w.id === windowId ? { ...w, width, height } : w)),
       })),
     registerSlot: (windowId, node) => {
-      if (node) slots.current.set(windowId, node);
-      else slots.current.delete(windowId);
+      if (node) slots.set(windowId, node);
+      else slots.delete(windowId);
+      remounted();
     },
-    registerController: (windowId, controller) => controllers.current.set(windowId, controller),
-    controllerFor: (windowId) => controllers.current.get(windowId),
+    registerController: (windowId, controller) => void controllers.set(windowId, controller),
+    controllerFor: (windowId) => controllers.get(windowId),
     runTestJs: (tabId) => {
       const node = view(tabId);
       const code = process.env.NB_TEST_JS;
@@ -1932,114 +2058,59 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
     onContextMenuItem,
   };
 
+  /// The tabs that have a page, in id order, so no reorder of the tabs ever
+  /// reorders their views.
+  const liveTabs = createMemo(() =>
+    allTabs()
+      .filter((t) => t.url !== "" && isLive(t.id))
+      .sort((a, b) => tabNumber(a.id) - tabNumber(b.id)),
+  );
+
   return (
     <>
-      {/* Every tab's page, each in a portal of its own in the framework's
-          off-window pool. The portal keeps the view's React position fixed
-          whichever window lists the tab, so moving a tab never unmounts its
-          page; the placement effect shows it in its window's slot. One
-          portal per tab, in id order, so no reorder of the tabs ever reorders
-          these, and they come before the windows so that a closing window's
-          pages are taken down before the window is. */}
-      {[...allTabs]
-        .filter((t) => t.url !== "" && isLive(t.id))
-        .sort((a, b) => tabNumber(a.id) - tabNumber(b.id))
-        .map((t) => {
-          const w = windows.find((x) => x.tabs.includes(t))!;
-          const tabRt = rt(t.id);
-          const shown = w.activeId === t.id && tabRt.error === null;
-          // React never attaches refs inside a subtree that mounts straight
-          // into a hidden Activity, and without the ref a tab's context menu
-          // is never registered and its URL is never set. A view therefore
-          // stays "visible" for the one frame it takes to arm; it has no URL
-          // yet, so the frame is blank.
-          const arming = !armedTabs[t.id];
-          return (
-            <Fragment key={t.id}>
-              {createPortal(
-                <Activity mode={shown || arming ? "visible" : "hidden"}>
-                  <webview
-                    key={tabRt.attempt}
-                    ref={(node) => {
-                      views.current.set(t.id, node as NdNodeRef<"webview"> | null);
-                      if (!node) return;
-                      fixWebStore(node as NdNodeRef<"webview">);
-                      if (chromium) hookStore(node as NdNodeRef<"webview">);
-                      // The view exists now, so its menu can be pushed; the
-                      // render-time sync could only skip it.
-                      syncContextMenus(t.id);
-                      armHider(node as NdNodeRef<"webview">);
-                      setArmedTabs((a) => (a[t.id] ? a : { ...a, [t.id]: true }));
-                    }}
-                    url={armedTabs[t.id] || createAtUrl(t.url) ? t.url : ""}
-                    testID={`page-${t.id}`}
-                    style={{ hexpand: true, vexpand: true }}
-                    onNavigate={(e) => onNavigated(t.id, e.text)}
-                    onTitleChanged={(e) => onTitled(t.id, e.text)}
-                    onLoadingChanged={(e) => onLoading(t.id, e.checked)}
-                    onLoadProgress={(e) => patch(t.id, { progress: e.value })}
-                    onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
-                    onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
-                    onLoadFailed={(e) => patch(t.id, { error: e.data as { url: string; error: string } })}
-                    onNewWindow={(e) => openTabFromPage(t.id, e)}
-                    onBrowserCommand={(e) => onBrowserCommand(t.id, e.text)}
-                    onJavaScriptResult={onJavaScriptResult}
-                    // triggerExtensionAction answers on the tab it clicked for.
-                    onExtensionActions={onExtensionActions}
-                    onPermissionRequest={(e) => onPermissionRequest(t.id, e.data)}
-                    onFaviconChanged={(e) => onFavicon(t.url, e.data as { dataUrl?: string; iconUrl?: string })}
-                    onSecurityChanged={(e) => patch(t.id, { security: securityOf(t.url, e.data) })}
-                    onZoomChanged={(e) => onZoomChanged(t.id, e.data)}
-                    onPictureInPicture={(e) => onPictureInPicture(t.id, e.data)}
-                    onContentBlocked={(e) => {
-                      const count = (e.data as { count: number }).count;
-                      patch(t.id, { blocked: count });
-                      if (TEST_HOOKS) console.error(`ND_APP BLOCKED ${t.id} ${count}`);
-                    }}
-                    onScriptMessage={(e) => {
-                      const message = e.data as { name?: string; body?: unknown };
-                      if (message.name === STORE_CHANNEL) {
-                        void onStoreRequest(t.id, message.body);
-                        return;
-                      }
-                      if (message.name === HIDER_CHANNEL && message.body) return onHiderMessage(t.id, message.body as HiderMessage);
-                      if (message.name !== READER_CHANNEL) return;
-                      if (TEST_HOOKS) console.error(`ND_APP READER ${t.id} off`);
-                      patch(t.id, { reading: false });
-                    }}
-                    onFindResult={(e) => {
-                      // Two events per search on GTK: `done` carries the
-                      // outcome, `done: false` carries the total from the
-                      // separate counting pass, which AppKit never sends.
-                      const r = e.data as { matchFound: boolean; matchCount?: number; done: boolean };
-                      setFind(t.id, (f) => (r.done ? { ...f, found: r.matchFound } : { ...f, count: r.matchCount ?? null }));
-                    }}
-                    onContextMenuItemClicked={(e) => onContextMenuItem(t.id, e.data as ContextMenuItemClick)}
-                    {...downloadHandlers(() => view(t.id))}
-                  />
-                </Activity>,
-              )}
-            </Fragment>
-          );
-        })}
+      {/* Every tab's page, in the framework's off-window pool. The portal
+          keeps each view's owner here whichever window lists the tab, so
+          moving a tab never disposes its page; the placement effect shows it
+          in its window's slot. They come before the windows so that a closing
+          window's pages are taken down before the window is. Keyed by tab id:
+          a tab that moves to another window's list is the same page. */}
+      <Portal>
+        <For each={liveTabs()} keyed={(t) => t.id}>
+          {(t) => {
+            const id = t().id;
+            const shown = () => windows().some((w) => w.activeId === id) && rt(id).error === null;
+            return (
+              <Activity mode={shown() ? "visible" : "hidden"}>
+                {/* `attempt` is the view's identity: Try Again and an address
+                    that needs a fresh view both bump it. */}
+                <Show when={rt(id).attempt + 1} keyed>
+                  {(_attempt) => <PageView tab={t()} />}
+                </Show>
+              </Activity>
+            );
+          }}
+        </For>
+      </Portal>
 
-      {windows.map((w, i) => (
-        <BrowserWindow key={w.id} win={w} first={i === 0} ctx={ctx} />
-      ))}
+      <For each={windows()} keyed={(w) => w.id}>
+        {(w, i) => <BrowserWindow win={w()} first={i() === 0} ctx={ctx} />}
+      </For>
 
-      {settingsOpen && <SettingsWindow onClose={() => setSettingsOpen(false)} />}
-      {privateOpen && (
+      <Show when={settingsOpen()}>
+        <SettingsWindow onClose={() => setSettingsOpen(false)} />
+      </Show>
+      <Show when={privateOpen()}>
         <PrivateWindow
           onClose={() => setPrivateOpen(false)}
           onSettings={() => setSettingsOpen(true)}
-          onDownloads={() => controllers.current.get(focusedWindowId)?.openDownloads()}
+          onDownloads={() => controllers.get(focusedWindowId())?.openDownloads()}
           downloadHandlers={downloadHandlers}
           moveTargets={moveTargets("private").filter((t) => t.id !== "private")}
           onMoveOut={(url, windowId, index) => openTab(windowId, url, false, index)}
           onAdopt={closeTab}
           bridge={privateBridge}
         />
-      )}
+      </Show>
     </>
   );
 }
@@ -2048,14 +2119,14 @@ export function App({ initialHistory }: AppProps): React.ReactNode {
 /// the store: there is no Apply button because there is nothing to apply.
 /// Grouped the way the window is used: how it looks, what it searches, what it
 /// opens with, and where files land.
-function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
-  const prefs = useStoreValue(settings);
-  const engineIndex = Math.max(0, SEARCH_ENGINES.findIndex((e) => e.id === prefs.searchEngine));
-  const layoutIndex = Math.max(0, LAYOUTS.findIndex((l) => l.id === prefs.layout));
-  const pinStyleIndex = Math.max(0, PIN_STYLES.findIndex((p) => p.id === prefs.pinStyle));
+function SettingsWindow(props: { onClose: () => void }) {
+  const prefs = trackStore(settings);
+  const engineIndex = () => Math.max(0, SEARCH_ENGINES.findIndex((e) => e.id === prefs.searchEngine));
+  const layoutIndex = () => Math.max(0, LAYOUTS.findIndex((l) => l.id === prefs.layout));
+  const pinStyleIndex = () => Math.max(0, PIN_STYLES.findIndex((p) => p.id === prefs.pinStyle));
 
   return (
-    <window title="Settings" testID="settings-window" defaultWidth={640} defaultHeight={620} onClosed={onClose}>
+    <window title="Settings" testID="settings-window" defaultWidth={640} defaultHeight={620} onClosed={() => props.onClose()}>
       <toolbarview testID="settings-toolbar">
         <headerbar testID="settings-header" title="Settings" />
         <scrollview testID="settings-scroll" style={{ hexpand: true, vexpand: true }}>
@@ -2075,7 +2146,7 @@ function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
                     // is two ellipsized labels: "Comp…" in the capture.
                     style={{ minWidth: LAYOUT_SEGMENT_WIDTH }}
                     options={LAYOUTS.map((l) => l.name)}
-                    selectedIndex={layoutIndex}
+                    selectedIndex={layoutIndex()}
                     onSelectionChanged={(e) => {
                       const layout = LAYOUTS[e.index]?.id ?? "sidebar";
                       settings.update((s) => ({ ...s, layout }));
@@ -2087,7 +2158,7 @@ function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
                     slot="suffix"
                     testID="settings-pins"
                     options={PIN_STYLES.map((p) => p.name)}
-                    selectedIndex={pinStyleIndex}
+                    selectedIndex={pinStyleIndex()}
                     onSelectionChanged={(e) => {
                       const pinStyle = PIN_STYLES[e.index]?.id ?? "icons";
                       settings.update((s) => ({ ...s, pinStyle }));
@@ -2102,7 +2173,7 @@ function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
                     slot="suffix"
                     testID="settings-engine"
                     options={SEARCH_ENGINES.map((e) => e.name)}
-                    selectedIndex={engineIndex}
+                    selectedIndex={engineIndex()}
                     onSelectionChanged={(e) => {
                       const engine = SEARCH_ENGINES[e.index]?.id ?? "duckduckgo";
                       settings.update((s) => ({ ...s, searchEngine: engine }));
@@ -2139,7 +2210,7 @@ function SettingsWindow({ onClose }: { onClose: () => void }): React.ReactNode {
                     style={{ halign: "end", valign: "center" }}
                     onClick={() =>
                       void dialog
-                        .openFile({ directories: true, defaultPath: downloadDir(prefs.downloadDir) })
+                        .openFile({ directories: true, defaultPath: downloadDir(settings.get().downloadDir) })
                         .then((paths) => {
                           const dir = paths[0];
                           if (dir) settings.update((x) => ({ ...x, downloadDir: dir }));

@@ -8,13 +8,13 @@
 // no command palette (its ranking reads history) and no downloads list; the
 // address field IS the address bar, which is also the only place in the app
 // that exercises `<searchinput>` on GTK.
-import { Platform, Spacing, executeJavaScript, newWindowRequest, sendCommand, useRef, useState, useStoreValue } from "@nativedesktop/react";
+import { Activity, Platform, Spacing, executeJavaScript, newWindowRequest, sendCommand } from "@nativedesktop/solid";
 import type {
   NdNodeRef,
   SourceTreeAction,
   SourceTreeNode,
-} from "@nativedesktop/react";
-import { Activity } from "react";
+} from "@nativedesktop/solid";
+import { For, Show, createMemo, createSignal, onSettled } from "solid-js";
 
 import type { MoveTarget } from "./BrowserWindow.tsx";
 import { ADDRESS_MIN_WIDTH, CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
@@ -22,6 +22,7 @@ import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
 import { permissionSentence, splitTypes, type PermissionPrompt } from "./lib/permissions.ts";
 import { placeOpenedTab } from "./lib/session.ts";
 import { settings } from "./lib/settings.ts";
+import { trackStore } from "./lib/live.ts";
 import { parseTabPayload, tabPayload } from "./lib/tabdrag.ts";
 import { tabHover } from "./lib/tabstate.ts";
 import { displayUrl, hostOf, toUrl, fieldAddress } from "./lib/url.ts";
@@ -84,50 +85,46 @@ export interface PrivateWindowProps {
   bridge: { current: PrivateBridge | null };
 }
 
-export function PrivateWindow({
-  onClose,
-  onSettings,
-  onDownloads,
-  downloadHandlers,
-  moveTargets,
-  onMoveOut,
-  onAdopt,
-  bridge,
-}: PrivateWindowProps): React.ReactNode {
-  const prefs = useStoreValue(settings);
-  const compact = prefs.layout === "compact";
-  const [tabs, setTabs] = useState<PrivateTab[]>([blankTab("p1")]);
-  const [activeId, setActiveId] = useState("p1");
-  const [findOpen, setFindOpen] = useState(false);
+export function PrivateWindow(props: PrivateWindowProps) {
+  const prefs = trackStore(settings);
+  const compact = (): boolean => prefs.layout === "compact";
+  const [tabs, setTabs] = createSignal<PrivateTab[]>([blankTab("p1")]);
+  const [activeId, setActiveId] = createSignal("p1");
+  const [findOpen, setFindOpen] = createSignal(false);
   /// Same queue the main window keeps, with one difference that is the whole
   /// point of this window: nothing a page is allowed to do here is written
   /// down, so every request is asked again.
-  const [prompts, setPrompts] = useState<PermissionPrompt[]>([]);
-  const [siteInfoOpen, setSiteInfoOpen] = useState(false);
-  const pending = useRef<PermissionPrompt[]>([]);
-  const next = useRef(2);
-  const views = useRef(new Map<string, NdNodeRef<"webview"> | null>());
+  const [prompts, setPrompts] = createSignal<PermissionPrompt[]>([]);
+  const [siteInfoOpen, setSiteInfoOpen] = createSignal(false);
+  let pending: PermissionPrompt[] = [];
+  let next = 2;
+  const views = new Map<string, NdNodeRef<"webview">>();
   /// The header's address field, so the menu's Open Address Bar can put the
   /// caret in it. Grab-focus selects the contents on both backends.
-  const omnibox = useRef<NdNodeRef<"searchinput"> | null>(null);
+  let omnibox: NdNodeRef<"searchinput"> | undefined;
 
-  const [width, setWidth] = useState(WINDOW_WIDTH);
+  const [width, setWidth] = createSignal(WINDOW_WIDTH);
   /// Where a tab dragged over the row would land. There is no drag-leave
   /// event, so it clears when the drag ends or drops.
-  const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const [dropIndex, setDropIndex] = createSignal<number | null>(null);
 
-  const active = tabs.find((t) => t.id === activeId) ?? tabs[0]!;
-  const activePrompt = prompts.find((p) => p.tabId === active.id) ?? null;
+  const active = createMemo((): PrivateTab => tabs().find((t) => t.id === activeId()) ?? tabs()[0]!);
+  const activePrompt = createMemo(() => prompts().find((p) => p.tabId === active().id) ?? null);
   /// A private tab is never pinned: nothing about this window outlives it, so
   /// there is nothing for a pin to keep.
-  const runTabs = tabs.map((t) => ({ id: t.id, url: t.url, title: t.title, pinned: false }));
+  const runTabs = createMemo(() => tabs().map((t) => ({ id: t.id, url: t.url, title: t.title, pinned: false })));
 
+  /// A page event that changes nothing writes nothing.
   function patch(id: string, part: Partial<PrivateTab>): void {
-    setTabs((list) => list.map((t) => (t.id === id ? { ...t, ...part } : t)));
+    setTabs((list) => {
+      const now = list.find((t) => t.id === id);
+      if (!now || (Object.keys(part) as (keyof PrivateTab)[]).every((k) => Object.is(now[k], part[k]))) return list;
+      return list.map((t) => (t.id === id ? { ...t, ...part } : t));
+    });
   }
 
   function openTab(url = "", index?: number, background = false): string {
-    const id = `p${next.current++}`;
+    const id = `p${next++}`;
     setTabs((list) => {
       const at = index ?? list.length;
       return [...list.slice(0, at), { ...blankTab(id), url }, ...list.slice(at)];
@@ -138,16 +135,16 @@ export function PrivateWindow({
 
   /// A tab one of this window's pages asked for, placed the way Chrome
   /// places it. "window" stays a tab: this window is the private one.
-  const openers = useRef(new Map<string, string>());
+  const openers = new Map<string, string>();
   function openFromPage(fromTab: string, e: { text: string }): void {
     const request = newWindowRequest(e);
     const target = request.url.trim();
     if (!target || target === "about:blank") return;
-    const place = placeOpenedTab(tabs, fromTab, openers.current, request.disposition);
-    openers.current.set(openTab(target, place.index, !place.foreground), fromTab);
+    const place = placeOpenedTab(tabs(), fromTab, openers, request.disposition);
+    openers.set(openTab(target, place.index, !place.foreground), fromTab);
   }
 
-  bridge.current = { open: (url, index) => openTab(url, index), close: (tabId) => closeTab(tabId) };
+  props.bridge.current = { open: (url, index) => openTab(url, index), close: (tabId) => closeTab(tabId) };
 
   /// A reorder within this window: the page stays live, it only changes
   /// place in the list.
@@ -163,8 +160,8 @@ export function PrivateWindow({
   }
 
   function moveOut(windowId: string): void {
-    onMoveOut(active.url, windowId, Number.MAX_SAFE_INTEGER);
-    closeTab(active.id);
+    props.onMoveOut(active().url, windowId, Number.MAX_SAFE_INTEGER);
+    closeTab(active().id);
   }
 
   function onDropAt(payload: string, index: number): void {
@@ -172,7 +169,7 @@ export function PrivateWindow({
     const drag = parseTabPayload(payload);
     if (!drag) return;
     if (drag.profile === "private") {
-      const from = tabs.findIndex((t) => t.id === drag.tabId);
+      const from = tabs().findIndex((t) => t.id === drag.tabId);
       if (from < 0) return;
       // The slot was counted with the dragged tab still in the row.
       moveTab(drag.tabId, from < index ? index - 1 : index);
@@ -180,26 +177,25 @@ export function PrivateWindow({
     }
     // A normal tab: a page on another profile cannot come across live.
     openTab(drag.url, index);
-    onAdopt(drag.tabId);
+    props.onAdopt(drag.tabId);
   }
 
   function closeTab(id: string): void {
     denyPromptsFor(id);
-    views.current.delete(id);
+    views.delete(id);
     // The last tab takes the window with it, the way a normal window's does.
-    if (tabs.length === 1 && tabs[0]!.id === id) {
-      onClose();
+    const list = tabs();
+    if (list.length === 1 && list[0]!.id === id) {
+      props.onClose();
       return;
     }
-    setTabs((list) => {
-      const rest = list.filter((t) => t.id !== id);
-      if (id === activeId) setActiveId(rest[rest.length - 1]!.id);
-      return rest;
-    });
+    let rest: PrivateTab[] = [];
+    setTabs((now) => (rest = now.filter((t) => t.id !== id)));
+    setActiveId((cur) => (cur === id ? rest[rest.length - 1]!.id : cur));
   }
 
   function command(name: "goBack" | "goForward" | "reload"): void {
-    const node = views.current.get(active.id);
+    const node = views.get(active().id);
     if (node) sendCommand(node, name);
   }
 
@@ -207,42 +203,42 @@ export function PrivateWindow({
   /// follows: the bar belongs to the window, and a search on a hidden tab has
   /// nothing to highlight.
   function findCommand(name: "findStart" | "findNext" | "findPrevious" | "findStop", arg?: unknown): void {
-    const node = views.current.get(active.id);
+    const node = views.get(active().id);
     if (node) sendCommand(node, name, arg);
   }
 
   function closeFind(): void {
     findCommand("findStop");
     setFindOpen(false);
-    const node = views.current.get(active.id);
+    const node = views.get(active().id);
     if (node) sendCommand(node, "focus");
   }
 
   /// An id left unanswered leaves the page waiting for ever, so every way a
   /// prompt can leave this queue answers it first. Block is the safe answer.
-  /// A ref with the state mirroring it, for the reason the main window's copy
-  /// explains: answering closes the popover, and the close handler must not
-  /// answer the same id a second time.
-  function setQueue(next: PermissionPrompt[]): void {
-    pending.current = next;
-    setPrompts(next);
+  /// A plain array with the signal mirroring it, for the reason the main
+  /// window's copy explains: answering closes the popover, and the close
+  /// handler must not answer the same id a second time.
+  function setQueue(queue: PermissionPrompt[]): void {
+    pending = queue;
+    setPrompts(queue);
   }
 
   function respond(tabId: string, id: string, allow: boolean): void {
-    const node = views.current.get(tabId);
+    const node = views.get(tabId);
     if (node) sendCommand(node, "respondPermission", { id, allow });
   }
 
   function denyPromptsFor(tabId: string): void {
-    const doomed = pending.current.filter((p) => p.tabId === tabId);
+    const doomed = pending.filter((p) => p.tabId === tabId);
     if (doomed.length === 0) return;
     for (const prompt of doomed) respond(tabId, prompt.id, false);
-    setQueue(pending.current.filter((p) => p.tabId !== tabId));
+    setQueue(pending.filter((p) => p.tabId !== tabId));
   }
 
   function answerPrompt(prompt: PermissionPrompt, allow: boolean): void {
     respond(prompt.tabId, prompt.id, allow);
-    setQueue(pending.current.filter((p) => p.id !== prompt.id));
+    setQueue(pending.filter((p) => p.id !== prompt.id));
     setSiteInfoOpen(false);
   }
 
@@ -250,26 +246,74 @@ export function PrivateWindow({
     const request = (data ?? {}) as { id?: string; origin?: string; types?: string };
     if (!request.id) return;
     setQueue([
-      ...pending.current,
+      ...pending,
       { id: request.id, tabId, origin: request.origin ?? "", types: splitTypes(request.types ?? "") },
     ]);
-    if (tabId === active.id) setSiteInfoOpen(true);
+    if (tabId === active().id) setSiteInfoOpen(true);
   }
 
   function navigate(raw: string): void {
-    const target = toUrl(fieldAddress(raw, active.url));
+    const target = toUrl(fieldAddress(raw, active().url));
     if (!target) return;
-    if (active.url === target) return command("reload");
-    patch(active.id, { url: target });
+    if (active().url === target) return command("reload");
+    patch(active().id, { url: target });
   }
 
-  const nodes: SourceTreeNode[] = tabs.map((t) => ({
-    id: t.id,
-    title: t.title || (t.url ? displayUrl(t.url) : "New Tab"),
-    iconName: "view-conceal-symbolic",
-    actionIds: ["close"],
-    testID: `private-tab-${t.id}`,
-  }));
+  const nodes = createMemo((): SourceTreeNode[] =>
+    tabs().map((t) => ({
+      id: t.id,
+      title: t.title || (t.url ? displayUrl(t.url) : "New Tab"),
+      iconName: "view-conceal-symbolic",
+      actionIds: ["close"],
+      testID: `private-tab-${t.id}`,
+    })),
+  );
+
+  /// The pages, in id order, not tab order: a reorder must never move a live
+  /// view within its parent, only the tab list.
+  const pages = createMemo(() =>
+    tabs()
+      .filter((t) => t.url !== "")
+      .sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1))),
+  );
+
+  function Page(v: { tab: PrivateTab }) {
+    const id = v.tab.id;
+    let node!: NdNodeRef<"webview">;
+    onSettled(() => {
+      views.set(id, node);
+      fixWebStore(node);
+      return () => {
+        if (views.get(id) === node) views.delete(id);
+      };
+    });
+    return (
+      <webview
+        ref={node}
+        url={v.tab.url}
+        profile={PRIVATE_PROFILE}
+        testID={`private-page-${id}`}
+        style={{ hexpand: true, vexpand: true }}
+        onNavigate={(e) => patch(id, { url: e.text })}
+        onTitleChanged={(e) => patch(id, { title: e.text })}
+        onLoadingChanged={(e) => patch(id, { loading: e.checked })}
+        onBackAvailable={(e) => patch(id, { canGoBack: e.checked })}
+        onForwardAvailable={(e) => patch(id, { canGoForward: e.checked })}
+        onNewWindow={(e) => openFromPage(id, e)}
+        onPermissionRequest={(e) => onPermissionRequest(id, e.data)}
+        onBrowserCommand={(e) => {
+          // The page's own Chrome shortcuts, for the ones this window has an
+          // answer to. A new private window is this one, which is already
+          // open.
+          if (e.text === "newTab") openTab();
+          if (e.text === "closeTab") closeTab(id);
+          const view = views.get(id);
+          if (e.text === "print" && view) void executeJavaScript(view, "window.print()").catch(() => {});
+        }}
+        {...props.downloadHandlers(() => views.get(id) ?? null)}
+      />
+    );
+  }
 
   return (
     <window
@@ -277,14 +321,14 @@ export function PrivateWindow({
       testID="private-window"
       defaultWidth={WINDOW_WIDTH}
       defaultHeight={WINDOW_HEIGHT}
-      onClosed={onClose}
+      onClosed={() => props.onClose()}
       onSizeChanged={(e) => setWidth((e.data as { width: number }).width)}
     >
       <splitview sidebarWidth={0.24} testID="private-split">
         {/* Compact drops this pane here for the same reason the main window
             does: the content pane stays the splitview's second child, so no
             webview moves and no page reloads. */}
-        {!compact && (
+        <Show when={!compact()}>
           <toolbarview slot="sidebar" testID="private-sidebar-toolbar">
             <headerbar testID="private-sidebar-header" title="Private" />
             {/* Same metrics as the main window's column: see the comments there
@@ -309,9 +353,9 @@ export function PrivateWindow({
               </box>
               <sourcetree
                 testID="private-tab-list"
-                nodes={nodes}
+                nodes={nodes()}
                 actions={TAB_ACTIONS}
-                selectedId={active.id}
+                selectedId={active().id}
                 indentationPerLevel={0}
                 style={{ vexpand: true }}
                 onSelectionChanged={(e) => {
@@ -325,14 +369,14 @@ export function PrivateWindow({
               />
             </box>
           </toolbarview>
-        )}
+        </Show>
 
         <toolbarview slot="content" testID="private-content-toolbar">
           <headerbar
             testID="private-chrome"
             title=""
-            canGoBack={active.canGoBack}
-            canGoForward={active.canGoForward}
+            canGoBack={active().canGoBack}
+            canGoForward={active().canGoForward}
             onBack={() => command("goBack")}
             onForward={() => command("goForward")}
           >
@@ -347,11 +391,11 @@ export function PrivateWindow({
 
             {/* The same compact row the main window draws: tabs in the toolbar
                 between reload and the address field, nothing below it. */}
-            {compact && (
+            <Show when={compact()}>
               <CompactTabs
-                tabs={runTabs}
-                activeId={active.id}
-                metrics={tabRunMetrics(width, runTabs, active.id, 0, Platform.backend === "gtk" ? "gtk" : "appkit", true)}
+                tabs={runTabs()}
+                activeId={active().id}
+                metrics={tabRunMetrics(width(), runTabs(), active().id, 0, Platform.backend === "gtk" ? "gtk" : "appkit", true)}
                 prefix="private-"
                 // A private window shows no favicons: the cache is on disk and
                 // this window writes nothing there.
@@ -361,14 +405,12 @@ export function PrivateWindow({
                 onSelect={setActiveId}
                 onClose={closeTab}
                 dragPayload={(t) => tabPayload({ profile: "private", tabId: t.id, url: t.url })}
-                dropIndex={dropIndex}
+                dropIndex={dropIndex()}
                 onDragOverIndex={setDropIndex}
                 onDropAt={onDropAt}
                 onDragStart={() => {}}
                 onDragEnd={() => setDropIndex(null)}
               />
-            )}
-            {compact && (
               <button
                 slot="start"
                 testID="private-header-new-tab"
@@ -377,7 +419,7 @@ export function PrivateWindow({
                 cssClasses={["flat"]}
                 onClick={() => openTab()}
               />
-            )}
+            </Show>
 
             {/* The private window's site-info button: it answers permission
                 requests and says what this window will not do, which is
@@ -388,15 +430,15 @@ export function PrivateWindow({
                 iconName="web-browser-symbolic"
                 tooltip="Site Information"
                 cssClasses={["flat"]}
-                onClick={() => setSiteInfoOpen(!siteInfoOpen)}
+                onClick={() => setSiteInfoOpen(!siteInfoOpen())}
               />
               <popover
                 testID="private-site-info-popover"
-                open={siteInfoOpen}
+                open={siteInfoOpen()}
                 position="bottom"
                 onClosed={() => {
                   setSiteInfoOpen(false);
-                  denyPromptsFor(active.id);
+                  denyPromptsFor(active().id);
                 }}
               >
                 <box
@@ -407,39 +449,44 @@ export function PrivateWindow({
                 >
                   <label
                     testID="private-site-info-host"
-                    text={hostOf(active.url) || "New Tab"}
+                    text={hostOf(active().url) || "New Tab"}
                     cssClasses={["heading"]}
                     style={{ halign: "start" }}
                   />
-                  {activePrompt ? (
-                    <box orientation="vertical" spacing={Spacing.sm}>
+                  <Show
+                    when={activePrompt()}
+                    fallback={
                       <label
-                        testID="private-permission-request"
-                        text={permissionSentence(hostOf(active.url) || activePrompt.origin, activePrompt.types)}
+                        testID="private-site-permissions-note"
+                        text="Choices you make here are forgotten when this window closes."
+                        cssClasses={["dimmed"]}
                         style={{ halign: "start" }}
                       />
-                      <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end" }}>
-                        <button
-                          testID="private-permission-block"
-                          label="Block"
-                          onClick={() => answerPrompt(activePrompt, false)}
+                    }
+                  >
+                    {(prompt) => (
+                      <box orientation="vertical" spacing={Spacing.sm}>
+                        <label
+                          testID="private-permission-request"
+                          text={permissionSentence(hostOf(active().url) || prompt().origin, prompt().types)}
+                          style={{ halign: "start" }}
                         />
-                        <button
-                          testID="private-permission-allow"
-                          label="Allow"
-                          cssClasses={["suggested-action"]}
-                          onClick={() => answerPrompt(activePrompt, true)}
-                        />
+                        <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end" }}>
+                          <button
+                            testID="private-permission-block"
+                            label="Block"
+                            onClick={() => answerPrompt(prompt(), false)}
+                          />
+                          <button
+                            testID="private-permission-allow"
+                            label="Allow"
+                            cssClasses={["suggested-action"]}
+                            onClick={() => answerPrompt(prompt(), true)}
+                          />
+                        </box>
                       </box>
-                    </box>
-                  ) : (
-                    <label
-                      testID="private-site-permissions-note"
-                      text="Choices you make here are forgotten when this window closes."
-                      cssClasses={["dimmed"]}
-                      style={{ halign: "start" }}
-                    />
-                  )}
+                    )}
+                  </Show>
                 </box>
               </popover>
             </box>
@@ -447,11 +494,9 @@ export function PrivateWindow({
                 promotes a search entry there to the title widget with
                 hexpand, which is what gives it the row's whole free run. */}
             <searchinput
-              ref={(node) => {
-                omnibox.current = node as NdNodeRef<"searchinput"> | null;
-              }}
+              ref={omnibox}
               testID="private-omnibox"
-              text={displayUrl(active.url)}
+              text={displayUrl(active().url)}
               placeholder="Search or enter address"
               style={{ hexpand: true, minWidth: ADDRESS_MIN_WIDTH }}
               onActivate={(e) => navigate(e.text)}
@@ -468,8 +513,7 @@ export function PrivateWindow({
                 testID="private-menu-address"
                 label="Open Address Bar"
                 onSelect={() => {
-                  const node = omnibox.current;
-                  if (node) sendCommand(node, "focus");
+                  if (omnibox) sendCommand(omnibox, "focus");
                 }}
               />
               <menuitem testID="private-menu-find" label="Find in Page" onSelect={() => setFindOpen(true)} />
@@ -477,31 +521,32 @@ export function PrivateWindow({
               <menuitem
                 testID="private-menu-move-left"
                 label="Move Tab Left"
-                enabled={tabs.indexOf(active) > 0}
-                onSelect={() => moveTab(active.id, tabs.indexOf(active) - 1)}
+                enabled={tabs().indexOf(active()) > 0}
+                onSelect={() => moveTab(active().id, tabs().indexOf(active()) - 1)}
               />
               <menuitem
                 testID="private-menu-move-right"
                 label="Move Tab Right"
-                enabled={tabs.indexOf(active) < tabs.length - 1}
-                onSelect={() => moveTab(active.id, tabs.indexOf(active) + 1)}
+                enabled={tabs().indexOf(active()) < tabs().length - 1}
+                onSelect={() => moveTab(active().id, tabs().indexOf(active()) + 1)}
               />
-              {moveTargets.length > 0 && (
+              <Show when={props.moveTargets.length > 0}>
                 <menu label="Move Tab to Window" testID="private-menu-move-to">
-                  {moveTargets.map((t) => (
-                    <menuitem
-                      key={t.id}
-                      testID={`private-menu-move-to-${t.id}`}
-                      label={t.label}
-                      enabled={active.url !== ""}
-                      onSelect={() => moveOut(t.id)}
-                    />
-                  ))}
+                  <For each={props.moveTargets} keyed={(t) => t.id}>
+                    {(t) => (
+                      <menuitem
+                        testID={`private-menu-move-to-${t().id}`}
+                        label={t().label}
+                        enabled={active().url !== ""}
+                        onSelect={() => moveOut(t().id)}
+                      />
+                    )}
+                  </For>
                 </menu>
-              )}
+              </Show>
               <menuitem role="separator" testID="private-menu-sep" />
-              <menuitem testID="private-menu-downloads" label="Downloads" onSelect={onDownloads} />
-              <menuitem testID="private-menu-settings" label="Settings" onSelect={onSettings} />
+              <menuitem testID="private-menu-downloads" label="Downloads" onSelect={() => props.onDownloads()} />
+              <menuitem testID="private-menu-settings" label="Settings" onSelect={() => props.onSettings()} />
             </menubutton>
           </headerbar>
 
@@ -517,44 +562,15 @@ export function PrivateWindow({
                 find anchor for why it has to be a popover on Linux. */}
             <overlay testID="private-page-stack" style={{ hexpand: true, vexpand: true }}>
               <box orientation="vertical" style={{ hexpand: true, vexpand: true }}>
-                {/* In id order, not tab order: a reorder must never move a
-                    live view within its parent, only the tab list. */}
-                {[...tabs]
-                  .filter((t) => t.url !== "")
-                  .sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)))
-                  .map((t) => (
-                    <Activity key={t.id} mode={t.id === active.id ? "visible" : "hidden"}>
-                      <webview
-                        ref={(node) => {
-                          views.current.set(t.id, node as NdNodeRef<"webview"> | null);
-                          if (node) fixWebStore(node as NdNodeRef<"webview">);
-                        }}
-                        url={t.url}
-                        profile={PRIVATE_PROFILE}
-                        testID={`private-page-${t.id}`}
-                        style={{ hexpand: true, vexpand: true }}
-                        onNavigate={(e) => patch(t.id, { url: e.text })}
-                        onTitleChanged={(e) => patch(t.id, { title: e.text })}
-                        onLoadingChanged={(e) => patch(t.id, { loading: e.checked })}
-                        onBackAvailable={(e) => patch(t.id, { canGoBack: e.checked })}
-                        onForwardAvailable={(e) => patch(t.id, { canGoForward: e.checked })}
-                        onNewWindow={(e) => openFromPage(t.id, e)}
-                    onPermissionRequest={(e) => onPermissionRequest(t.id, e.data)}
-                        onBrowserCommand={(e) => {
-                          // The page's own Chrome shortcuts, for the ones this
-                          // window has an answer to. A new private window is
-                          // this one, which is already open.
-                          if (e.text === "newTab") openTab();
-                          if (e.text === "closeTab") closeTab(t.id);
-                          const node = views.current.get(t.id);
-                          if (e.text === "print" && node) void executeJavaScript(node, "window.print()").catch(() => {});
-                        }}
-                        {...downloadHandlers(() => views.current.get(t.id) ?? null)}
-                      />
+                <For each={pages()} keyed={(t) => t.id}>
+                  {(t) => (
+                    <Activity mode={t().id === active().id ? "visible" : "hidden"}>
+                      <Page tab={t()} />
                     </Activity>
-                  ))}
+                  )}
+                </For>
 
-                {active.url === "" && (
+                <Show when={active().url === ""}>
                   <statuspage
                     testID="private-new-tab-page"
                     iconName="view-conceal-symbolic"
@@ -562,7 +578,7 @@ export function PrivateWindow({
                     description="Cookies, cache and history are discarded when you close this window. Anything you download is still saved."
                     style={{ vexpand: true }}
                   />
-                )}
+                </Show>
               </box>
 
               <box
@@ -576,7 +592,7 @@ export function PrivateWindow({
                   margin: { top: Spacing.sm, right: Spacing.md },
                 }}
               >
-                {findOpen && (
+                <Show when={findOpen()}>
                   <popover testID="private-find-popover" open position="bottom" onClosed={closeFind}>
                     <box
                       testID="private-find-bar"
@@ -614,7 +630,7 @@ export function PrivateWindow({
                       />
                     </box>
                   </popover>
-                )}
+                </Show>
               </box>
             </overlay>
           </box>

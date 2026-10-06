@@ -3,12 +3,14 @@
 // `<dialog>`s: a floating card under a header bar on libadwaita, a sheet on
 // AppKit, and both close on Esc. The search field has the
 // caret when a panel opens; Return opens the first match.
-import { Platform, Spacing, sendCommand, useEffect, useRef, useState, useStoreValue } from "@nativedesktop/react";
-import type { NdNodeRef } from "@nativedesktop/react";
+import { Platform, Spacing, sendCommand, useStoreValue } from "@nativedesktop/solid";
+import type { JSX, NdNodeRef } from "@nativedesktop/solid";
+import { For, Show, createEffect, createMemo, createSignal, onSettled } from "solid-js";
 
 import { DownloadRow, type DownloadActions } from "./Downloads.tsx";
 import { bookmarks, bookmarksMatching, removeBookmark } from "./lib/bookmarks.ts";
 import { downloadDir, downloads, isActive } from "./lib/downloads.ts";
+import { trackStore } from "./lib/live.ts";
 import { faviconFor } from "./lib/favicons.ts";
 import { forgetVisit, visitsMatching, type Visit } from "./lib/history.ts";
 import { KEYS } from "./lib/keys.ts";
@@ -66,83 +68,73 @@ function refocus(field: SearchField): void {
 
 /// What every panel is made of: the dialog, the search field, a scrolling
 /// body and a foot. Each panel only says what goes in them.
-function Plate({
-  panel,
-  onClose,
-  query,
-  onQuery,
-  onSubmit,
-  placeholder,
-  children,
-  foot,
-  field,
-}: {
+function Plate(props: {
   panel: Panel;
   onClose: () => void;
   query: string;
   onQuery: (q: string) => void;
   onSubmit: () => void;
   placeholder: string;
-  children: React.ReactNode;
-  foot: React.ReactNode;
+  children: JSX.Element;
+  foot: JSX.Element;
   field: SearchField;
-}): React.ReactNode {
-  const focused = useRef(0);
+}) {
+  let node!: NdNodeRef<"searchinput">;
+  // The field has the caret when the panel opens.
+  onSettled(() => {
+    props.field.current = node;
+    sendCommand(node, "focus");
+    return () => {
+      if (props.field.current === node) props.field.current = null;
+    };
+  });
   return (
     <dialog
-      testID={`${panel}-panel`}
+      testID={`${props.panel}-panel`}
       open
-      title={PANEL_TITLES[panel]}
+      title={PANEL_TITLES[props.panel]}
       contentWidth={WIDTH}
       contentHeight={HEIGHT}
-      onClosed={onClose}
+      onClosed={() => props.onClose()}
     >
       <box orientation="vertical" spacing={Spacing.md} style={{ padding: Spacing.lg, hexpand: true, vexpand: true }}>
         <searchinput
-          testID={`${panel}-search`}
-          ref={(node) => {
-            const n = node as NdNodeRef<"searchinput"> | null;
-            field.current = n;
-            // Once per field: a ref callback runs on every render.
-            if (n && focused.current !== n.id) {
-              focused.current = n.id;
-              sendCommand(n, "focus");
-            }
-          }}
-          placeholder={placeholder}
-          text={query}
+          testID={`${props.panel}-search`}
+          ref={node}
+          placeholder={props.placeholder}
+          text={props.query}
           style={{ hexpand: true }}
-          onChanged={(e) => onQuery(e.text)}
-          onActivate={onSubmit}
+          onChanged={(e) => props.onQuery(e.text)}
+          onActivate={() => props.onSubmit()}
         />
-        <scrollview testID={`${panel}-scroll`} style={{ hexpand: true, vexpand: true }}>
+        <scrollview testID={`${props.panel}-scroll`} style={{ hexpand: true, vexpand: true }}>
           <box orientation="vertical" spacing={Spacing.lg} style={{ hexpand: true, padding: { bottom: Spacing.sm } }}>
-            {children}
+            {props.children}
           </box>
         </scrollview>
         <separator />
-        <box testID={`${panel}-foot`} orientation="horizontal" spacing={Spacing.sm} style={{ hexpand: true }}>
-          {foot}
+        <box testID={`${props.panel}-foot`} orientation="horizontal" spacing={Spacing.sm} style={{ hexpand: true }}>
+          {props.foot}
           {/* libadwaita's header bar carries the close button; a macOS sheet
               has none, and Done is its idiom. */}
-          {Platform.backend === "appkit" ? (
-            <button testID={`${panel}-done`} label="Done" prominent onClick={onClose} />
-          ) : null}
+          <Show when={Platform.backend === "appkit"}>
+            <button testID={`${props.panel}-done`} label="Done" prominent onClick={() => props.onClose()} />
+          </Show>
         </box>
       </box>
     </dialog>
   );
 }
 
-function Empty({ panel, text }: { panel: Panel; text: string }): React.ReactNode {
-  return <label testID={`${panel}-empty`} text={text} cssClasses={["dimmed"]} style={{ halign: "start" }} />;
+function Empty(props: { panel: Panel; text: string }) {
+  return <label testID={`${props.panel}-empty`} text={props.text} cssClasses={["dimmed"]} style={{ halign: "start" }} />;
 }
 
-function Count({ panel, text }: { panel: Panel; text: string }): React.ReactNode {
+function Count(props: { panel: Panel; text: string }) {
   return (
     <label
-      testID={`${panel}-count`}
-      text={text}
+      testID={`${props.panel}-count`}
+      text={props.text}
       variant="caption"
       cssClasses={["dimmed"]}
       style={{ hexpand: true, halign: "start", valign: "center" }}
@@ -164,268 +156,295 @@ function dayOf(ts: number): string {
 }
 
 /// Where you have been, by day, newest first.
-export function HistoryPanel({
-  onClose,
-  onOpen,
-  onClearData,
-  onClearHistory,
-}: {
+export function HistoryPanel(props: {
   onClose: () => void;
   onOpen: (url: string) => void;
   /// Cookies, cache and site data are Chromium's, and chrome://settings is
   /// where they are cleared.
   onClearData: () => void;
   onClearHistory: () => Promise<void>;
-}): React.ReactNode {
-  const [query, setQuery] = useState("");
-  const field = useRef<NdNodeRef<"searchinput"> | null>(null);
-  const [visits, setVisits] = useState<Visit[] | null>(null);
-  const [clearing, setClearing] = useState(false);
-  const refresh = (q: string): void => void visitsMatching(q, 300).then(setVisits);
-  const rows = visits ?? [];
-  useEffect(() => refresh(query), [query]);
+}) {
+  const [query, setQuery] = createSignal("");
+  const field: SearchField = { current: null };
+  const [visits, setVisits] = createSignal<Visit[] | null>(null);
+  const [clearing, setClearing] = createSignal(false);
+  /// The latest lookup asked for; an older answer that lands late is dropped.
+  let asked = 0;
+  const refresh = (q: string): void => {
+    const ask = ++asked;
+    void visitsMatching(q, 300).then((v) => {
+      if (ask === asked) setVisits(v);
+    });
+  };
+  const rows = (): Visit[] => visits() ?? [];
+  createEffect(query, (q) => refresh(q));
 
-  const days: { day: string; rows: Visit[] }[] = [];
-  for (const v of rows) {
-    const day = dayOf(v.ts);
-    const last = days[days.length - 1];
-    if (last && last.day === day) last.rows.push(v);
-    else days.push({ day, rows: [v] });
-  }
+  const days = createMemo(() => {
+    const out: { day: string; rows: Visit[] }[] = [];
+    for (const v of rows()) {
+      const day = dayOf(v.ts);
+      const last = out[out.length - 1];
+      if (last && last.day === day) last.rows.push(v);
+      else out.push({ day, rows: [v] });
+    }
+    return out;
+  });
 
   return (
     <Plate
       panel="history"
       field={field}
-      onClose={onClose}
-      query={query}
+      onClose={props.onClose}
+      query={query()}
       onQuery={setQuery}
-      onSubmit={() => rows[0] && onOpen(rows[0].url)}
+      onSubmit={() => {
+        const first = rows()[0];
+        if (first) props.onOpen(first.url);
+      }}
       placeholder="Search everywhere you have been"
       foot={
-        clearing ? (
-          <>
-            <Count panel="history" text="Clearing leaves your bookmarks and downloads alone" />
-            <button testID="history-clear-data" label="Cookies and Site Data…" onClick={onClearData} />
-            <button
-              testID="history-clear-confirm"
-              label="Clear History"
-              destructive
-              onClick={() =>
-                void onClearHistory().then(() => {
-                  setClearing(false);
-                  refresh(query);
-                  refocus(field);
-                })
-              }
-            />
-            <button
-              testID="history-clear-back"
-              label="Cancel"
-              onClick={() => {
+        <Show
+          when={clearing()}
+          fallback={
+            <>
+              <Count panel="history" text={rows().length === 1 ? "1 page" : `${rows().length} pages`} />
+              <button testID="history-clear" label="Clear…" onClick={() => setClearing(true)} />
+            </>
+          }
+        >
+          <Count panel="history" text="Clearing leaves your bookmarks and downloads alone" />
+          <button testID="history-clear-data" label="Cookies and Site Data…" onClick={() => props.onClearData()} />
+          <button
+            testID="history-clear-confirm"
+            label="Clear History"
+            destructive
+            onClick={() =>
+              void props.onClearHistory().then(() => {
                 setClearing(false);
+                refresh(query());
                 refocus(field);
-              }}
-            />
-          </>
-        ) : (
-          <>
-            <Count panel="history" text={rows.length === 1 ? "1 page" : `${rows.length} pages`} />
-            <button testID="history-clear" label="Clear…" onClick={() => setClearing(true)} />
-          </>
-        )
+              })
+            }
+          />
+          <button
+            testID="history-clear-back"
+            label="Cancel"
+            onClick={() => {
+              setClearing(false);
+              refocus(field);
+            }}
+          />
+        </Show>
       }
     >
       {/* Nothing until the first answer is in: an empty state swapped for the
           list a beat later is a flash, and AppKit lays out the group that
           takes its place wrong. */}
-      {visits === null ? null : rows.length === 0 ? (
-        <Empty panel="history" text={query.trim() ? `Nothing matches “${query.trim()}”.` : "Nothing yet."} />
-      ) : (
-        days.map(({ day, rows: dayRows }) => (
-          <settingsgroup key={day} testID={`history-day-${day}`} title={day}>
-            {dayRows.map((v) => (
-              <row
-                key={v.url}
-                testID={`history-row-${v.url}`}
-                title={rowTitle(v.title, v.url)}
-                subtitle={rowAddress(v.url)}
-                iconData={icon(v.url)}
-                iconName={PLACEHOLDER_ICON}
-                activatable
-                onActivate={() => onOpen(v.url)}
-              >
-                <label
-                  slot="suffix"
-                  text={CLOCK.format(new Date(v.ts))}
-                  variant="caption"
-                  cssClasses={["dimmed", "numeric"]}
-                  style={{ valign: "center" }}
-                />
-                <button
-                  slot="suffix"
-                  testID={`history-remove-${v.url}`}
-                  iconName="window-close-symbolic"
-                  tooltip="Remove from History"
-                  cssClasses={["flat"]}
-                  style={{ valign: "center" }}
-                  onClick={() =>
-                    void forgetVisit(v.url).then(() => {
-                      refresh(query);
-                      refocus(field);
-                    })
-                  }
-                />
-              </row>
-            ))}
-          </settingsgroup>
-        ))
-      )}
+      <Show when={visits() !== null}>
+        <For
+          each={days()}
+          keyed={(d) => d.day}
+          fallback={<Empty panel="history" text={query().trim() ? `Nothing matches “${query().trim()}”.` : "Nothing yet."} />}
+        >
+          {(day) => (
+            <settingsgroup testID={`history-day-${day().day}`} title={day().day}>
+              <For each={day().rows} keyed={(v) => v.url}>
+                {(v) => (
+                  <row
+                    testID={`history-row-${v().url}`}
+                    title={rowTitle(v().title, v().url)}
+                    subtitle={rowAddress(v().url)}
+                    iconData={icon(v().url)}
+                    iconName={PLACEHOLDER_ICON}
+                    activatable
+                    onActivate={() => props.onOpen(v().url)}
+                  >
+                    <label
+                      slot="suffix"
+                      text={CLOCK.format(new Date(v().ts))}
+                      variant="caption"
+                      cssClasses={["dimmed", "numeric"]}
+                      style={{ valign: "center" }}
+                    />
+                    <button
+                      slot="suffix"
+                      testID={`history-remove-${v().url}`}
+                      iconName="window-close-symbolic"
+                      tooltip="Remove from History"
+                      cssClasses={["flat"]}
+                      style={{ valign: "center" }}
+                      onClick={() =>
+                        void forgetVisit(v().url).then(() => {
+                          refresh(query());
+                          refocus(field);
+                        })
+                      }
+                    />
+                  </row>
+                )}
+              </For>
+            </settingsgroup>
+          )}
+        </For>
+      </Show>
     </Plate>
   );
 }
 
 /// Pages kept on purpose.
-export function BookmarksPanel({
-  onClose,
-  onOpen,
-  current,
-  onToggleCurrent,
-}: {
+export function BookmarksPanel(props: {
   onClose: () => void;
   onOpen: (url: string) => void;
   /// The window's own page, which the foot offers to keep or let go.
   current: { url: string; title: string };
   onToggleCurrent: () => void;
-}): React.ReactNode {
-  useStoreValue(bookmarks);
-  const [query, setQuery] = useState("");
-  const field = useRef<NdNodeRef<"searchinput"> | null>(null);
-  const shown = bookmarksMatching(query);
-  const kept = bookmarks.get().items.some((b) => b.url === current.url);
-  const bookmarkable = /^https?:/.test(current.url);
+}) {
+  const marks = useStoreValue(bookmarks);
+  const [query, setQuery] = createSignal("");
+  const field: SearchField = { current: null };
+  const shown = createMemo(() => {
+    marks();
+    return bookmarksMatching(query());
+  });
+  const kept = (): boolean => marks().items.some((b) => b.url === props.current.url);
+  const bookmarkable = (): boolean => /^https?:/.test(props.current.url);
 
   return (
     <Plate
       panel="bookmarks"
       field={field}
-      onClose={onClose}
-      query={query}
+      onClose={props.onClose}
+      query={query()}
       onQuery={setQuery}
-      onSubmit={() => shown[0] && onOpen(shown[0].url)}
+      onSubmit={() => {
+        const first = shown()[0];
+        if (first) props.onOpen(first.url);
+      }}
       placeholder="Search bookmarks"
       foot={
         <>
-          <Count panel="bookmarks" text={shown.length === 1 ? "1 bookmark" : `${shown.length} bookmarks`} />
-          {bookmarkable ? (
+          <Count panel="bookmarks" text={shown().length === 1 ? "1 bookmark" : `${shown().length} bookmarks`} />
+          <Show when={bookmarkable()}>
             <button
               testID="bookmarks-toggle-current"
-              label={kept ? "Remove This Page" : "Bookmark This Page"}
-              onClick={onToggleCurrent}
+              label={kept() ? "Remove This Page" : "Bookmark This Page"}
+              onClick={() => props.onToggleCurrent()}
             />
-          ) : null}
+          </Show>
         </>
       }
     >
-      {shown.length === 0 ? (
-        <Empty
-          panel="bookmarks"
-          text={
-            query.trim()
-              ? `Nothing matches “${query.trim()}”.`
-              : `No bookmarks yet. ${shortcutLabel(KEYS["bookmark-page"])} keeps the page you are on.`
-          }
-        />
-      ) : (
+      <Show
+        when={shown().length > 0}
+        fallback={
+          <Empty
+            panel="bookmarks"
+            text={
+              query().trim()
+                ? `Nothing matches “${query().trim()}”.`
+                : `No bookmarks yet. ${shortcutLabel(KEYS["bookmark-page"])} keeps the page you are on.`
+            }
+          />
+        }
+      >
         <settingsgroup testID="bookmarks-list">
-          {shown.map((b) => (
-            <row
-              key={b.id}
-              testID={`bookmarks-row-${b.url}`}
-              title={rowTitle(b.title, b.url)}
-              subtitle={rowAddress(b.url)}
-              iconData={icon(b.url)}
-              iconName={PLACEHOLDER_ICON}
-              activatable
-              onActivate={() => onOpen(b.url)}
-            >
-              <button
-                slot="suffix"
-                testID={`bookmarks-remove-${b.url}`}
-                iconName="window-close-symbolic"
-                tooltip="Remove Bookmark"
-                cssClasses={["flat"]}
-                style={{ valign: "center" }}
-                onClick={() => {
-                  removeBookmark(b.url);
-                  refocus(field);
-                }}
-              />
-            </row>
-          ))}
+          <For each={shown()} keyed={(b) => b.id}>
+            {(b) => (
+              <row
+                testID={`bookmarks-row-${b().url}`}
+                title={rowTitle(b().title, b().url)}
+                subtitle={rowAddress(b().url)}
+                iconData={icon(b().url)}
+                iconName={PLACEHOLDER_ICON}
+                activatable
+                onActivate={() => props.onOpen(b().url)}
+              >
+                <button
+                  slot="suffix"
+                  testID={`bookmarks-remove-${b().url}`}
+                  iconName="window-close-symbolic"
+                  tooltip="Remove Bookmark"
+                  cssClasses={["flat"]}
+                  style={{ valign: "center" }}
+                  onClick={() => {
+                    removeBookmark(b().url);
+                    refocus(field);
+                  }}
+                />
+              </row>
+            )}
+          </For>
         </settingsgroup>
-      )}
+      </Show>
     </Plate>
   );
 }
 
 /// Every download, with everything a row can do.
-export function DownloadsPanel({ onClose, actions }: { onClose: () => void; actions: DownloadActions }): React.ReactNode {
-  const { items } = useStoreValue(downloads);
-  const prefs = useStoreValue(settings);
-  const [query, setQuery] = useState("");
-  const field = useRef<NdNodeRef<"searchinput"> | null>(null);
-  const q = query.trim().toLowerCase();
-  const shown = q ? items.filter((d) => `${d.name} ${d.url}`.toLowerCase().includes(q)) : items;
+export function DownloadsPanel(props: { onClose: () => void; actions: DownloadActions }) {
+  const list = trackStore(downloads);
+  const prefs = trackStore(settings);
+  const [query, setQuery] = createSignal("");
+  const field: SearchField = { current: null };
+  const shown = createMemo(() => {
+    const q = query().trim().toLowerCase();
+    return q ? list.items.filter((d) => `${d.name} ${d.url}`.toLowerCase().includes(q)) : list.items;
+  });
   // Removing a row takes its button, and the focus, with it.
   const after = <T,>(run: (d: T) => void) => (d: T) => {
     run(d);
     refocus(field);
   };
-  const kept: DownloadActions = { ...actions, remove: after(actions.remove), discard: after(actions.discard), keep: after(actions.keep) };
-  const clearable = items.some((d) => !isActive(d) && d.state !== "dangerous");
-  const folder = downloadDir(prefs.downloadDir);
+  const kept: DownloadActions = {
+    ...props.actions,
+    remove: after(props.actions.remove),
+    discard: after(props.actions.discard),
+    keep: after(props.actions.keep),
+  };
+  const clearable = (): boolean => list.items.some((d) => !isActive(d) && d.state !== "dangerous");
+  const folder = (): string => downloadDir(prefs.downloadDir);
 
   return (
     <Plate
       panel="downloads"
       field={field}
-      onClose={onClose}
-      query={query}
+      onClose={props.onClose}
+      query={query()}
       onQuery={setQuery}
       onSubmit={() => {
-        const first = shown.find((d) => d.state === "complete");
-        if (first) actions.open(first);
+        const first = shown().find((d) => d.state === "complete");
+        if (first) props.actions.open(first);
       }}
       placeholder="Search downloads"
       foot={
         <>
           <Count
             panel="downloads"
-            text={items.length === 0 ? `Files land in ${folder.slice(folder.lastIndexOf("/") + 1)}` : "Files stay where they are"}
+            text={list.items.length === 0 ? `Files land in ${folder().slice(folder().lastIndexOf("/") + 1)}` : "Files stay where they are"}
           />
-          <button testID="downloads-open-folder" label="Open Folder" onClick={actions.openFolder} />
+          <button testID="downloads-open-folder" label="Open Folder" onClick={() => props.actions.openFolder()} />
           <button
             testID="downloads-clear"
             label="Clear List"
-            enabled={clearable}
+            enabled={clearable()}
             onClick={() => {
-              actions.clear();
+              props.actions.clear();
               refocus(field);
             }}
           />
         </>
       }
     >
-      {shown.length === 0 ? (
-        <Empty panel="downloads" text={q ? `Nothing matches “${query.trim()}”.` : "Nothing downloaded yet."} />
-      ) : (
+      <Show
+        when={shown().length > 0}
+        fallback={<Empty panel="downloads" text={query().trim() ? `Nothing matches “${query().trim()}”.` : "Nothing downloaded yet."} />}
+      >
         <box orientation="vertical" spacing={Spacing.md} style={{ hexpand: true }}>
-          {shown.map((d) => (
-            <DownloadRow key={d.id} d={d} actions={kept} prefix="all-" />
-          ))}
+          <For each={shown()} keyed={(d) => d.id}>
+            {(d) => <DownloadRow d={d()} actions={kept} prefix="all-" />}
+          </For>
         </box>
-      )}
+      </Show>
     </Plate>
   );
 }

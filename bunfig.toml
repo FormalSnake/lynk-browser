@@ -1,30 +1,17 @@
-# Registers the NativeDesktop hook-import rewrite for the `bun --hot` dev path.
-# babel does not run under `bun --hot`, so this preload is the dev-mode twin of
-# the `babel-plugin-nativedesktop` entry in babel.config.json: it rewrites
-# named React-hook imports `from "react"` to `from "@nativedesktop/react"` in
-# shared `.ts` modules as Bun loads them, so cross-platform hooks (authored the
-# normal way for web/React-Native) resolve to the HMR-pinned react instance and
-# don't trigger "Invalid hook call" on the first hot edit.
-#
-# The plugin intercepts `.ts` files only (not `.tsx`/`.desktop.tsx`): Bun's
-# runtime onLoad drops any file it returns contents for from `--hot`'s watch
-# set, so intercepting components would break their hot reload. Desktop `.tsx`
-# components import hooks from `@nativedesktop/react` (or from shared `.ts`
-# hooks) and hot-reload normally; a shared `.ts` hook is pinned at first eval,
-# so editing one requires a restart to take effect.
-preload = ["babel-plugin-nativedesktop/bun-plugin"]
-
-# Pin the classic hoisted layout so a scaffolded app's `bun install` never
-# flips to Bun 1.3+'s isolated (pnpm-style) linker — see the root
-# bunfig.toml in the NativeDesktop repo for why that default is unsafe here:
-# it can leave a `file:`/`link:`-referenced package (e.g. a local
-# @nativedesktop/react checkout during framework development) without its
-# own transitive deps on disk, and the host's Bun child can't resolve them.
+# Pin the classic hoisted layout so the app's `bun install` never flips to
+# Bun 1.3+'s isolated (pnpm-style) linker. See the root bunfig.toml in the
+# NativeDesktop repo for why that default is unsafe here: it can leave a
+# `file:`/`link:`-referenced package (e.g. a local @nativedesktop/solid
+# checkout during framework development) without its own transitive deps on
+# disk, and the host's Bun child can't resolve them.
 [install]
 linker = "hoisted"
 
 # A packaged bundle under dist/ carries compiled copies of the test files but
 # not the fixtures they serve, so a bare `bun test` after `nd package` reports
-# failures that exist nowhere in the source tree.
+# failures that exist nowhere in the source tree. The register preload gives a
+# test that imports a component the Solid JSX transform and solid-js's client
+# build, as `nd dev` does.
 [test]
 root = "src"
+preload = ["@nativedesktop/solid/register"]

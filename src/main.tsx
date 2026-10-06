@@ -1,4 +1,4 @@
-import { render } from "@nativedesktop/react";
+import { render } from "@nativedesktop/solid";
 import { App } from "./App.tsx";
 import { loadBlockingState } from "./lib/adblock.ts";
 import { bookmarks, normalizeBookmarks } from "./lib/bookmarks.ts";
@@ -27,4 +27,4 @@ openFavicons();
 await openHistory();
 const initialHistory = await recentVisits();
 
-await render(<App initialHistory={initialHistory} />);
+await render(() => <App initialHistory={initialHistory} />);

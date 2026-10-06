@@ -5,27 +5,20 @@
   "trustedDependencies": [],
   "scripts": {
     "dev": "bash scripts/dev.sh",
-    "compile": "babel src --out-dir dist --config-file ./babel.config.json --extensions .ts,.tsx --keep-file-extension",
+    "compile": "nd-solid-build src/main.tsx --outdir dist",
     "package": "nd package",
     "test": "bun test --pass-with-no-tests"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
-    "@nativedesktop/cli": "^0.4.55",
-    "@nativedesktop/data": "^0.4.55",
-    "@nativedesktop/native": "^0.4.55",
-    "@nativedesktop/react": "^0.4.55",
-    "react": "19.2.7"
+    "@nativedesktop/cli": "^0.4.56",
+    "@nativedesktop/data": "^0.4.56",
+    "@nativedesktop/native": "^0.4.56",
+    "@nativedesktop/solid": "^0.4.56",
+    "solid-js": "2.0.0-rc.13"
   },
   "devDependencies": {
-    "@babel/cli": "8.0.4",
-    "@babel/core": "8.0.1",
-    "@babel/plugin-transform-react-jsx": "8.0.1",
-    "@babel/preset-typescript": "8.0.1",
     "@types/bun": "1.3.13",
-    "@types/react": "19.2.17",
-    "babel-plugin-nativedesktop": "^0.4.55",
-    "babel-plugin-react-compiler": "1.0.0",
-    "@nativedesktop/test": "^0.4.55"
+    "@nativedesktop/test": "^0.4.56"
   }
 }

@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { openDatabase, type SqliteDatabase } from "@nativedesktop/data";
-import { ensureAppDataDir } from "@nativedesktop/react";
+import { ensureAppDataDir } from "@nativedesktop/solid";
 
 export interface Visit {
   url: string;

@@ -3,8 +3,9 @@
 // address: it carries the padlock and the zoom, and a click on it opens the
 // command bar on its address, as the sidebar's row does. A private window has
 // no command bar, so its row ends in an address field instead.
-import { Platform, Spacing, useState } from "@nativedesktop/react";
-import type { MenuEntry } from "@nativedesktop/react";
+import { Platform, Spacing } from "@nativedesktop/solid";
+import type { JSX, MenuEntry } from "@nativedesktop/solid";
+import { For, Show, createSignal } from "solid-js";
 
 /// A tab is about 156pt when the row has space for it. TITLE_FLOOR is where a
 /// title is down to a few characters beside the favicon and the close button,
@@ -198,8 +199,8 @@ export interface CompactTabsProps {
   onOpenAddress?: () => void;
   /// Drawn inside the active tab while it is the address, before and after
   /// its title: the padlock with the site's information, and the zoom.
-  addressLeading?: React.ReactNode;
-  addressTrailing?: React.ReactNode;
+  addressLeading?: JSX.Element;
+  addressTrailing?: JSX.Element;
   /// A tab put to sleep, whose chip is drawn dimmed until it wakes.
   asleep?: (id: string) => boolean;
   onSelect: (id: string) => void;
@@ -234,121 +235,109 @@ function indexAt(x: number, tabs: CompactTab[], shown: CompactTab[], activeId: s
   return last ? tabs.indexOf(last) + 1 : tabs.length;
 }
 
-export function CompactTabs({
-  tabs,
-  activeId,
-  metrics,
-  prefix,
-  iconFor,
-  labelFor,
-  hoverFor,
-  onOpenAddress,
-  addressLeading,
-  addressTrailing,
-  asleep,
-  onSelect,
-  onClose,
-  menuFor,
-  onMenu,
-  dragPayload,
-  dropIndex,
-  onDragOverIndex,
-  onDropAt,
-  onDragStart,
-  onDragEnd,
-}: CompactTabsProps): React.ReactNode {
+export function CompactTabs(props: CompactTabsProps) {
   /// The tab the pointer is on, so its close button can appear. One id rather
   /// than a set, because the pointer is in one place.
-  const [hovered, setHovered] = useState("");
-  const shownTabs = metrics.shown;
-
+  const [hovered, setHovered] = createSignal("");
+  const shownTabs = (): CompactTab[] => props.metrics.shown;
   const gtk = Platform.backend === "gtk";
-  const strip = (
+
+  function Tab(v: { tab: CompactTab }) {
+    const active = (): boolean => v.tab.id === props.activeId;
+    const address = (): boolean => active() && props.metrics.address;
+    // A pinned tab is its site's icon and nothing else, the way every
+    // browser draws one, and it keeps that width however crowded the row
+    // gets, unless it is the one on show and that is the address.
+    const titled = (): boolean => address() || (!v.tab.pinned && (active() || props.metrics.titled));
+    const closable = (): boolean => titled() && (active() || hovered() === v.tab.id);
+    return (
+      <>
+        <Show when={props.dropIndex === props.tabs.indexOf(v.tab)}>
+          <separator testID={`${props.prefix}tab-drop`} orientation="vertical" />
+        </Show>
+        <box
+          testID={`${props.prefix}tab-slot-${v.tab.id}`}
+          orientation="horizontal"
+          // The BOX is the chip: one rounded rectangle holding the favicon,
+          // the title and the close button. Two linked buttons would draw a
+          // seam down the middle of it. An unselected tab draws no chip at
+          // all, which is what tells it from the selected one.
+          cssClasses={active() ? ["card"] : props.asleep?.(v.tab.id) ? ["dimmed"] : []}
+          style={{ minWidth: tabWidth(v.tab, props.activeId, props.metrics), valign: "center", hexpand: false }}
+          onHoverChanged={(e) => setHovered(e.checked ? v.tab.id : "")}
+        >
+          <Show when={address()}>{props.addressLeading}</Show>
+          <button
+            testID={`${props.prefix}tab-item-${v.tab.id}`}
+            label={titled() ? props.labelFor(v.tab) : ""}
+            iconData={props.iconFor(v.tab.url)}
+            iconName="web-browser-symbolic"
+            labelAlign="start"
+            ellipsize
+            tooltip={props.hoverFor(v.tab)}
+            cssClasses={["flat"]}
+            style={{ hexpand: true }}
+            onClick={() => (address() && props.onOpenAddress ? props.onOpenAddress() : props.onSelect(v.tab.id))}
+            contextMenu={props.menuFor?.(v.tab)}
+            onContextMenuSelected={(e) => props.onMenu?.(v.tab, e.text)}
+            draggable
+            dragPayload={props.dragPayload(v.tab)}
+            onDragStarted={(e) => props.onDragStart(e.text)}
+            onDragEnded={() => props.onDragEnd()}
+          />
+          <Show when={address()}>{props.addressTrailing}</Show>
+          <Show when={titled()}>
+            <Show
+              when={closable()}
+              fallback={
+                // Reserved whether or not the pointer is on the tab, so the
+                // title does not reflow as the pointer crosses the row.
+                <box orientation="horizontal" style={{ minWidth: CLOSE_SLOT_WIDTH }} />
+              }
+            >
+              <button
+                testID={`${props.prefix}tab-close-${v.tab.id}`}
+                iconName="window-close-symbolic"
+                tooltip={`Close ${props.labelFor(v.tab)}`}
+                cssClasses={["flat"]}
+                size="small"
+                style={{ minWidth: CLOSE_SLOT_WIDTH, valign: "center" }}
+                onClick={() => props.onClose(v.tab.id)}
+              />
+            </Show>
+          </Show>
+        </box>
+      </>
+    );
+  }
+
+  const strip = () => (
     // GTK propagates hexpand up from any child that sets it, so the run would
     // otherwise claim the row's whole free width through the buttons inside
     // it and leave the address field nothing. Stopping it here and on each
     // tab is what keeps the widths this file computes.
     <box
       slot={gtk ? undefined : "start"}
-      testID={`${prefix}tab-strip`}
+      testID={`${props.prefix}tab-strip`}
       orientation="horizontal"
       spacing={Spacing.xs}
       // A tab title is body text, not the header bar's bold title: the chip
       // is what marks the selected tab, not the weight.
       style={{ hexpand: false, font: { fontWeight: "normal" } }}
       dropTarget
-      onDragOver={(e) => onDragOverIndex(indexAt(e.data.x, tabs, shownTabs, activeId, metrics))}
+      onDragOver={(e) => props.onDragOverIndex(indexAt(e.data.x, props.tabs, shownTabs(), props.activeId, props.metrics))}
       onDropped={(e) => {
-        const index = indexAt(e.data.x, tabs, shownTabs, activeId, metrics);
-        if (process.env.NB_TEST_HOOKS === "1") console.error(`ND_APP DROP ${prefix}tab-strip x=${e.data.x} index=${index}`);
-        onDropAt(e.text, index);
+        const index = indexAt(e.data.x, props.tabs, shownTabs(), props.activeId, props.metrics);
+        if (process.env.NB_TEST_HOOKS === "1") console.error(`ND_APP DROP ${props.prefix}tab-strip x=${e.data.x} index=${index}`);
+        props.onDropAt(e.text, index);
       }}
     >
-      {shownTabs.flatMap((t) => {
-        const i = tabs.indexOf(t);
-        const active = t.id === activeId;
-        const address = active && metrics.address;
-        // A pinned tab is its site's icon and nothing else, the way every
-        // browser draws one, and it keeps that width however crowded the row
-        // gets, unless it is the one on show and that is the address.
-        const titled = address || (!t.pinned && (active || metrics.titled));
-        const closable = titled && (active || hovered === t.id);
-        const marker =
-          dropIndex === i ? [<separator key="drop" testID={`${prefix}tab-drop`} orientation="vertical" />] : [];
-        return [
-          ...marker,
-          <box
-            key={t.id}
-            testID={`${prefix}tab-slot-${t.id}`}
-            orientation="horizontal"
-            // The BOX is the chip: one rounded rectangle holding the favicon,
-            // the title and the close button. Two linked buttons would draw a
-            // seam down the middle of it. An unselected tab draws no chip at
-            // all, which is what tells it from the selected one.
-            cssClasses={active ? ["card"] : asleep?.(t.id) ? ["dimmed"] : []}
-            style={{ minWidth: tabWidth(t, activeId, metrics), valign: "center", hexpand: false }}
-            onHoverChanged={(e) => setHovered(e.checked ? t.id : "")}
-          >
-            {address && addressLeading}
-            <button
-              testID={`${prefix}tab-item-${t.id}`}
-              label={titled ? labelFor(t) : ""}
-              iconData={iconFor(t.url)}
-              iconName="web-browser-symbolic"
-              labelAlign="start"
-              ellipsize
-              tooltip={hoverFor(t)}
-              cssClasses={["flat"]}
-              style={{ hexpand: true }}
-              onClick={() => (address && onOpenAddress ? onOpenAddress() : onSelect(t.id))}
-              contextMenu={menuFor?.(t)}
-              onContextMenuSelected={onMenu ? (e) => onMenu(t, e.text) : undefined}
-              draggable
-              dragPayload={dragPayload(t)}
-              onDragStarted={(e) => onDragStart(e.text)}
-              onDragEnded={onDragEnd}
-            />
-            {address && addressTrailing}
-            {titled &&
-              (closable ? (
-                <button
-                  testID={`${prefix}tab-close-${t.id}`}
-                  iconName="window-close-symbolic"
-                  tooltip={`Close ${labelFor(t)}`}
-                  cssClasses={["flat"]}
-                  size="small"
-                  style={{ minWidth: CLOSE_SLOT_WIDTH, valign: "center" }}
-                  onClick={() => onClose(t.id)}
-                />
-              ) : (
-                // Reserved whether or not the pointer is on the tab, so the
-                // title does not reflow as the pointer crosses the row.
-                <box orientation="horizontal" style={{ minWidth: CLOSE_SLOT_WIDTH }} />
-              ))}
-          </box>,
-        ];
-      })}
-      {dropIndex === tabs.length && <separator testID={`${prefix}tab-drop`} orientation="vertical" />}
+      <For each={shownTabs()} keyed={(t) => t.id}>
+        {(t) => <Tab tab={t()} />}
+      </For>
+      <Show when={props.dropIndex === props.tabs.length}>
+        <separator testID={`${props.prefix}tab-drop`} orientation="vertical" />
+      </Show>
     </box>
   );
   // The widths above come from the window's width, and on GTK every minimum
@@ -359,11 +348,11 @@ export function CompactTabs({
   // widths arrive. The AppKit toolbar gives every item the width it asks for
   // and never holds the window, so the run goes in as it is.
   return gtk ? (
-    <scrollview slot="start" testID={`${prefix}tab-clip`} hscroll="clip">
-      {strip}
+    <scrollview slot="start" testID={`${props.prefix}tab-clip`} hscroll="clip">
+      {strip()}
     </scrollview>
   ) : (
-    strip
+    strip()
   );
 }
 

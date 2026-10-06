@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createStore, ensureAppDataDir, webviewEngine } from "@nativedesktop/react";
+import { createStore, ensureAppDataDir, webviewEngine } from "@nativedesktop/solid";
 
 import {
   PINNED_UBO,

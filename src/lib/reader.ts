@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
-import type { Appearance } from "@nativedesktop/react";
+import type { Appearance } from "@nativedesktop/solid";
 
 const require = createRequire(import.meta.url);
 

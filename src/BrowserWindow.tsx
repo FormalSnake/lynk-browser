@@ -6,6 +6,7 @@
 // tab lives at the root for the same reason; what lives here is the state of
 // this window's own chrome (palette, popovers, the popup an action opened).
 import {
+  Activity,
   Platform,
   Spacing,
   clipboard,
@@ -14,30 +15,28 @@ import {
   onJavaScriptResult,
   onToastButtonClicked,
   onToastDismissed,
-  openPath,
-  revealPath,
   sendCommand,
   showAlert,
   showToast,
-  useRef,
-  useState,
   useStoreValue,
-} from "@nativedesktop/react";
-import { Activity } from "react";
+} from "@nativedesktop/solid";
 import type {
   ContextMenuItemClick,
   ExtensionActionState,
+  JSX,
   MenuEntry,
   NdNodeRef,
-} from "@nativedesktop/react";
+} from "@nativedesktop/solid";
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onSettled } from "solid-js";
 
 import { INSET, Sidebar } from "./Sidebar.tsx";
 import { CompactTabs, LAYOUT_BUTTON_WIDTH, tabRunMetrics } from "./CompactTabs.tsx";
-import { ZoomFootControl, useZoomPopover } from "./ZoomControl.tsx";
+import { ZoomFootControl, createZoomPopover } from "./ZoomControl.tsx";
 import { stepZoom, zoomPercent } from "./lib/zoom.ts";
 import { DownloadRow, type DownloadActions } from "./Downloads.tsx";
 import { addBookmark, bookmarks, isBookmarked, removeBookmark } from "./lib/bookmarks.ts";
 import { downloads } from "./lib/downloads.ts";
+import { trackStore } from "./lib/live.ts";
 import { BookmarksPanel, DownloadsPanel, HistoryPanel, type Panel } from "./Panels.tsx";
 import {
   badgeVariant,
@@ -47,7 +46,6 @@ import {
   POPUP_MIN,
   type ExtensionRow,
 } from "./lib/extensions.ts";
-import { faviconFor } from "./lib/favicons.ts";
 import { completionCandidates, searchHistory, type Visit } from "./lib/history.ts";
 import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
 import {
@@ -158,10 +156,11 @@ export interface BrowserContext {
   focusedWindowId: string;
   /// Where a dragged tab would land: this window's row and the index in it.
   dropHint: { windowId: string; index: number } | null;
-  iconEpoch: number;
+  /// A site's favicon, read again whenever a new one lands.
+  iconFor(url: string): string | undefined;
   /// The registry and action views. They need a realized window to exist in,
   /// and the first one hosts them.
-  hiddenViews: React.ReactNode;
+  hiddenViews(): JSX.Element;
 
   rt(tabId: string): Runtime;
   findFor(tabId: string): FindState;
@@ -243,106 +242,124 @@ export interface BrowserWindowProps {
   ctx: BrowserContext;
 }
 
-export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.ReactNode {
-  const { prefs, chromium } = ctx;
-  const tabs = win.tabs;
-  const active = tabs.find((t) => t.id === win.activeId) ?? tabs[0]!;
+export function BrowserWindow(props: BrowserWindowProps) {
+  const ctx = props.ctx;
+  const prefs = ctx.prefs;
+  const chromium = (): boolean => ctx.chromium;
+  const winId = props.win.id;
+  const tabs = (): SessionTab[] => props.win.tabs;
+  const active = createMemo((): SessionTab => tabs().find((t) => t.id === props.win.activeId) ?? tabs()[0] ?? NO_TAB);
   /// TestIDs of the first window keep their plain names; every other window's
   /// are prefixed with its id, so a drive can tell them apart.
-  const p = first ? "" : `${win.id}-`;
+  const p = (): string => (props.first ? "" : `${winId}-`);
 
-  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = createSignal(false);
   // Two halves of one field. `paletteSeed` is the controlled `query` prop and
   // only ever changes when the app deliberately seeds or clears it; echoing
   // keystrokes back into it makes GTK's set_text race the entry and blank it.
   // `paletteQuery` is what the user actually typed, and only feeds ranking.
-  const [paletteSeed, setPaletteSeed] = useState("");
-  const [paletteQuery, setPaletteQuery] = useState("");
-  const [paletteTarget, setPaletteTarget] = useState<OmniTarget>("current");
-  const [historyHits, setHistoryHits] = useState<Visit[]>([]);
+  const [paletteSeed, setPaletteSeed] = createSignal("");
+  const [paletteQuery, setPaletteQuery] = createSignal("");
+  const [paletteTarget, setPaletteTarget] = createSignal<OmniTarget>("current");
+  const [historyHits, setHistoryHits] = createSignal<Visit[]>([]);
   /// The latest history lookup the bar asked for; older answers are dropped.
-  const hitsAsked = useRef(0);
-  const [completions, setCompletions] = useState<string[]>([]);
-  const [paletteMode, setPaletteMode] = useState<OmniMode>("address");
+  let hitsAsked = 0;
+  const [completions, setCompletions] = createSignal<string[]>([]);
+  const [paletteMode, setPaletteMode] = createSignal<OmniMode>("address");
   /// Tab ids of this window, most recently shown first, so the switcher lists
   /// the page you just left at the top.
-  const recent = useRef<string[]>([]);
-  if (recent.current[0] !== active.id) {
-    recent.current = [active.id, ...recent.current.filter((id) => id !== active.id && tabs.some((t) => t.id === id))];
-  }
-  const [downloadsOpen, setDownloadsOpen] = useState(false);
-  const [panel, setPanel] = useState<Panel | null>(null);
+  let recent: string[] = [];
+  createEffect(
+    () => active().id,
+    (id) => {
+      if (recent[0] === id) return;
+      recent = [id, ...recent.filter((x) => x !== id && tabs().some((t) => t.id === x))];
+    },
+  );
+  const [downloadsOpen, setDownloadsOpen] = createSignal(false);
+  const [panel, setPanel] = createSignal<Panel | null>(null);
   // The Bookmark This Page item reads the store while rendering.
-  useStoreValue(bookmarks);
-  const { items: downloadItems } = useStoreValue(downloads);
-  const [siteInfoOpen, setSiteInfoOpen] = useState(false);
-  const [extensionsOpen, setExtensionsOpen] = useState(false);
-  const windowRef = useRef<NdNodeRef<"window"> | null>(null);
+  const bookmarkState = useStoreValue(bookmarks);
+  const kept = (url: string): boolean => {
+    bookmarkState();
+    return isBookmarked(url);
+  };
+  const downloadState = trackStore(downloads);
+  const [siteInfoOpen, setSiteInfoOpen] = createSignal(false);
+  const [extensionsOpen, setExtensionsOpen] = createSignal(false);
+  let windowRef: NdNodeRef<"window"> | undefined;
   /// The action whose popup is open, "" for none, and the address it was
   /// mounted at: the one Chromium reported at the click, which an extension
   /// can change at runtime away from the manifest's.
-  const [popupId, setPopupId] = useState("");
-  const [popupUrl, setPopupUrl] = useState("");
-  const [popupSize, setPopupSize] = useState({ width: POPUP_DEFAULT_WIDTH, height: POPUP_DEFAULT_HEIGHT });
+  const [popupId, setPopupId] = createSignal("");
+  const [popupUrl, setPopupUrl] = createSignal("");
+  const [popupSize, setPopupSize] = createSignal({ width: POPUP_DEFAULT_WIDTH, height: POPUP_DEFAULT_HEIGHT });
   /// Arc's Cmd+S: the column is hidden and the page takes the window, and the
   /// pointer at the leading edge brings the column back over it while it is.
-  const [sidebarHidden, setSidebarHidden] = useState(false);
+  const [sidebarHidden, setSidebarHidden] = createSignal(false);
   /// Whether that hidden column is showing over the page right now.
-  const [revealed, setRevealed] = useState(false);
+  const [revealed, setRevealed] = createSignal(false);
   /// Whether the desktop's decoration layout puts window buttons on the
   /// trailing side (GTK); they then get the strip over the page.
-  const [trailingControls, setTrailingControls] = useState(false);
+  const [trailingControls, setTrailingControls] = createSignal(false);
   /// The same for the leading side, which the sidebar places. With neither
   /// (a tiling compositor) there is no frame to draw: the page runs to the
   /// window's edges.
-  const [leadingControls, setLeadingControls] = useState(false);
+  const [leadingControls, setLeadingControls] = createSignal(false);
 
-  const toast = useRef<NdNodeRef<"toastoverlay">>(null);
-  const split = useRef<NdNodeRef<"splitview">>(null);
-  const contentBars = useRef<NdNodeRef<"toolbarview">>(null);
-  /// The find field the app has already put the caret in. An inline ref
-  /// callback runs on every render, and focusing on each one would fight the
-  /// user for the caret.
-  const findFocused = useRef(0);
-  /// The open popup's view, and the id of the one whose window.close the app
-  /// has already hooked.
-  const popupView = useRef<NdNodeRef<"webview"> | null>(null);
-  const popupHooked = useRef(0);
+  let toast: NdNodeRef<"toastoverlay"> | undefined;
+  let split: NdNodeRef<"splitview"> | undefined;
+  let contentBars: NdNodeRef<"toolbarview"> | undefined;
+  let slot: NdNodeRef<"box"> | undefined;
 
-  const activeRt = ctx.rt(active.id);
-  const activeBlocking = ctx.blockingFor(active.id);
-  const find = ctx.findFor(active.id);
-  const compact = prefs.layout === "compact";
+  const activeRt = (): Runtime => ctx.rt(active().id);
+  const activeBlocking = createMemo(() => ctx.blockingFor(active().id));
+  const find = (): FindState => ctx.findFor(active().id);
+  const compact = (): boolean => prefs.layout === "compact";
   const gtk = Platform.backend === "gtk";
-  const zoomFactor = ctx.zoomFor(active.url);
-  const zoomPopover = useZoomPopover(`${prefs.layout}/${active.id}`, zoomFactor, activeRt.zoomNotice, () => {
-    // The sidebar's foot is out of sight with the sidebar hidden, so the new
-    // value is said the way the reference browser says it.
-    if (!compact && sidebarHidden && toast.current) void showToast(toast.current, { title: `Zoom ${zoomPercent(zoomFactor)}` });
+  const zoomFactor = (): number => ctx.zoomFor(active().url);
+  const zoomPopover = createZoomPopover(
+    () => `${prefs.layout}/${active().id}`,
+    zoomFactor,
+    () => activeRt().zoomNotice,
+    () => {
+      // The sidebar's foot is out of sight with the sidebar hidden, so the new
+      // value is said in a toast instead.
+      if (!compact() && sidebarHidden() && toast) void showToast(toast, { title: `Zoom ${zoomPercent(zoomFactor())}` });
+    },
+  );
+
+  // The slot is shown to the root once its widget exists, and taken back
+  // when the window goes.
+  onSettled(() => {
+    if (slot) ctx.registerSlot(winId, slot);
+    return () => ctx.registerSlot(winId, null);
   });
 
-  ctx.registerController(win.id, {
+  ctx.registerController(winId, {
     openPalette,
     openAddress,
     openSwitcher,
     closePalette,
     // A download starting while the Downloads panel is up is already in view.
-    openDownloads: () => panel !== "downloads" && openPanel("downloads"),
+    openDownloads: () => {
+      if (panel() !== "downloads") openPanel("downloads");
+    },
     openPanel: (next) => {
       openPanel(null);
       setPanel(next);
     },
-    bookmarkPage: () => toggleBookmark(active),
+    bookmarkPage: () => toggleBookmark(active()),
     togglePanel: (next) => {
       openPanel(null);
       setPanel((cur) => (cur === next ? null : next));
     },
-    toggleSidebar: () => setSidebarHidden((h) => !h),
+    toggleSidebar: () => void setSidebarHidden((h) => !h),
     revealSidebar: (show) => {
-      if (split.current) sendCommand(split.current, show ? "revealSidebar" : "concealSidebar");
+      if (split) sendCommand(split, show ? "revealSidebar" : "concealSidebar");
     },
     revealStrip: (show) => {
-      if (contentBars.current) sendCommand(contentBars.current, show ? "revealTopBars" : "concealTopBars");
+      if (contentBars) sendCommand(contentBars, show ? "revealTopBars" : "concealTopBars");
     },
     openSiteInfo: () => openPanel("siteInfo"),
     showPopup: (id, url) => {
@@ -352,14 +369,14 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
       setPopupId(id);
     },
     toast: (title) => {
-      if (toast.current) void showToast(toast.current, { title });
+      if (toast) void showToast(toast, { title });
     },
     confirmInstall: (name, lines) => {
-      const node = windowRef.current;
+      const node = windowRef;
       if (!node) return Promise.resolve(false);
       return showAlert(node, {
-        title: name ? `Add \u201c${name}\u201d?` : "Add this extension?",
-        body: lines.length > 0 ? `It can:\n${lines.map((l) => `\u2022 ${l}`).join("\n")}` : undefined,
+        title: name ? `Add “${name}”?` : "Add this extension?",
+        body: lines.length > 0 ? `It can:\n${lines.map((l) => `• ${l}`).join("\n")}` : undefined,
         // The first button is the leftmost on GTK and the rightmost on
         // AppKit, and each platform puts the action on the right.
         buttons: gtk
@@ -398,8 +415,8 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     setPaletteSeed(seed);
     setPaletteQuery(seed);
     setPaletteTarget(target);
-    refreshHits(seed === active.url ? "" : seed);
-    if (paletteOpen) {
+    refreshHits(seed === active().url ? "" : seed);
+    if (paletteOpen()) {
       // Already open: an unchanged seed is no prop change, so the field would
       // keep what was typed. Closing and presenting again starts it from the
       // seed, and it is still one bar, never a second.
@@ -414,12 +431,12 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   function refreshHits(text: string): void {
     // Typing runs one query per key; an answer for an older text that lands
     // late must not replace a newer one.
-    const ask = ++hitsAsked.current;
+    const ask = ++hitsAsked;
     void searchHistory(text).then((hits) => {
-      if (ask === hitsAsked.current) setHistoryHits(hits);
+      if (ask === hitsAsked) setHistoryHits(hits);
     });
     void completionCandidates(text).then((urls) => {
-      if (ask === hitsAsked.current) setCompletions(urls);
+      if (ask === hitsAsked) setCompletions(urls);
     });
   }
 
@@ -433,30 +450,31 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// bar holding the address, all of it selected, so typing replaces it.
   function openAddress(): void {
     // A second ⌘L puts the bar away again.
-    if (paletteOpen) return closePalette();
-    openPalette(active.url, "current");
+    if (paletteOpen()) return closePalette();
+    openPalette(active().url, "current");
     if (TEST_HOOKS) console.error("ND_APP FOCUS target=palette");
   }
 
-  function commitQuery(raw: string, target: OmniTarget = paletteTarget): void {
+  function commitQuery(raw: string, target: OmniTarget = paletteTarget()): void {
     closePalette();
-    raw = fieldAddress(raw, active.url);
-    if (target === "new-tab" && active.url !== "") {
+    const tab = active();
+    raw = fieldAddress(raw, tab.url);
+    if (target === "new-tab" && tab.url !== "") {
       const url = toUrl(raw);
-      if (url) ctx.openTab(win.id, url);
+      if (url) ctx.openTab(winId, url);
       return;
     }
-    ctx.navigate(active.id, raw);
+    ctx.navigate(tab.id, raw);
   }
 
   /// A history or completion row: the address itself, sent where Enter sends
   /// typed text.
   function openUrl(url: string): void {
-    if (paletteTarget === "new-tab" && active.url !== "") {
-      ctx.openTab(win.id, url);
+    if (paletteTarget() === "new-tab" && active().url !== "") {
+      ctx.openTab(winId, url);
       return;
     }
-    ctx.navigate(active.id, url);
+    ctx.navigate(active().id, url);
   }
 
   function selectTab(id: string): void {
@@ -484,7 +502,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
         ctx.sleepTab(tab.id);
         return true;
       case "duplicate-tab":
-        if (tab.url) ctx.openTab(win.id, tab.url);
+        if (tab.url) ctx.openTab(winId, tab.url);
         return true;
       case "move-new-window":
         ctx.moveTabTo(tab.id, "new");
@@ -513,82 +531,83 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
       item("copy-address", !!tab.url),
       gap,
       item("pin-tab"),
-      item("move-new-window", tabs.length > 1),
+      item("move-new-window", tabs().length > 1),
       item("sleep-tab", ctx.canSleep(tab.id)),
       gap,
       item("close-tab"),
-      item("close-other-tabs", tabs.some((t) => t.id !== tab.id && !t.pinned)),
+      item("close-other-tabs", tabs().some((t) => t.id !== tab.id && !t.pinned)),
     ];
   }
 
   function runPaletteItem(id: string): void {
-    if (id === "url") return commitQuery(paletteQuery);
+    if (id === "url") return commitQuery(paletteQuery());
     closePalette();
     if (id.startsWith("tab:")) return selectTab(id.slice(4));
     if (id.startsWith("hist:")) return openUrl(id.slice(5));
     if (id.startsWith("go:")) return openUrl(id.slice(3));
-    if (runTabCommand(id.slice(4), active)) return;
+    const tab = active();
+    if (runTabCommand(id.slice(4), tab)) return;
     switch (id.slice(4)) {
       case "new-tab":
         return openPalette("", "new-tab");
       case "new-window":
         return ctx.newWindow();
       case "reopen-tab":
-        return ctx.reopenTab(win.id);
+        return ctx.reopenTab(winId);
       case "next-tab":
-        return ctx.cycleTab(win.id, 1);
+        return ctx.cycleTab(winId, 1);
       case "prev-tab":
-        return ctx.cycleTab(win.id, -1);
+        return ctx.cycleTab(winId, -1);
       case "back":
-        return ctx.command(active.id, "goBack");
+        return ctx.command(tab.id, "goBack");
       case "forward":
-        return ctx.command(active.id, "goForward");
+        return ctx.command(tab.id, "goForward");
       case "site-info":
-        return setSiteInfoOpen(true);
+        return void setSiteInfoOpen(true);
       case "find":
-        return ctx.openFind(active.id);
+        return ctx.openFind(tab.id);
       case "downloads":
         return openPanel("downloads");
       case "downloads-all":
         openPanel(null);
-        return setPanel("downloads");
+        return void setPanel("downloads");
       case "history":
       case "bookmarks":
         openPanel(null);
-        return setPanel(id as Panel);
+        return void setPanel(id.slice(4) as Panel);
       case "bookmark-page":
-        return toggleBookmark(active);
+        return toggleBookmark(tab);
       case "layout":
-        return ctx.setLayout(compact ? "sidebar" : "compact");
+        return ctx.setLayout(compact() ? "sidebar" : "compact");
       case "private":
         return ctx.openPrivate();
       case "reader":
-        return ctx.toggleReader(active.id);
+        return ctx.toggleReader(tab.id);
       case "float":
-        return ctx.toggleFloat(active.id);
+        return ctx.toggleFloat(tab.id);
       case "blocking":
-        return ctx.toggleBlocking(active.id);
+        return ctx.toggleBlocking(tab.id);
       case "hide-element":
-        return ctx.toggleHiding(active.id);
+        return ctx.toggleHiding(tab.id);
       case "restore-hidden":
-        return ctx.restoreHidden(active.id);
+        return ctx.restoreHidden(tab.id);
       case "update-lists":
         return ctx.updateLists();
       case "settings":
         return ctx.openSettings();
       case "zoom-in":
-        return ctx.zoomStep(active.id, 1);
+        return ctx.zoomStep(tab.id, 1);
       case "zoom-out":
-        return ctx.zoomStep(active.id, -1);
+        return ctx.zoomStep(tab.id, -1);
       case "zoom-reset":
-        return ctx.zoomStep(active.id, 0);
+        return ctx.zoomStep(tab.id, 0);
       case "extensions":
         return openExtensionsList();
       case "extensions-page":
-        ctx.openTab(win.id, "chrome://extensions");
+        ctx.openTab(winId, "chrome://extensions");
         return;
       case "webstore":
-        ctx.openTab(win.id, "https://chromewebstore.google.com");
+        ctx.openTab(winId, "https://chromewebstore.google.com");
         return;
     }
   }
@@ -619,22 +638,22 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     setExtensionsOpen(false);
     setDownloadsOpen(false);
     setSiteInfoOpen(false);
-    if (popupId === row.id) {
+    if (popupId() === row.id) {
       setPopupId("");
       return;
     }
-    ctx.clickAction(win.id, row);
+    ctx.clickAction(winId, row);
   }
 
   /// Chromium's own "Remove ...?" dialog hangs off a toolbar the app never
   /// shows, so the confirmation is the window's, and the engine removes the
   /// extension without asking again.
   function confirmRemoveExtension(row: ExtensionRow): void {
-    const node = windowRef.current;
+    const node = windowRef;
     if (!node) return;
     setExtensionsOpen(false);
     void showAlert(node, {
-      title: `Remove \u201c${row.name}\u201d?`,
+      title: `Remove “${row.name}”?`,
       body: "Its settings and data in this browser are removed with it.",
       // The first button is the leftmost on GTK and the rightmost on AppKit,
       // and each platform puts Remove on the right.
@@ -665,7 +684,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// last answer was for another tab.
   function actionState(id: string): ExtensionActionState | null {
     const state = ctx.actionStates[id];
-    if (state && state.tabUrl === active.url) return state;
+    if (state && state.tabUrl === active().url) return state;
     return ctx.actionDefaults[id] ?? null;
   }
 
@@ -721,38 +740,43 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
       });
   }
 
-  function extensionPopup(row: ExtensionRow): React.ReactNode {
+  /// The view of an open popup. Created AT the extension URL, never navigated
+  /// to it: Chromium refuses a renderer-initiated navigation to a
+  /// chrome-extension:// page, so another action's popup is a new view.
+  function PopupView(v: { id: string; url: string }) {
+    let node!: NdNodeRef<"webview">;
+    onSettled(() => {
+      sendCommand(node, "registerScriptMessage", { name: "ndPopup" });
+      fitPopup(node);
+    });
+    return (
+      <webview
+        ref={node}
+        url={v.url}
+        testID={`${p()}ext-popup-view-${v.id}`}
+        style={{ hexpand: true, vexpand: true }}
+        onLoadingChanged={(e) => {
+          if (!e.checked) fitPopup(node);
+        }}
+        onJavaScriptResult={onJavaScriptResult}
+        onScriptMessage={(e) => {
+          const message = e.data as { name?: string };
+          if (message.name === "ndPopup") closeExtensionPopup();
+        }}
+      />
+    );
+  }
+
+  function extensionPopup(row: () => ExtensionRow) {
     return (
       <box
-        testID={`${p}ext-popup-body-${row.id}`}
+        testID={`${p()}ext-popup-body-${row().id}`}
         orientation="vertical"
-        style={{ minWidth: popupSize.width, minHeight: popupSize.height }}
+        style={{ minWidth: popupSize().width, minHeight: popupSize().height }}
       >
-        {/* Created AT the extension URL, never navigated to it: Chromium
-            refuses a renderer-initiated navigation to a chrome-extension://
-            page, so the key remounts the view when another action is opened. */}
-        <webview
-          key={popupUrl}
-          ref={(node) => {
-            popupView.current = node as NdNodeRef<"webview"> | null;
-            if (!node || popupHooked.current === node.id) return;
-            popupHooked.current = node.id;
-            sendCommand(node as NdNodeRef<"webview">, "registerScriptMessage", { name: "ndPopup" });
-            fitPopup(node as NdNodeRef<"webview">);
-          }}
-          url={popupUrl}
-          testID={`${p}ext-popup-view-${row.id}`}
-          style={{ hexpand: true, vexpand: true }}
-          onLoadingChanged={(e) => {
-            if (e.checked || !popupView.current) return;
-            fitPopup(popupView.current);
-          }}
-          onJavaScriptResult={onJavaScriptResult}
-          onScriptMessage={(e) => {
-            const message = e.data as { name?: string };
-            if (message.name === "ndPopup") closeExtensionPopup();
-          }}
-        />
+        <Show when={popupUrl()} keyed>
+          {(url) => <PopupView id={row().id} url={url} />}
+        </Show>
       </box>
     );
   }
@@ -763,130 +787,140 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     if (!/^https?:/.test(tab.url)) return;
     if (isBookmarked(tab.url)) {
       removeBookmark(tab.url);
-      if (toast.current) void showToast(toast.current, { title: "Bookmark removed" });
+      if (toast) void showToast(toast, { title: "Bookmark removed" });
     } else {
       addBookmark(tab.url, tab.title);
-      if (toast.current) void showToast(toast.current, { title: "Bookmarked" });
+      if (toast) void showToast(toast, { title: "Bookmarked" });
     }
   }
 
   /// History, bookmarks and downloads, one at a time, over the window.
-  function panels(): React.ReactNode {
+  function panels() {
     const open = (url: string): void => {
       setPanel(null);
-      ctx.navigate(active.id, url);
+      ctx.navigate(active().id, url);
     };
-    if (panel === "history") {
-      return (
-        <HistoryPanel
-          onClose={() => setPanel(null)}
-          onOpen={open}
-          onClearData={() => {
-            setPanel(null);
-            ctx.openTab(win.id, "chrome://settings/clearBrowserData");
-          }}
-          onClearHistory={ctx.clearHistory}
-        />
-      );
-    }
-    if (panel === "bookmarks") {
-      return <BookmarksPanel onClose={() => setPanel(null)} onOpen={open} current={active} onToggleCurrent={() => toggleBookmark(active)} />;
-    }
-    if (panel === "downloads") return <DownloadsPanel onClose={() => setPanel(null)} actions={ctx.downloadActions} />;
-    return null;
+    return (
+      <Switch>
+        <Match when={panel() === "history"}>
+          <HistoryPanel
+            onClose={() => setPanel(null)}
+            onOpen={open}
+            onClearData={() => {
+              setPanel(null);
+              ctx.openTab(winId, "chrome://settings/clearBrowserData");
+            }}
+            onClearHistory={ctx.clearHistory}
+          />
+        </Match>
+        <Match when={panel() === "bookmarks"}>
+          <BookmarksPanel onClose={() => setPanel(null)} onOpen={open} current={active()} onToggleCurrent={() => toggleBookmark(active())} />
+        </Match>
+        <Match when={panel() === "downloads"}>
+          <DownloadsPanel onClose={() => setPanel(null)} actions={ctx.downloadActions} />
+        </Match>
+      </Switch>
+    );
   }
 
   // ------------------------------------------------------------- render ---
 
-  const recentDownloads = downloadItems.slice(0, DOWNLOADS_SHOWN);
-  const shownUrl = displayUrl(active.url);
-  const pageTitle = tabLabel(active);
-  const activeOrigin = originOf(active.url);
+  const recentDownloads = createMemo(() => downloadState.items.slice(0, DOWNLOADS_SHOWN));
+  const pageTitle = (): string => tabLabel(active());
+  const activeOrigin = (): string => originOf(active().url);
   /// Only the active tab's prompt is on show; the rest of the queue waits.
-  const activePrompt = ctx.prompts.find((q) => q.tabId === active.id) ?? null;
-  const siteDecisions = decisionsFor(prefs.sitePermissions, activeOrigin);
-  const rows = ctx.rows;
-  const pinnedActions = ctx.pinnedActions;
+  const activePrompt = createMemo(() => ctx.prompts.find((q) => q.tabId === active().id) ?? null);
+  const siteDecisions = createMemo(() => decisionsFor(prefs.sitePermissions, activeOrigin()));
   /// An action opened from the panel rather than from a button of its own has
   /// nowhere to hang, so its popup rides the puzzle piece.
-  const openAction = rows.find((r) => r.id === popupId) ?? null;
-  const unpinnedPopup = openAction && !prefs.pinnedExtensions.includes(openAction.id) ? openAction : null;
+  const unpinnedPopup = createMemo(() => {
+    const open = ctx.rows.find((r) => r.id === popupId());
+    return open && !prefs.pinnedExtensions.includes(open.id) ? open : null;
+  });
   /// The tab run is sized from the window rather than from hexpand: GTK would
   /// hand every tab an equal share of the whole row, which left every title
   /// at two characters.
-  const tabMetrics = tabRunMetrics(win.width, tabs, active.id, chromium ? pinnedActions.length + 1 : 0, gtk ? "gtk" : "appkit", false);
-  const targets = ctx.moveTargets(win.id);
-  const dropIndex = ctx.dropHint?.windowId === win.id ? ctx.dropHint.index : null;
-
-  void ctx.iconEpoch;
+  const tabMetrics = createMemo(() =>
+    tabRunMetrics(props.win.width, tabs(), active().id, chromium() ? ctx.pinnedActions.length + 1 : 0, gtk ? "gtk" : "appkit", false),
+  );
+  const targets = (): MoveTarget[] => ctx.moveTargets(winId);
+  const dropIndex = (): number | null => (ctx.dropHint?.windowId === winId ? ctx.dropHint.index : null);
 
   // Ranking is entirely the app's job: <commandpalette> renders what it is
   // given, in order (lib/omnibox.ts, docs/omnibox.md). A ⌘L seed nobody has
   // edited yet ranks like an empty field; the same address typed in full
   // still gets its own row.
-  const untouchedSeed = paletteQuery !== "" && paletteQuery === paletteSeed && paletteSeed === active.url;
-  const typedQuery = untouchedSeed ? "" : paletteQuery;
-  // History only: the most visited places first (the completion picks from
-  // them in this order), then the newest matches.
-  const places = [...completions.map((url) => ({ url, title: "" })), ...historyHits]
-    .filter((v) => v.url !== active.url)
-    .map((v) => ({ url: v.url, title: v.title || historyHits.find((h) => h.url === v.url)?.title || "" }));
-  const byRecency = (t: { id: string }) => {
-    const at = recent.current.indexOf(t.id);
-    return at < 0 ? Number.MAX_SAFE_INTEGER : at;
-  };
-  const paletteItems = omniRows({
-    mode: paletteMode,
-    query: typedQuery,
-    target: paletteTarget,
-    tabs: tabs.filter((t) => t.id !== active.id).sort((a, b) => byRecency(a) - byRecency(b)),
-    history: places,
-    engineName: SEARCH_ENGINES.find((e) => e.id === prefs.searchEngine)?.name ?? "the web",
-    chromium,
-    pinned: active.pinned,
-    canSleep: ctx.canSleep(active.id),
-    reading: ctx.rt(active.id).reading,
-    blocking: chromium ? ctx.blockingFor(active.id) : undefined,
-    favicon: faviconFor,
+  const paletteItems = createMemo(() => {
+    const tab = active();
+    const query = paletteQuery();
+    const untouchedSeed = query !== "" && query === paletteSeed() && paletteSeed() === tab.url;
+    const typedQuery = untouchedSeed ? "" : query;
+    // History only: the most visited places first (the completion picks from
+    // them in this order), then the newest matches.
+    const hits = historyHits();
+    const places = [...completions().map((url) => ({ url, title: "" })), ...hits]
+      .filter((v) => v.url !== tab.url)
+      .map((v) => ({ url: v.url, title: v.title || hits.find((h) => h.url === v.url)?.title || "" }));
+    const byRecency = (t: { id: string }) => {
+      const at = recent.indexOf(t.id);
+      return at < 0 ? Number.MAX_SAFE_INTEGER : at;
+    };
+    return omniRows({
+      mode: paletteMode(),
+      query: typedQuery,
+      target: paletteTarget(),
+      tabs: tabs()
+        .filter((t) => t.id !== tab.id)
+        .sort((a, b) => byRecency(a) - byRecency(b)),
+      history: places,
+      engineName: SEARCH_ENGINES.find((e) => e.id === prefs.searchEngine)?.name ?? "the web",
+      chromium: chromium(),
+      pinned: tab.pinned,
+      canSleep: ctx.canSleep(tab.id),
+      reading: ctx.rt(tab.id).reading,
+      blocking: chromium() ? ctx.blockingFor(tab.id) : undefined,
+      favicon: ctx.iconFor,
+    });
   });
 
   /// The tab-moving items, shared by the menu bar and a window's own menu.
   /// `from` is the window whose active tab they act on.
-  function moveItems(prefix: string, from: SessionWindow, fromTargets: MoveTarget[]): React.ReactNode {
-    const tab = from.tabs.find((t) => t.id === from.activeId) ?? from.tabs[0]!;
-    const at = from.tabs.indexOf(tab);
+  function moveItems(prefix: string, from: () => SessionWindow, fromTargets: () => MoveTarget[]) {
+    const tab = (): SessionTab => from().tabs.find((t) => t.id === from().activeId) ?? from().tabs[0] ?? NO_TAB;
+    const at = (): number => from().tabs.indexOf(tab());
     return (
       <>
         <menuitem
           testID={`${prefix}move-left`}
           label="Move Tab Left"
-          enabled={at > 0}
-          onSelect={() => ctx.moveTabBy(tab.id, -1)}
+          enabled={at() > 0}
+          onSelect={() => ctx.moveTabBy(tab().id, -1)}
         />
         <menuitem
           testID={`${prefix}move-right`}
           label="Move Tab Right"
-          enabled={at < from.tabs.length - 1}
-          onSelect={() => ctx.moveTabBy(tab.id, 1)}
+          enabled={at() < from().tabs.length - 1}
+          onSelect={() => ctx.moveTabBy(tab().id, 1)}
         />
         <menuitem
           testID={`${prefix}move-new-window`}
           label="Move Tab to New Window"
-          enabled={from.tabs.length > 1}
-          onSelect={() => ctx.moveTabTo(tab.id, "new")}
+          enabled={from().tabs.length > 1}
+          onSelect={() => ctx.moveTabTo(tab().id, "new")}
         />
-        {fromTargets.length > 0 && (
+        <Show when={fromTargets().length > 0}>
           <menu label="Move Tab to Window" testID={`${prefix}move-to`}>
-            {fromTargets.map((t) => (
-              <menuitem
-                key={t.id}
-                testID={`${prefix}move-to-${t.id}`}
-                label={t.label}
-                onSelect={() => ctx.moveTabTo(tab.id, t.id)}
-              />
-            ))}
+            <For each={fromTargets()} keyed={(t) => t.id}>
+              {(t) => (
+                <menuitem
+                  testID={`${prefix}move-to-${t().id}`}
+                  label={t().label}
+                  onSelect={() => ctx.moveTabTo(tab().id, t().id)}
+                />
+              )}
+            </For>
           </menu>
-        )}
+        </Show>
       </>
     );
   }
@@ -895,17 +929,18 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   /// edge, in both layouts. Floats over the page, so it takes no layout of
   /// its own, and stays mounted once a load has run so a finished load can
   /// fade out instead of vanishing.
-  function loadBar(): React.ReactNode {
-    if (!activeRt.loading && activeRt.progress <= 0) return null;
+  function loadBar() {
     return (
-      <progressbar
-        testID={`${p}progress`}
-        // The engine reports nothing for the first moments of a load; a
-        // sliver says the click was heard.
-        fraction={activeRt.loading ? Math.max(activeRt.progress, 0.08) : 1}
-        cssClasses={["osd", "dimmed"]}
-        style={{ valign: "start", hexpand: true }}
-      />
+      <Show when={activeRt().loading || activeRt().progress > 0}>
+        <progressbar
+          testID={`${p()}progress`}
+          // The engine reports nothing for the first moments of a load; a
+          // sliver says the click was heard.
+          fraction={activeRt().loading ? Math.max(activeRt().progress, 0.08) : 1}
+          cssClasses={["osd", "dimmed"]}
+          style={{ valign: "start", hexpand: true }}
+        />
+      </Show>
     );
   }
 
@@ -917,102 +952,111 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
   // being under its minimum size.
 
   /// What the page may do and what it is asking for, hung off the padlock.
-  function siteInfoPanel(): React.ReactNode {
+  function siteInfoPanel() {
     return (
       <box
-        testID={`${p}site-info-panel`}
+        testID={`${p()}site-info-panel`}
         orientation="vertical"
         spacing={Spacing.sm}
         style={{ padding: Spacing.sm, minWidth: SITE_PANEL_WIDTH }}
       >
         <label
-          testID={`${p}site-info-host`}
-          text={hostOf(active.url) || "New Tab"}
+          testID={`${p()}site-info-host`}
+          text={hostOf(active().url) || "New Tab"}
           cssClasses={["heading"]}
           style={{ halign: "start" }}
         />
         <label
-          testID={`${p}site-info-security`}
-          text={SECURITY_TOOLTIP[activeRt.security]}
+          testID={`${p()}site-info-security`}
+          text={SECURITY_TOOLTIP[activeRt().security]}
           cssClasses={["dimmed", "caption"]}
           style={{ halign: "start" }}
         />
-        {chromium && activeBlocking.site ? (
-          <box testID={`${p}site-blocking`} orientation="horizontal" spacing={Spacing.sm}>
+        <Show when={chromium() && activeBlocking().site}>
+          <box testID={`${p()}site-blocking`} orientation="horizontal" spacing={Spacing.sm}>
             <box orientation="vertical" style={{ hexpand: true, valign: "center" }}>
-              <label testID={`${p}site-blocking-title`} text="Block Ads and Trackers" style={{ halign: "start" }} />
+              <label testID={`${p()}site-blocking-title`} text="Block Ads and Trackers" style={{ halign: "start" }} />
               <label
-                testID={`${p}site-blocking-count`}
-                text={activeBlocking.on ? blockedSentence(activeBlocking.blocked) : "Off for this site"}
+                testID={`${p()}site-blocking-count`}
+                text={activeBlocking().on ? blockedSentence(activeBlocking().blocked) : "Off for this site"}
                 cssClasses={["dimmed", "caption"]}
                 style={{ halign: "start" }}
               />
             </box>
             <switch
-              testID={`${p}site-blocking-switch`}
-              checked={activeBlocking.on}
+              testID={`${p()}site-blocking-switch`}
+              checked={activeBlocking().on}
               tooltip="Block Ads and Trackers"
               style={{ valign: "center" }}
               onToggled={(e) => {
-                if (e.checked !== activeBlocking.on) ctx.toggleBlocking(active.id);
+                if (e.checked !== activeBlocking().on) ctx.toggleBlocking(active().id);
               }}
             />
           </box>
-        ) : null}
-        {activePrompt ? (
-          <box orientation="vertical" spacing={Spacing.sm}>
-            <label
-              testID={`${p}permission-request`}
-              text={permissionSentence(hostOf(active.url) || activePrompt.origin, activePrompt.types)}
-              style={{ halign: "start" }}
-            />
-            <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end" }}>
+        </Show>
+        <Switch
+          fallback={
+            <box orientation="vertical" spacing={Spacing.xs}>
+              <For each={siteDecisions()} keyed={(row) => row.type}>
+                {(row) => (
+                  <box orientation="horizontal" spacing={Spacing.sm}>
+                    <label
+                      testID={`${p()}site-permission-${row().type}`}
+                      text={`${permissionName(row().type)}: ${row().decision === "allow" ? "Allowed" : "Blocked"}`}
+                      ellipsize
+                      style={{ halign: "start", hexpand: true }}
+                    />
+                  </box>
+                )}
+              </For>
               <button
-                testID={`${p}permission-block`}
-                label="Block"
-                onClick={() => {
-                  ctx.decidePrompt(activePrompt, "block");
-                  setSiteInfoOpen(false);
-                }}
-              />
-              <button
-                testID={`${p}permission-allow`}
-                label="Allow"
-                cssClasses={["suggested-action"]}
-                onClick={() => {
-                  ctx.decidePrompt(activePrompt, "allow");
-                  setSiteInfoOpen(false);
-                }}
+                testID={`${p()}site-permissions-reset`}
+                label="Reset Permissions"
+                cssClasses={["flat"]}
+                onClick={() => ctx.resetSiteDecisions(activeOrigin())}
               />
             </box>
-          </box>
-        ) : siteDecisions.length === 0 ? (
-          <label
-            testID={`${p}site-permissions-empty`}
-            text="This site has not asked for anything yet."
-            cssClasses={["dimmed"]}
-            style={{ halign: "start" }}
-          />
-        ) : (
-          <box orientation="vertical" spacing={Spacing.xs}>
-            {siteDecisions.map((row) => (
-              <box key={row.type} orientation="horizontal" spacing={Spacing.sm}>
+          }
+        >
+          <Match when={activePrompt()}>
+            {(prompt) => (
+              <box orientation="vertical" spacing={Spacing.sm}>
                 <label
-                  testID={`${p}site-permission-${row.type}`}
-                  text={`${permissionName(row.type)}: ${row.decision === "allow" ? "Allowed" : "Blocked"}`}
-                  ellipsize
-                  style={{ halign: "start", hexpand: true }}
+                  testID={`${p()}permission-request`}
+                  text={permissionSentence(hostOf(active().url) || prompt().origin, prompt().types)}
+                  style={{ halign: "start" }}
                 />
+                <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end" }}>
+                  <button
+                    testID={`${p()}permission-block`}
+                    label="Block"
+                    onClick={() => {
+                      ctx.decidePrompt(prompt(), "block");
+                      setSiteInfoOpen(false);
+                    }}
+                  />
+                  <button
+                    testID={`${p()}permission-allow`}
+                    label="Allow"
+                    cssClasses={["suggested-action"]}
+                    onClick={() => {
+                      ctx.decidePrompt(prompt(), "allow");
+                      setSiteInfoOpen(false);
+                    }}
+                  />
+                </box>
               </box>
-            ))}
-            <button
-              testID={`${p}site-permissions-reset`}
-              label="Reset Permissions"
-              cssClasses={["flat"]}
-              onClick={() => ctx.resetSiteDecisions(activeOrigin)}
+            )}
+          </Match>
+          <Match when={siteDecisions().length === 0}>
+            <label
+              testID={`${p()}site-permissions-empty`}
+              text="This site has not asked for anything yet."
+              cssClasses={["dimmed"]}
+              style={{ halign: "start" }}
             />
-          </box>
-        )}
+          </Match>
+        </Switch>
       </box>
     );
   }
@@ -1021,345 +1065,402 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     setSiteInfoOpen(false);
     // Escape and a click outside are a dismissal, and a dismissed request is
     // denied rather than left pending.
-    ctx.denyPromptsFor(active.id);
+    ctx.denyPromptsFor(active().id);
   }
 
   /// The padlock. In the sidebar it is a button in the foot, so the popover
   /// opens upward and stays inside the window: opened downward GTK shrinks one
   /// to the room left under the window and then closes it for being under its
   /// minimum size. In compact it leads the active tab and opens downward.
-  function siteInfoControl(position: "top" | "bottom"): React.ReactNode {
+  function siteInfoControl(position: "top" | "bottom") {
     return (
-      <>
-        {/* One indicator, updated in place. The state rides the testID
-            because getTree exposes a node's text but never its icon
-            name, so that is the only way a drive can assert which
-            padlock is drawn; it must NOT ride a `key`, which remounts
-            the button. The padlock is Chrome's site-info button: what
-            this page is allowed to do hangs off it, and so does a
-            permission the page is asking for right now. Boxed because a
-            popover anchors on its tree parent. */}
-        <box testID={`${p}site-info-anchor`} orientation="horizontal" style={{ valign: "center" }}>
-          <button
-            testID={`${p}security-${activeRt.security}`}
-            iconName={SECURITY_ICON[activeRt.security]}
-            tooltip={SECURITY_TOOLTIP[activeRt.security]}
-            cssClasses={position === "bottom" ? ["flat", "dimmed"] : ["flat"]}
-            size={position === "bottom" ? "small" : undefined}
-            // Inside the tab it is a glyph beside the favicon, not a button
-            // of the row's size; Adwaita's side padding would part the two.
-            style={position === "bottom" && gtk ? { padding: { left: 6, right: 0 } } : undefined}
-            onClick={() => (siteInfoOpen ? setSiteInfoOpen(false) : openPanel("siteInfo"))}
+      // One indicator, updated in place. The state rides the testID because
+      // getTree exposes a node's text but never its icon name, so that is the
+      // only way a drive can assert which padlock is drawn. The padlock is
+      // Chrome's site-info button: what this page is allowed to do hangs off
+      // it, and so does a permission the page is asking for right now. Boxed
+      // because a popover anchors on its tree parent.
+      <box testID={`${p()}site-info-anchor`} orientation="horizontal" style={{ valign: "center" }}>
+        <button
+          testID={`${p()}security-${activeRt().security}`}
+          iconName={SECURITY_ICON[activeRt().security]}
+          tooltip={SECURITY_TOOLTIP[activeRt().security]}
+          cssClasses={position === "bottom" ? ["flat", "dimmed"] : ["flat"]}
+          size={position === "bottom" ? "small" : undefined}
+          // Inside the tab it is a glyph beside the favicon, not a button
+          // of the row's size; Adwaita's side padding would part the two.
+          style={position === "bottom" && gtk ? { padding: { left: 6, right: 0 } } : undefined}
+          onClick={() => (siteInfoOpen() ? setSiteInfoOpen(false) : openPanel("siteInfo"))}
+        />
+        <popover testID={`${p()}site-info-popover`} open={siteInfoOpen()} position={position} onClosed={closeSiteInfo}>
+          {siteInfoPanel()}
+        </popover>
+      </box>
+    );
+  }
+
+  function windowMenu(slot?: "end") {
+    return (
+      // The menu bar lives in the first window. Every other window carries
+      // its own menu for what acts on THAT window, moving its tab above all,
+      // which a drag must never be the only way to do.
+      <Show when={!props.first}>
+        <menubutton slot={slot} testID={`${p()}window-menu`} iconName="open-menu-symbolic" tooltip="Main Menu">
+          <menuitem testID={`${p()}menu-new-tab`} label="New Tab" onSelect={() => openPalette("", "new-tab")} />
+          <menuitem testID={`${p()}menu-new-window`} label="New Window" onSelect={() => ctx.newWindow()} />
+          <menuitem testID={`${p()}menu-close-tab`} label="Close Tab" onSelect={() => ctx.closeTab(active().id)} />
+          <menuitem
+            testID={`${p()}menu-sleep-tab`}
+            label="Put Tab to Sleep"
+            enabled={ctx.canSleep(active().id)}
+            onSelect={() => ctx.sleepTab(active().id)}
           />
-          <popover testID={`${p}site-info-popover`} open={siteInfoOpen} position={position} onClosed={closeSiteInfo}>
-            {siteInfoPanel()}
-          </popover>
-        </box>
-      </>
+          <menuitem role="separator" testID={`${p()}menu-sep-move`} />
+          {moveItems(`${p()}menu-`, () => props.win, targets)}
+          <menuitem role="separator" testID={`${p()}menu-sep`} />
+          <menuitem testID={`${p()}menu-find`} label="Find in Page" onSelect={() => ctx.openFind(active().id)} />
+          <menuitem testID={`${p()}menu-show-history`} label="History" onSelect={() => setPanel("history")} />
+          <menuitem testID={`${p()}menu-downloads`} label="Downloads" onSelect={() => setPanel("downloads")} />
+          <menuitem testID={`${p()}menu-bookmarks`} label="Bookmarks" onSelect={() => setPanel("bookmarks")} />
+          <menuitem testID={`${p()}menu-settings`} label="Settings" onSelect={() => ctx.openSettings()} />
+        </menubutton>
+      </Show>
     );
   }
 
-  function windowMenu(slot?: "end"): React.ReactNode {
+  function extensionControls(slot?: "end") {
     return (
-      <>
-        {/* The menu bar lives in the first window. Every other window
-            carries its own menu for what acts on THAT window, moving
-            its tab above all, which a drag must never be the only way
-            to do. */}
-        {!first && (
-          <menubutton slot={slot} testID={`${p}window-menu`} iconName="open-menu-symbolic" tooltip="Main Menu">
-            <menuitem testID={`${p}menu-new-tab`} label="New Tab" onSelect={() => openPalette("", "new-tab")} />
-            <menuitem testID={`${p}menu-new-window`} label="New Window" onSelect={ctx.newWindow} />
-            <menuitem testID={`${p}menu-close-tab`} label="Close Tab" onSelect={() => ctx.closeTab(active.id)} />
-            <menuitem
-              testID={`${p}menu-sleep-tab`}
-              label="Put Tab to Sleep"
-              enabled={ctx.canSleep(active.id)}
-              onSelect={() => ctx.sleepTab(active.id)}
-            />
-            <menuitem role="separator" testID={`${p}menu-sep-move`} />
-            {moveItems(`${p}menu-`, win, targets)}
-            <menuitem role="separator" testID={`${p}menu-sep`} />
-            <menuitem testID={`${p}menu-find`} label="Find in Page" onSelect={() => ctx.openFind(active.id)} />
-            <menuitem testID={`${p}menu-show-history`} label="History" onSelect={() => setPanel("history")} />
-            <menuitem testID={`${p}menu-downloads`} label="Downloads" onSelect={() => setPanel("downloads")} />
-            <menuitem testID={`${p}menu-bookmarks`} label="Bookmarks" onSelect={() => setPanel("bookmarks")} />
-            <menuitem testID={`${p}menu-settings`} label="Settings" onSelect={ctx.openSettings} />
-          </menubutton>
-        )}
-      </>
-    );
-  }
-
-  function extensionControls(slot?: "end"): React.ReactNode {
-    return (
-      <>
-        {/* Chrome's extensions area: the pinned actions, then the puzzle
-            piece that lists everything installed. Each pinned action is
-            boxed with its own popover so the popup opens under the button
-            that was clicked; an unpinned one opens under the puzzle. */}
-        {chromium &&
-          pinnedActions.map((row) => {
-            const live = actionState(row.id);
+      // Chrome's extensions area: the pinned actions, then the puzzle piece
+      // that lists everything installed. Each pinned action is boxed with its
+      // own popover so the popup opens under the button that was clicked; an
+      // unpinned one opens under the puzzle.
+      <Show when={chromium()}>
+        <For each={ctx.pinnedActions} keyed={(r) => r.id}>
+          {(row) => {
+            const live = () => actionState(row().id);
             return (
-              <box slot={slot} key={row.id} testID={`${p}ext-pin-${row.id}`} orientation="horizontal">
-                {/* The badge floats over the icon's top corner, where
-                    Chrome draws it, rather than widening the button. */}
-                <overlay testID={`${p}ext-action-stack-${row.id}`}>
+              <box slot={slot} testID={`${p()}ext-pin-${row().id}`} orientation="horizontal">
+                {/* The badge floats over the icon's top corner, where Chrome
+                    draws it, rather than widening the button. */}
+                <overlay testID={`${p()}ext-action-stack-${row().id}`}>
                   <button
-                    testID={`${p}ext-action-${row.id}`}
-                    iconData={row.iconData || undefined}
+                    testID={`${p()}ext-action-${row().id}`}
+                    iconData={row().iconData || undefined}
                     iconName="application-x-addon-symbolic"
-                    tooltip={popupTooltip(row)}
+                    tooltip={popupTooltip(row())}
                     cssClasses={["flat"]}
-                    enabled={row.enabled && ctx.checkingAction !== row.id}
-                    onClick={() => openExtensionPopup(row)}
+                    enabled={row().enabled && ctx.checkingAction !== row().id}
+                    onClick={() => openExtensionPopup(row())}
                   />
-                  {live?.badgeText ? (
+                  <Show when={live()?.badgeText}>
                     <badge
-                      testID={`${p}ext-badge-${row.id}`}
-                      label={live.badgeText}
-                      variant={badgeVariant(live.badgeColor)}
+                      testID={`${p()}ext-badge-${row().id}`}
+                      label={live()!.badgeText}
+                      variant={badgeVariant(live()!.badgeColor)}
                       style={{ halign: "end", valign: "start" }}
                     />
-                  ) : null}
+                  </Show>
                 </overlay>
                 <popover
-                  testID={`${p}ext-popup-${row.id}`}
-                  open={popupId === row.id}
+                  testID={`${p()}ext-popup-${row().id}`}
+                  open={popupId() === row().id}
                   position={slot ? "bottom" : "top"}
                   onClosed={closeExtensionPopup}
                 >
-                  {popupId === row.id ? extensionPopup(row) : <box orientation="horizontal" />}
+                  <Show when={popupId() === row().id} fallback={<box orientation="horizontal" />}>
+                    {extensionPopup(row)}
+                  </Show>
                 </popover>
               </box>
             );
-          })}
-        {chromium && (
-          <box slot={slot} testID={`${p}extensions-anchor`} orientation="horizontal">
-            <button
-              testID={`${p}extensions-button`}
-              iconName="application-x-addon-symbolic"
-              tooltip="Extensions"
-              cssClasses={["flat"]}
-              onClick={() => (extensionsOpen ? setExtensionsOpen(false) : openExtensionsList())}
-            />
-            <popover
-              testID={`${p}extensions-popover`}
-              open={extensionsOpen}
-              position={slot ? "bottom" : "top"}
-              onClosed={() => setExtensionsOpen(false)}
+          }}
+        </For>
+        <box slot={slot} testID={`${p()}extensions-anchor`} orientation="horizontal">
+          <button
+            testID={`${p()}extensions-button`}
+            iconName="application-x-addon-symbolic"
+            tooltip="Extensions"
+            cssClasses={["flat"]}
+            onClick={() => (extensionsOpen() ? setExtensionsOpen(false) : openExtensionsList())}
+          />
+          <popover
+            testID={`${p()}extensions-popover`}
+            open={extensionsOpen()}
+            position={slot ? "bottom" : "top"}
+            onClosed={() => setExtensionsOpen(false)}
+          >
+            <box
+              testID={`${p()}extensions-panel`}
+              orientation="vertical"
+              spacing={Spacing.sm}
+              style={{ padding: Spacing.sm, minWidth: EXTENSIONS_PANEL_WIDTH }}
             >
-              <box
-                testID={`${p}extensions-panel`}
-                orientation="vertical"
-                spacing={Spacing.sm}
-                style={{ padding: Spacing.sm, minWidth: EXTENSIONS_PANEL_WIDTH }}
-              >
-                <label text="Extensions" cssClasses={["heading"]} style={{ halign: "start" }} />
-                {rows.length === 0 ? (
+              <label text="Extensions" cssClasses={["heading"]} style={{ halign: "start" }} />
+              <For
+                each={ctx.rows}
+                keyed={(r) => r.id}
+                fallback={
                   <label
-                    testID={`${p}extensions-empty`}
+                    testID={`${p()}extensions-empty`}
                     text="Extensions you install appear here."
                     cssClasses={["dimmed"]}
                     style={{ halign: "start" }}
                   />
-                ) : (
-                  rows.map((row) => (
-                    <box key={row.id} orientation="horizontal" spacing={Spacing.sm}>
-                      {/* The name IS the button: a row-wide target is
-                          what a pointer aims at, and the icon rides it
-                          rather than sitting beside it as decoration. */}
-                      <button
-                        testID={`${p}ext-row-${row.id}`}
-                        label={row.name}
-                        iconData={row.iconData || undefined}
-                        iconName="application-x-addon-symbolic"
-                        labelAlign="start"
-                        ellipsize
-                        tooltip={popupTooltip(row)}
-                        cssClasses={["flat"]}
-                        enabled={row.enabled}
-                        style={{ hexpand: true }}
-                        onClick={() => openExtensionPopup(row)}
-                      />
-                      <togglebutton
-                        testID={`${p}ext-pin-toggle-${row.id}`}
-                        iconName="view-pin-symbolic"
-                        tooltip={prefs.pinnedExtensions.includes(row.id) ? "Unpin from toolbar" : "Pin to toolbar"}
-                        active={prefs.pinnedExtensions.includes(row.id)}
-                        cssClasses={["flat"]}
-                        style={{ valign: "center" }}
-                        onToggled={() => ctx.pinExtension(row.id)}
-                      />
-                      <menubutton
-                        testID={`${p}ext-more-${row.id}`}
-                        iconName="view-more-symbolic"
-                        tooltip={`More for ${row.name}`}
-                        cssClasses={["flat"]}
-                        style={{ valign: "center" }}
-                      >
-                        {row.optionsUrl ? (
-                          <menuitem
-                            testID={`${p}ext-options-${row.id}`}
-                            label="Options"
-                            onSelect={() => {
-                              setExtensionsOpen(false);
-                              ctx.openTab(win.id, row.optionsUrl);
-                            }}
-                          />
-                        ) : null}
+                }
+              >
+                {(row) => (
+                  <box orientation="horizontal" spacing={Spacing.sm}>
+                    {/* The name IS the button: a row-wide target is what a
+                        pointer aims at, and the icon rides it rather than
+                        sitting beside it as decoration. */}
+                    <button
+                      testID={`${p()}ext-row-${row().id}`}
+                      label={row().name}
+                      iconData={row().iconData || undefined}
+                      iconName="application-x-addon-symbolic"
+                      labelAlign="start"
+                      ellipsize
+                      tooltip={popupTooltip(row())}
+                      cssClasses={["flat"]}
+                      enabled={row().enabled}
+                      style={{ hexpand: true }}
+                      onClick={() => openExtensionPopup(row())}
+                    />
+                    <togglebutton
+                      testID={`${p()}ext-pin-toggle-${row().id}`}
+                      iconName="view-pin-symbolic"
+                      tooltip={prefs.pinnedExtensions.includes(row().id) ? "Unpin from toolbar" : "Pin to toolbar"}
+                      active={prefs.pinnedExtensions.includes(row().id)}
+                      cssClasses={["flat"]}
+                      style={{ valign: "center" }}
+                      onToggled={() => ctx.pinExtension(row().id)}
+                    />
+                    <menubutton
+                      testID={`${p()}ext-more-${row().id}`}
+                      iconName="view-more-symbolic"
+                      tooltip={`More for ${row().name}`}
+                      cssClasses={["flat"]}
+                      style={{ valign: "center" }}
+                    >
+                      <Show when={row().optionsUrl}>
                         <menuitem
-                          testID={`${p}ext-remove-${row.id}`}
-                          label="Remove…"
-                          onSelect={() => confirmRemoveExtension(row)}
+                          testID={`${p()}ext-options-${row().id}`}
+                          label="Options"
+                          onSelect={() => {
+                            setExtensionsOpen(false);
+                            ctx.openTab(winId, row().optionsUrl);
+                          }}
                         />
-                      </menubutton>
-                    </box>
-                  ))
+                      </Show>
+                      <menuitem
+                        testID={`${p()}ext-remove-${row().id}`}
+                        label="Remove…"
+                        onSelect={() => confirmRemoveExtension(row())}
+                      />
+                    </menubutton>
+                  </box>
                 )}
+              </For>
+              <button
+                testID={`${p()}extensions-manage`}
+                label="Manage Extensions"
+                cssClasses={["flat"]}
+                onClick={() => {
+                  setExtensionsOpen(false);
+                  ctx.openTab(winId, "chrome://extensions");
+                }}
+              />
+              {/* Test-only: the drive has no other way in. `nd dev` and a
+                  packaged run both take extensions from the Web Store or the
+                  command line, and launchApp passes no argv. */}
+              <Show when={TEST_HOOKS}>
                 <button
-                  testID={`${p}extensions-manage`}
-                  label="Manage Extensions"
+                  testID={`${p()}extensions-install-test`}
+                  label="Install the test extension"
                   cssClasses={["flat"]}
-                  onClick={() => {
-                    setExtensionsOpen(false);
-                    ctx.openTab(win.id, "chrome://extensions");
-                  }}
+                  onClick={() => ctx.installTestExtension(process.env.NB_TEST_EXT)}
                 />
-                {/* Test-only: the drive has no other way in. `nd dev` and
-                    a packaged run both take extensions from the Web Store
-                    or the command line, and launchApp passes no argv. */}
-                {TEST_HOOKS && (
-                  <button
-                    testID={`${p}extensions-install-test`}
-                    label="Install the test extension"
-                    cssClasses={["flat"]}
-                    onClick={() => ctx.installTestExtension(process.env.NB_TEST_EXT)}
-                  />
-                )}
-                {TEST_HOOKS && (
-                  <button
-                    testID={`${p}extensions-install-action-test`}
-                    label="Install the action test extension"
-                    cssClasses={["flat"]}
-                    onClick={() => ctx.installTestExtension(process.env.NB_TEST_EXT_ACTION)}
-                  />
-                )}
-              </box>
-            </popover>
-            {/* An unpinned action has no button of its own, so its popup
-                hangs off the puzzle piece it was opened from. */}
-            <popover
-              testID={`${p}ext-popup-unpinned`}
-              open={unpinnedPopup !== null}
-              position={slot ? "bottom" : "top"}
-              onClosed={closeExtensionPopup}
-            >
-              {unpinnedPopup ? extensionPopup(unpinnedPopup) : <box orientation="horizontal" />}
-            </popover>
-          </box>
-        )}
-      </>
+                <button
+                  testID={`${p()}extensions-install-action-test`}
+                  label="Install the action test extension"
+                  cssClasses={["flat"]}
+                  onClick={() => ctx.installTestExtension(process.env.NB_TEST_EXT_ACTION)}
+                />
+              </Show>
+            </box>
+          </popover>
+          {/* An unpinned action has no button of its own, so its popup hangs
+              off the puzzle piece it was opened from. */}
+          <popover
+            testID={`${p()}ext-popup-unpinned`}
+            open={unpinnedPopup() !== null}
+            position={slot ? "bottom" : "top"}
+            onClosed={closeExtensionPopup}
+          >
+            <Show when={unpinnedPopup()} fallback={<box orientation="horizontal" />}>
+              {(row) => extensionPopup(row)}
+            </Show>
+          </popover>
+        </box>
+      </Show>
     );
   }
 
-  function downloadsControl(slot?: "end"): React.ReactNode {
+  function downloadsControl(slot?: "end") {
     return (
-      <>
-        {/* A popover anchors on its TREE parent on both backends, and a
-            header bar's own handle never joins a view hierarchy, so the
-            button it hangs off has to be boxed. */}
-        <box slot={slot} testID={`${p}downloads-anchor`} orientation="horizontal">
-          <button
-            testID={`${p}downloads-button`}
-            iconName="folder-download-symbolic"
-            tooltip="Downloads"
-            cssClasses={["flat"]}
-            onClick={() => (downloadsOpen ? setDownloadsOpen(false) : openPanel("downloads"))}
-          />
-          <popover
-            testID={`${p}downloads-popover`}
-            open={downloadsOpen}
-            position={slot ? "bottom" : "top"}
-            onClosed={() => setDownloadsOpen(false)}
+      // A popover anchors on its TREE parent on both backends, and a header
+      // bar's own handle never joins a view hierarchy, so the button it hangs
+      // off has to be boxed.
+      <box slot={slot} testID={`${p()}downloads-anchor`} orientation="horizontal">
+        <button
+          testID={`${p()}downloads-button`}
+          iconName="folder-download-symbolic"
+          tooltip="Downloads"
+          cssClasses={["flat"]}
+          onClick={() => (downloadsOpen() ? setDownloadsOpen(false) : openPanel("downloads"))}
+        />
+        <popover
+          testID={`${p()}downloads-popover`}
+          open={downloadsOpen()}
+          position={slot ? "bottom" : "top"}
+          onClosed={() => setDownloadsOpen(false)}
+        >
+          {/* Stacked boxes rather than a list widget: a popover sizes itself
+              from what it contains, and every list widget here is a scroll
+              view, which contributes no height at all. */}
+          <box
+            testID={`${p()}downloads-panel`}
+            orientation="vertical"
+            spacing={Spacing.sm}
+            style={{ padding: Spacing.sm, minWidth: DOWNLOADS_PANEL_WIDTH }}
           >
-            {/* Stacked boxes rather than a list widget: a popover sizes
-                itself from what it contains, and every list widget here
-                is a scroll view, which contributes no height at all. */}
-            <box
-              testID={`${p}downloads-panel`}
-              orientation="vertical"
-              spacing={Spacing.sm}
-              style={{ padding: Spacing.sm, minWidth: DOWNLOADS_PANEL_WIDTH }}
-            >
-              <label text="Downloads" cssClasses={["heading"]} style={{ halign: "start" }} />
-              {recentDownloads.length === 0 ? (
+            <label text="Downloads" cssClasses={["heading"]} style={{ halign: "start" }} />
+            <For
+              each={recentDownloads()}
+              keyed={(d) => d.id}
+              fallback={
                 <label
-                  testID={`${p}downloads-empty`}
+                  testID={`${p()}downloads-empty`}
                   text="Files you download appear here."
                   cssClasses={["dimmed"]}
                   style={{ halign: "start" }}
                 />
-              ) : (
-                recentDownloads.map((d) => (
-                  <DownloadRow key={d.id} d={d} actions={ctx.downloadActions} prefix={p} compact />
-                ))
-              )}
-              <box orientation="horizontal" spacing={Spacing.sm} style={{ hexpand: true }}>
-                <button
-                  testID={`${p}downloads-folder`}
-                  label="Open Downloads Folder"
-                  cssClasses={["flat"]}
-                  onClick={ctx.downloadActions.openFolder}
-                />
-                <box orientation="horizontal" style={{ hexpand: true }} />
-                <button
-                  testID={`${p}downloads-all`}
-                  label="Show All"
-                  tooltip={`Every download (${shortcutLabel(KEYS.downloads)})`}
-                  cssClasses={["flat"]}
-                  onClick={() => {
-                    openPanel(null);
-                    setPanel("downloads");
-                  }}
-                />
-              </box>
+              }
+            >
+              {(d) => <DownloadRow d={d()} actions={ctx.downloadActions} prefix={p()} compact />}
+            </For>
+            <box orientation="horizontal" spacing={Spacing.sm} style={{ hexpand: true }}>
+              <button
+                testID={`${p()}downloads-folder`}
+                label="Open Downloads Folder"
+                cssClasses={["flat"]}
+                onClick={() => ctx.downloadActions.openFolder()}
+              />
+              <box orientation="horizontal" style={{ hexpand: true }} />
+              <button
+                testID={`${p()}downloads-all`}
+                label="Show All"
+                tooltip={`Every download (${shortcutLabel(KEYS.downloads)})`}
+                cssClasses={["flat"]}
+                onClick={() => {
+                  openPanel(null);
+                  setPanel("downloads");
+                }}
+              />
             </box>
-          </popover>
-        </box>
-      </>
+          </box>
+        </popover>
+      </box>
+    );
+  }
+
+  /// Chrome's find bar. The field takes the caret once, when the bar opens:
+  /// focusing on every change would fight the user for it.
+  function FindBar() {
+    let field!: NdNodeRef<"searchinput">;
+    onSettled(() => sendCommand(field, "focus"));
+    return (
+      <box
+        testID={`${p()}find-bar`}
+        orientation="horizontal"
+        spacing={Spacing.sm}
+        style={{ padding: Spacing.sm, minWidth: FIND_BAR_WIDTH }}
+      >
+        {/* Adwaita's `.error` on the entry is what a search that found
+            nothing looks like in GNOME; the count label alone leaves the
+            field claiming everything is fine. Empty rather than absent, so
+            the class comes back off. */}
+        <searchinput
+          ref={field}
+          testID={`${p()}find-query`}
+          placeholder="Find in Page"
+          cssClasses={findFailed(find()) ? ["error"] : []}
+          style={{ hexpand: true }}
+          onChanged={(e) => ctx.runFind(active().id, e.text)}
+          onActivate={() => ctx.findCommand(active().id, "findNext")}
+        />
+        <Show when={`${find().query}:${find().count}:${find().found}`} keyed>
+          {(_shape) => (
+            <label
+              testID={`${p()}find-count`}
+              text={findSummary(find())}
+              cssClasses={["dimmed", "numeric"]}
+            />
+          )}
+        </Show>
+        <button
+          testID={`${p()}find-previous`}
+          iconName="go-up-symbolic"
+          tooltip="Previous match"
+          cssClasses={["flat"]}
+          onClick={() => ctx.findCommand(active().id, "findPrevious")}
+        />
+        <button
+          testID={`${p()}find-next`}
+          iconName="go-down-symbolic"
+          tooltip="Next match"
+          cssClasses={["flat"]}
+          onClick={() => ctx.findCommand(active().id, "findNext")}
+        />
+        {/* Escape closes the popover, which is what fires onClosed; the
+            button is the same exit for a pointer. */}
+        <button
+          testID={`${p()}find-close`}
+          iconName="window-close-symbolic"
+          tooltip="Close"
+          cssClasses={["flat"]}
+          onClick={() => ctx.closeFind(active().id)}
+        />
+      </box>
     );
   }
 
   // The menu bar acts on the FOCUSED window, whichever window draws it: its
   // accelerators are the app's, not this window's.
-  const menuWin = ctx.session.windows.find((w) => w.id === ctx.focusedWindowId) ?? win;
-  const menuActive = menuWin.tabs.find((t) => t.id === menuWin.activeId) ?? menuWin.tabs[0]!;
-  const menuBlocking = ctx.blockingFor(menuActive.id);
-  const menuRt = ctx.rt(menuActive.id);
-  const menuTarget = (): WindowController | undefined => ctx.controllerFor(menuWin.id);
+  const menuWin = createMemo((): SessionWindow => ctx.session.windows.find((w) => w.id === ctx.focusedWindowId && w.tabs.length > 0) ?? props.win);
+  const menuActive = createMemo((): SessionTab => menuWin().tabs.find((t) => t.id === menuWin().activeId) ?? menuWin().tabs[0] ?? NO_TAB);
+  const menuBlocking = createMemo(() => ctx.blockingFor(menuActive().id));
+  const menuRt = (): Runtime => ctx.rt(menuActive().id);
+  const menuTarget = (): WindowController | undefined => ctx.controllerFor(menuWin().id);
 
   return (
     <window
-      ref={(node) => {
-        windowRef.current = node as NdNodeRef<"window"> | null;
-      }}
+      ref={windowRef}
       onAlertResult={(e) => {
-        if (windowRef.current) onAlertResult(windowRef.current, e);
+        if (windowRef) onAlertResult(windowRef, e);
       }}
-      title={pageTitle}
-      testID={first ? "main-window" : `${p}window`}
-      defaultWidth={win.width}
-      defaultHeight={win.height}
-      onFocused={(e) => ctx.onWindowFocused(win.id, e.checked)}
-      onClosed={() => ctx.onWindowClosed(win.id)}
+      title={pageTitle()}
+      testID={props.first ? "main-window" : `${p()}window`}
+      defaultWidth={props.win.width}
+      defaultHeight={props.win.height}
+      onFocused={(e) => ctx.onWindowFocused(winId, e.checked)}
+      onClosed={() => ctx.onWindowClosed(winId)}
       onSizeChanged={(e) => {
         const { width, height } = e.data as { width: number; height: number };
-        ctx.onWindowSize(win.id, width, height);
+        ctx.onWindowSize(winId, width, height);
       }}
     >
-      {first && (
+      <Show when={props.first}>
         <menubar defaults testID="menubar">
           <menu label="File" testID="menu-file">
             <menuitem
@@ -1368,12 +1469,12 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               accelerator={KEYS["new-tab"]}
               onSelect={() => menuTarget()?.openPalette("", "new-tab")}
             />
-            <menuitem testID="menu-new-window" label="New Window" accelerator={KEYS["new-window"]} onSelect={ctx.newWindow} />
+            <menuitem testID="menu-new-window" label="New Window" accelerator={KEYS["new-window"]} onSelect={() => ctx.newWindow()} />
             <menuitem
               testID="menu-private-window"
               label="New Private Window"
               accelerator={KEYS.private}
-              onSelect={ctx.openPrivate}
+              onSelect={() => ctx.openPrivate()}
             />
             <menuitem
               testID="menu-address"
@@ -1391,35 +1492,35 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               testID="menu-close-tab"
               label="Close Tab"
               accelerator={KEYS["close-tab"]}
-              onSelect={() => ctx.closeTab(menuActive.id)}
+              onSelect={() => ctx.closeTab(menuActive().id)}
             />
             <menuitem
               testID="menu-reopen-tab"
               label="Reopen Closed Tab"
               accelerator={KEYS["reopen-tab"]}
-              onSelect={() => ctx.reopenTab(menuWin.id)}
+              onSelect={() => ctx.reopenTab(menuWin().id)}
             />
             <menuitem role="separator" testID="menu-file-sep" />
-            <menuitem testID="menu-settings" label="Settings" accelerator={KEYS.settings} onSelect={ctx.openSettings} />
+            <menuitem testID="menu-settings" label="Settings" accelerator={KEYS.settings} onSelect={() => ctx.openSettings()} />
           </menu>
           <menu label="Edit" testID="menu-edit">
             <menuitem
               testID="menu-find"
               label="Find in Page"
               accelerator={KEYS.find}
-              onSelect={() => ctx.openFind(menuActive.id)}
+              onSelect={() => ctx.openFind(menuActive().id)}
             />
             <menuitem
               testID="menu-find-next"
               label="Find Next"
               accelerator={KEYS["find-next"]}
-              onSelect={() => ctx.findCommand(menuActive.id, "findNext")}
+              onSelect={() => ctx.findCommand(menuActive().id, "findNext")}
             />
             <menuitem
               testID="menu-find-previous"
               label="Find Previous"
               accelerator={KEYS["find-previous"]}
-              onSelect={() => ctx.findCommand(menuActive.id, "findPrevious")}
+              onSelect={() => ctx.findCommand(menuActive().id, "findPrevious")}
             />
           </menu>
           <menu label="View" testID="menu-view">
@@ -1427,25 +1528,25 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               testID="menu-reload"
               label="Reload"
               accelerator={KEYS.reload}
-              onSelect={() => ctx.command(menuActive.id, "reload")}
+              onSelect={() => ctx.command(menuActive().id, "reload")}
             />
-            {!compact && (
+            <Show when={!compact()}>
               <menuitem
                 testID="menu-toggle-sidebar"
-                label={sidebarHidden && menuWin.id === win.id ? "Show Sidebar" : "Hide Sidebar"}
+                label={sidebarHidden() && menuWin().id === winId ? "Show Sidebar" : "Hide Sidebar"}
                 accelerator={KEYS["toggle-sidebar"]}
                 onSelect={() => menuTarget()?.toggleSidebar()}
               />
-            )}
+            </Show>
             {/* Chromium binds most ctrl and ctrl+shift letters, and password
                 managers take ctrl+shift+l and ctrl+shift+x. primary+shift+comma
                 never fired from the address field on X11, where GTK sees the
                 key as less. */}
             <menuitem
               testID="menu-layout"
-              label={compact ? "Use Sidebar Layout" : "Use Compact Layout"}
+              label={compact() ? "Use Sidebar Layout" : "Use Compact Layout"}
               accelerator={KEYS.layout}
-              onSelect={() => ctx.setLayout(compact ? "sidebar" : "compact")}
+              onSelect={() => ctx.setLayout(compact() ? "sidebar" : "compact")}
             />
             <menuitem
               testID="menu-downloads"
@@ -1461,56 +1562,56 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             />
             <menuitem
               testID="menu-bookmark-page"
-              label={isBookmarked(menuActive.url) ? "Remove Bookmark" : "Bookmark This Page"}
+              label={kept(menuActive().url) ? "Remove Bookmark" : "Bookmark This Page"}
               accelerator={KEYS["bookmark-page"]}
-              enabled={/^https?:/.test(menuActive.url)}
-              onSelect={() => toggleBookmark(menuActive)}
+              enabled={/^https?:/.test(menuActive().url)}
+              onSelect={() => toggleBookmark(menuActive())}
             />
             <menuitem
               testID="menu-reader"
-              label={ctx.rt(menuActive.id).reading ? "Leave Reading Mode" : "Reading Mode"}
+              label={menuRt().reading ? "Leave Reading Mode" : "Reading Mode"}
               accelerator={KEYS.reader}
-              enabled={chromium}
-              onSelect={() => ctx.toggleReader(menuActive.id)}
+              enabled={chromium()}
+              onSelect={() => ctx.toggleReader(menuActive().id)}
             />
             <menuitem
               testID="menu-blocking"
-              label={menuBlocking.on ? `Allow Ads on ${menuBlocking.site || "This Site"}` : `Block Ads on ${menuBlocking.site}`}
-              enabled={chromium && !!menuBlocking.site}
-              onSelect={() => ctx.toggleBlocking(menuActive.id)}
+              label={menuBlocking().on ? `Allow Ads on ${menuBlocking().site || "This Site"}` : `Block Ads on ${menuBlocking().site}`}
+              enabled={chromium() && !!menuBlocking().site}
+              onSelect={() => ctx.toggleBlocking(menuActive().id)}
             />
             <menuitem
               testID="menu-hide-element"
               label="Hide Element"
               accelerator={KEYS["hide-element"]}
-              enabled={chromium && /^https?:/.test(menuActive.url)}
-              onSelect={() => ctx.toggleHiding(menuActive.id)}
+              enabled={chromium() && /^https?:/.test(menuActive().url)}
+              onSelect={() => ctx.toggleHiding(menuActive().id)}
             />
             <menuitem
               testID="menu-float"
               label="Float Video"
               accelerator={KEYS.float}
-              enabled={chromium}
-              onSelect={() => ctx.toggleFloat(menuActive.id)}
+              enabled={chromium()}
+              onSelect={() => ctx.toggleFloat(menuActive().id)}
             />
             <menuitem role="separator" testID="menu-view-sep" />
             <menuitem
               testID="menu-zoom-in"
               label="Zoom In"
               accelerator={KEYS["zoom-in"]}
-              onSelect={() => ctx.zoomStep(menuActive.id, 1)}
+              onSelect={() => ctx.zoomStep(menuActive().id, 1)}
             />
             <menuitem
               testID="menu-zoom-out"
               label="Zoom Out"
               accelerator={KEYS["zoom-out"]}
-              onSelect={() => ctx.zoomStep(menuActive.id, -1)}
+              onSelect={() => ctx.zoomStep(menuActive().id, -1)}
             />
             <menuitem
               testID="menu-zoom-reset"
               label="Reset Zoom"
               accelerator={KEYS["zoom-reset"]}
-              onSelect={() => ctx.zoomStep(menuActive.id, 0)}
+              onSelect={() => ctx.zoomStep(menuActive().id, 0)}
             />
           </menu>
           <menu label="Tabs" testID="menu-tabs">
@@ -1518,63 +1619,64 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               testID="menu-next-tab"
               label="Next Tab"
               accelerator={KEYS["next-tab"]}
-              onSelect={() => ctx.cycleTab(menuWin.id, 1)}
+              onSelect={() => ctx.cycleTab(menuWin().id, 1)}
             />
             <menuitem
               testID="menu-prev-tab"
               label="Previous Tab"
               accelerator={KEYS["prev-tab"]}
-              onSelect={() => ctx.cycleTab(menuWin.id, -1)}
+              onSelect={() => ctx.cycleTab(menuWin().id, -1)}
             />
             <menuitem
               testID="menu-pin-tab"
-              label={menuActive.pinned ? "Unpin Tab" : "Pin Tab"}
-              onSelect={() => ctx.setPinned(menuActive.id, !menuActive.pinned)}
+              label={menuActive().pinned ? "Unpin Tab" : "Pin Tab"}
+              onSelect={() => ctx.setPinned(menuActive().id, !menuActive().pinned)}
             />
             <menuitem
               testID="menu-sleep-tab"
               label="Put Tab to Sleep"
-              enabled={ctx.canSleep(menuActive.id)}
-              onSelect={() => ctx.sleepTab(menuActive.id)}
+              enabled={ctx.canSleep(menuActive().id)}
+              onSelect={() => ctx.sleepTab(menuActive().id)}
             />
-            {moveItems("menu-", menuWin, ctx.moveTargets(menuWin.id))}
+            {moveItems("menu-", menuWin, () => ctx.moveTargets(menuWin().id))}
             <menuitem role="separator" testID="menu-tabs-sep" />
-            {menuWin.tabs.map((t, i) => (
-              <menuitem
-                key={t.id}
-                testID={`menu-tab-${i}`}
-                label={tabLabel(t)}
-                accelerator={tabKey(i, menuWin.tabs.length)}
-                onSelect={() => ctx.selectTab(t.id)}
-              />
-            ))}
+            <For each={menuWin().tabs} keyed={(t) => t.id}>
+              {(t, i) => (
+                <menuitem
+                  testID={`menu-tab-${i()}`}
+                  label={tabLabel(t())}
+                  accelerator={tabKey(i(), menuWin().tabs.length)}
+                  onSelect={() => ctx.selectTab(t().id)}
+                />
+              )}
+            </For>
           </menu>
           <menu label="Go" testID="menu-go">
             <menuitem
               testID="menu-back"
               label="Back"
               accelerator={KEYS.back}
-              enabled={menuRt.canGoBack}
-              onSelect={() => ctx.command(menuActive.id, "goBack")}
+              enabled={menuRt().canGoBack}
+              onSelect={() => ctx.command(menuActive().id, "goBack")}
             />
             <menuitem
               testID="menu-forward"
               label="Forward"
               accelerator={KEYS.forward}
-              enabled={menuRt.canGoForward}
-              onSelect={() => ctx.command(menuActive.id, "goForward")}
+              enabled={menuRt().canGoForward}
+              onSelect={() => ctx.command(menuActive().id, "goForward")}
             />
           </menu>
           {/* Test-only: page content is unreachable from GTK automation (no
               pointer/key synthesis), so the acceptance drive needs one way to
               run a snippet inside the active page. Gated on NB_TEST_HOOKS, so
               it never exists in a normal run. */}
-          {TEST_HOOKS && (
+          <Show when={TEST_HOOKS}>
             <menu label="Debug" testID="menu-debug">
               <menuitem
                 testID="menu-run-test-js"
                 label="Run test script"
-                onSelect={() => ctx.runTestJs(menuActive.id)}
+                onSelect={() => ctx.runTestJs(menuActive().id)}
               />
               <menuitem
                 testID="menu-reveal-sidebar"
@@ -1613,30 +1715,30 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 testID="menu-ctx-search-selection"
                 label="Context: search the selection"
                 onSelect={() =>
-                  ctx.onContextMenuItem(menuActive.id, {
+                  ctx.onContextMenuItem(menuActive().id, {
                     id: "nb-search-selection",
-                    pageUrl: menuActive.url,
+                    pageUrl: menuActive().url,
                     selectionText: "selected words",
                     editable: false,
                   })
                 }
               />
             </menu>
-          )}
-          {chromium && (
+          </Show>
+          <Show when={chromium()}>
             <menu label="Extensions" testID="menu-extensions">
               <menuitem
                 testID="menu-extensions-page"
                 label="Extensions"
-                onSelect={() => ctx.openTab(menuWin.id, "chrome://extensions")}
+                onSelect={() => ctx.openTab(menuWin().id, "chrome://extensions")}
               />
               <menuitem
                 testID="menu-webstore"
                 label="Chrome Web Store"
-                onSelect={() => ctx.openTab(menuWin.id, "https://chromewebstore.google.com")}
+                onSelect={() => ctx.openTab(menuWin().id, "https://chromewebstore.google.com")}
               />
             </menu>
-          )}
+          </Show>
           <menu label="History" testID="menu-history">
             <menuitem
               testID="menu-show-history"
@@ -1645,21 +1747,18 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               onSelect={() => menuTarget()?.togglePanel("history")}
             />
             <menuitem role="separator" testID="menu-history-sep" />
-            {ctx.history.length === 0 ? (
-              <menuitem testID="menu-history-empty" label="No History Yet" enabled={false} />
-            ) : (
-              ctx.history.map((v, i) => (
+            <For each={ctx.history} fallback={<menuitem testID="menu-history-empty" label="No History Yet" enabled={false} />}>
+              {(v, i) => (
                 <menuitem
-                  key={v.url}
-                  testID={`menu-history-${i}`}
+                  testID={`menu-history-${i()}`}
                   label={v.title || displayUrl(v.url)}
-                  onSelect={() => ctx.openTab(menuWin.id, v.url)}
+                  onSelect={() => ctx.openTab(menuWin().id, v.url)}
                 />
-              ))
-            )}
+              )}
+            </For>
           </menu>
         </menubar>
-      )}
+      </Show>
 
       <toastoverlay ref={toast} onToastButtonClicked={onToastButtonClicked} onToastDismissed={onToastDismissed}>
         {/* The sidebar layout is Arc's: no header bar, the column running
@@ -1672,37 +1771,37 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
         <splitview
           ref={split}
           sidebarWidth={0.24}
-          collapsed={!compact && sidebarHidden}
-          edgeReveal={!compact}
+          collapsed={!compact() && sidebarHidden()}
+          edgeReveal={!compact()}
           // AppKit's glass sidebar reflects the page beside it, so the page
-          // runs to the window's edges there, as in Search; libadwaita keeps
+          // runs to the window's edges there; libadwaita keeps
           // it in an inset card on the sidebar's colour, unless the desktop
           // draws no window controls at all.
-          contentStyle={compact || !gtk || (!leadingControls && !trailingControls) ? "plain" : "card"}
-          testID={`${p}split`}
+          contentStyle={compact() || !gtk || (!leadingControls() && !trailingControls()) ? "plain" : "card"}
+          testID={`${p()}split`}
           onRevealChanged={(e) => setRevealed(e.checked)}
         >
-          {!compact && (
+          <Show when={!compact()}>
             <Sidebar
-              p={p}
-              tabs={tabs}
-              activeId={active.id}
-              loading={activeRt.loading}
+              p={p()}
+              tabs={tabs()}
+              activeId={active().id}
+              loading={activeRt().loading}
               labelFor={tabLabel}
               hoverFor={tabHover}
-              iconFor={faviconFor}
-              pinStyle={ctx.prefs.pinStyle}
+              iconFor={ctx.iconFor}
+              pinStyle={prefs.pinStyle}
               asleep={ctx.asleep}
               siteInfo={siteInfoControl("top")}
               zoom={
                 <ZoomFootControl
-                  open={zoomPopover.open && !sidebarHidden}
+                  open={zoomPopover.open() && !sidebarHidden()}
                   position="top"
-                  factor={zoomFactor}
-                  prefix={p}
+                  factor={zoomFactor()}
+                  prefix={p()}
                   onToggle={zoomPopover.toggle}
-                  onStep={(direction) => ctx.setZoom(active.id, stepZoom(zoomFactor, direction))}
-                  onReset={() => ctx.setZoom(active.id, 1)}
+                  onStep={(direction) => ctx.setZoom(active().id, stepZoom(zoomFactor(), direction))}
+                  onReset={() => ctx.setZoom(active().id, 1)}
                   onClosed={zoomPopover.close}
                 />
               }
@@ -1713,15 +1812,15 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               onClose={ctx.closeTab}
               menuFor={tabMenu}
               onMenu={(t, id) => runTabCommand(id, t)}
-              onNewTab={() => ctx.openTab(win.id, "")}
+              onNewTab={() => ctx.openTab(winId, "")}
               onOpenAddress={openAddress}
-              onOpenSettings={ctx.openSettings}
+              onOpenSettings={() => ctx.openSettings()}
               onLeadingControlsChanged={setLeadingControls}
               dragPayload={(t) => tabPayload({ profile: "default", tabId: t.id, url: t.url })}
-              dropIndex={dropIndex}
+              dropIndex={dropIndex()}
               onDragOverIndex={(index) => {
                 if (TEST_HOOKS) console.error(`ND_APP DRAG over index=${index}`);
-                ctx.setDropHint(win.id, index);
+                ctx.setDropHint(winId, index);
               }}
               onDropAt={(payload, index, pinned) => {
                 if (TEST_HOOKS) console.error(`ND_APP DRAG drop index=${index} pinned=${pinned}`);
@@ -1731,7 +1830,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                   const tab = ctx.session.windows.flatMap((w) => w.tabs).find((t) => t.id === drag.tabId);
                   if (tab && tab.pinned !== pinned) ctx.setPinned(tab.id, pinned);
                 }
-                ctx.onTabDropped(win.id, payload, index);
+                ctx.onTabDropped(winId, payload, index);
               }}
               onDragStart={(payload) => {
                 if (TEST_HOOKS) console.error("ND_APP DRAG start");
@@ -1739,7 +1838,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
               }}
               onDragEnd={ctx.onDragEnd}
             />
-          )}
+          </Show>
 
           {/* With the sidebar hidden the page is immersive: the strip slides
               away over it and comes back while the pointer is at the top
@@ -1747,8 +1846,8 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
           <toolbarview
             ref={contentBars}
             slot="content"
-            testID={`${p}content-toolbar`}
-            topBarsAutoHide={!compact && gtk && sidebarHidden && trailingControls}
+            testID={`${p()}content-toolbar`}
+            topBarsAutoHide={!compact() && gtk && sidebarHidden() && trailingControls()}
           >
             {/* Window controls the desktop puts on the TRAILING side
                 (GNOME's default) do not belong in a leading sidebar: they get
@@ -1759,124 +1858,120 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                 compositor) it is hidden rather than unmounted, so the card
                 keeps its full inset and a change of the setting is still
                 heard. macOS has all three in the sidebar. */}
-            {!compact && gtk && (
-              <Activity mode={trailingControls ? "visible" : "hidden"}>
-                <box slot="top" testID={`${p}controls-strip`} orientation="horizontal" windowHandle style={{ padding: INSET }}>
+            <Show when={!compact() && gtk}>
+              <Activity mode={trailingControls() ? "visible" : "hidden"}>
+                <box slot="top" testID={`${p()}controls-strip`} orientation="horizontal" windowHandle style={{ padding: INSET }}>
                   <box orientation="horizontal" style={{ hexpand: true }} />
                   <windowcontrols
-                    testID={`${p}controls-end`}
+                    testID={`${p()}controls-end`}
                     side="end"
                     style={{ valign: "center" }}
                     onEmptyChanged={(e) => setTrailingControls(!e.checked)}
                   />
                 </box>
               </Activity>
-            )}
-            {compact && (
-            <headerbar
-              testID={`${p}chrome`}
-              title=""
-              canGoBack={activeRt.canGoBack}
-              canGoForward={activeRt.canGoForward}
-              onBack={() => ctx.command(active.id, "goBack")}
-              onForward={() => ctx.command(active.id, "goForward")}
-            >
-              {/* One icon for both directions: Adwaita's sidebar-hide glyph has
-                  no SF Symbol behind it, so the state rides the tooltip. In
-                  compact it joins the trailing controls, so the row starts
-                  where the reference's does: back, forward, reload, tabs. */}
-              <button
-                slot="start"
-                testID={`${p}reload`}
-                iconName={activeRt.loading ? "process-stop-symbolic" : "view-refresh-symbolic"}
-                tooltip={activeRt.loading ? "Stop" : "Reload"}
-                cssClasses={["flat"]}
-                onClick={() => ctx.command(active.id, activeRt.loading ? "stop" : "reload")}
-              />
+            </Show>
+            <Show when={compact()}>
+              <headerbar
+                testID={`${p()}chrome`}
+                title=""
+                canGoBack={activeRt().canGoBack}
+                canGoForward={activeRt().canGoForward}
+                onBack={() => ctx.command(active().id, "goBack")}
+                onForward={() => ctx.command(active().id, "goForward")}
+              >
+                {/* One icon for both directions: Adwaita's sidebar-hide glyph has
+                    no SF Symbol behind it, so the state rides the tooltip. In
+                    compact it joins the trailing controls, so the row starts
+                    where the reference's does: back, forward, reload, tabs. */}
+                <button
+                  slot="start"
+                  testID={`${p()}reload`}
+                  iconName={activeRt().loading ? "process-stop-symbolic" : "view-refresh-symbolic"}
+                  tooltip={activeRt().loading ? "Stop" : "Reload"}
+                  cssClasses={["flat"]}
+                  onClick={() => ctx.command(active().id, activeRt().loading ? "stop" : "reload")}
+                />
 
-              {/* Compact puts the tabs in the row itself, after reload, and
-                  nothing below it. The active tab is the address. */}
-              {compact && (
+                {/* Compact puts the tabs in the row itself, after reload, and
+                    nothing below it. The active tab is the address. */}
                 <CompactTabs
-                  tabs={tabs}
-                  activeId={active.id}
-                  metrics={tabMetrics}
-                  prefix={p}
-                  iconFor={faviconFor}
+                  tabs={tabs()}
+                  activeId={active().id}
+                  metrics={tabMetrics()}
+                  prefix={p()}
+                  iconFor={ctx.iconFor}
                   labelFor={tabLabel}
                   hoverFor={tabHover}
                   onOpenAddress={openAddress}
                   addressLeading={siteInfoControl("bottom")}
                   addressTrailing={
                     <ZoomFootControl
-                      open={zoomPopover.open}
-                      factor={zoomFactor}
-                      prefix={p}
+                      open={zoomPopover.open()}
+                      factor={zoomFactor()}
+                      prefix={p()}
                       position="bottom"
                       onToggle={zoomPopover.toggle}
-                      onStep={(direction) => ctx.setZoom(active.id, stepZoom(zoomFactor, direction))}
-                      onReset={() => ctx.setZoom(active.id, 1)}
+                      onStep={(direction) => ctx.setZoom(active().id, stepZoom(zoomFactor(), direction))}
+                      onReset={() => ctx.setZoom(active().id, 1)}
                       onClosed={zoomPopover.close}
                     />
                   }
                   asleep={ctx.asleep}
                   onSelect={selectTab}
                   onClose={ctx.closeTab}
-                  menuFor={(t) => tabMenu(tabs.find((x) => x.id === t.id)!)}
-                  onMenu={(t, id) => runTabCommand(id, tabs.find((x) => x.id === t.id)!)}
+                  menuFor={(t) => tabMenu(tabs().find((x) => x.id === t.id)!)}
+                  onMenu={(t, id) => runTabCommand(id, tabs().find((x) => x.id === t.id)!)}
                   dragPayload={(t) => tabPayload({ profile: "default", tabId: t.id, url: t.url })}
-                  dropIndex={dropIndex}
-                  onDragOverIndex={(index) => ctx.setDropHint(win.id, index)}
-                  onDropAt={(payload, index) => ctx.onTabDropped(win.id, payload, index)}
+                  dropIndex={dropIndex()}
+                  onDragOverIndex={(index) => ctx.setDropHint(winId, index)}
+                  onDropAt={(payload, index) => ctx.onTabDropped(winId, payload, index)}
                   onDragStart={ctx.onDragStart}
                   onDragEnd={ctx.onDragEnd}
                 />
-              )}
-              {compact && (
                 <button
                   slot="start"
-                  testID={`${p}header-new-tab`}
+                  testID={`${p()}header-new-tab`}
                   // A bare plus, not the boxed tab glyph: in one row of tabs
                   // the boxed one reads as a sixth tab.
                   iconName="list-add-symbolic"
                   tooltip="New Tab"
                   cssClasses={["flat"]}
-                  onClick={() => ctx.openTab(win.id, "")}
+                  onClick={() => ctx.openTab(winId, "")}
                 />
-              )}
 
-              {/* A narrow row gives this one up first: the View menu and the
-                  chord switch layouts too. */}
-              {compact && win.width >= LAYOUT_BUTTON_WIDTH && (
-                <button
-                  slot="end"
-                  testID={`${p}layout-toggle`}
-                  iconName="sidebar-show-symbolic"
-                  tooltip="Use Sidebar Layout"
-                  cssClasses={["flat"]}
-                  onClick={() => ctx.setLayout("sidebar")}
-                />
-              )}
+                {/* A narrow row gives this one up first: the View menu and the
+                    chord switch layouts too. */}
+                <Show when={props.win.width >= LAYOUT_BUTTON_WIDTH}>
+                  <button
+                    slot="end"
+                    testID={`${p()}layout-toggle`}
+                    iconName="sidebar-show-symbolic"
+                    tooltip="Use Sidebar Layout"
+                    cssClasses={["flat"]}
+                    onClick={() => ctx.setLayout("sidebar")}
+                  />
+                </Show>
 
-              {extensionControls("end")}
+                {extensionControls("end")}
 
-              {downloadsControl("end")}
+                {downloadsControl("end")}
 
-              {/* Last in the row, where the first window's menu bar puts its
-                  own button. */}
-              {windowMenu("end")}
-            </headerbar>
-            )}
+                {/* Last in the row, where the first window's menu bar puts its
+                    own button. */}
+                {windowMenu("end")}
+              </headerbar>
+            </Show>
 
-            <box testID={`${p}content`} orientation="vertical" spacing={0} style={{ hexpand: true, vexpand: true }}>
+            <box testID={`${p()}content`} orientation="vertical" spacing={0} style={{ hexpand: true, vexpand: true }}>
               {panels()}
               {/* Presents over the active window wherever it is mounted. */}
               <commandpalette
-                testID={`${p}palette`}
-                open={paletteOpen}
-                placeholder={paletteMode === "switcher" ? "Switch to a tab or run a command" : "Search or enter address"}
-                query={paletteSeed}
-                items={paletteItems}
+                testID={`${p()}palette`}
+                open={paletteOpen()}
+                placeholder={paletteMode() === "switcher" ? "Switch to a tab or run a command" : "Search or enter address"}
+                query={paletteSeed()}
+                items={paletteItems()}
                 onQueryChanged={(e) => {
                   setPaletteQuery(e.text);
                   refreshHits(e.text);
@@ -1890,42 +1985,44 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                   layout: mounting it must not resize the webview. First child
                   of the overlay is the page slot; everything else is a
                   floating layer. */}
-              <overlay testID={`${p}page-stack`} style={{ hexpand: true, vexpand: true }}>
+              <overlay testID={`${p()}page-stack`} style={{ hexpand: true, vexpand: true }}>
                 {/* Where this window's tabs' pages are shown. The root moves
-                    each live `<webview>` in here (moveNode); nothing React
-                    renders is a child of it, so no render of this window can
-                    reorder or remove a page. Only the active tab's view is
-                    visible. */}
+                    each live `<webview>` in here (moveNode); nothing this
+                    window renders is a child of it, so no update of this
+                    window can reorder or remove a page. Only the active tab's
+                    view is visible. */}
                 <box
-                  ref={(node) => ctx.registerSlot(win.id, node as NdNodeRef<"box"> | null)}
-                  testID={`${p}view-slot`}
+                  ref={slot}
+                  testID={`${p()}view-slot`}
                   orientation="vertical"
                   style={{ hexpand: true, vexpand: true }}
                 />
 
-                {activeRt.error !== null && (
-                  <statuspage
-                    testID={`${p}error-page`}
-                    iconName="network-error-symbolic"
-                    title="Unable to load this page"
-                    description={`${displayUrl(activeRt.error.url)}: ${activeRt.error.error}`}
-                    style={{ hexpand: true, vexpand: true }}
-                  >
-                    <button
-                      testID={`${p}retry`}
-                      label="Try Again"
-                      cssClasses={["suggested-action", "pill"]}
-                      onClick={() => ctx.retry(active.id)}
-                    />
-                  </statuspage>
-                )}
+                <Show when={activeRt().error}>
+                  {(error) => (
+                    <statuspage
+                      testID={`${p()}error-page`}
+                      iconName="network-error-symbolic"
+                      title="Unable to load this page"
+                      description={`${displayUrl(error().url)}: ${error().error}`}
+                      style={{ hexpand: true, vexpand: true }}
+                    >
+                      <button
+                        testID={`${p()}retry`}
+                        label="Try Again"
+                        cssClasses={["suggested-action", "pill"]}
+                        onClick={() => ctx.retry(active().id)}
+                      />
+                    </statuspage>
+                  )}
+                </Show>
 
                 {/* A new tab has no webview at all, so this native page is
                     all the content area shows: a GTK widget cannot be seen
                     over the engine's own X11 child window, and there is none
                     here to be under. */}
-                {active.url === "" && (
-                  <box testID={`${p}new-tab-page`} orientation="vertical" style={{ hexpand: true, vexpand: true }}>
+                <Show when={active().url === ""}>
+                  <box testID={`${p()}new-tab-page`} orientation="vertical" style={{ hexpand: true, vexpand: true }}>
                     <box
                       orientation="vertical"
                       spacing={Spacing.sm}
@@ -1934,7 +2031,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                       {/* Not a second address field: the command bar is the
                           only place an address is typed, and this opens it. */}
                       <button
-                        testID={`${p}new-tab-search`}
+                        testID={`${p()}new-tab-search`}
                         label="Search or enter address"
                         iconName="system-search-symbolic"
                         cssClasses={["pill"]}
@@ -1943,18 +2040,18 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                       <box orientation="horizontal" spacing={Spacing.xs} style={{ halign: "center" }}>
                         <image iconName="system-search-symbolic" symbolScale="small" cssClasses={["dimmed"]} />
                         <label
-                          testID={`${p}new-tab-engine`}
+                          testID={`${p()}new-tab-engine`}
                           text={`Search with ${engineOf(prefs.searchEngine).name}`}
                           cssClasses={["dimmed", "caption"]}
                         />
                       </box>
                     </box>
                   </box>
-                )}
+                </Show>
 
                 {loadBar()}
 
-                {first && ctx.hiddenViews}
+                <Show when={props.first}>{ctx.hiddenViews()}</Show>
 
                 {/* Chrome's find bar: it floats over the top right of the page
                     rather than taking a row of layout, so opening it never
@@ -1966,7 +2063,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                     context menu already takes. The anchor draws nothing; it
                     exists to put the popover's corner where Chrome's is. */}
                 <box
-                  testID={`${p}find-anchor`}
+                  testID={`${p()}find-anchor`}
                   orientation="horizontal"
                   style={{
                     halign: "end",
@@ -1976,65 +2073,11 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
                     margin: { top: Spacing.sm, right: Spacing.md },
                   }}
                 >
-                  {find.open && (
-                    <popover testID={`${p}find-popover`} open position="bottom" onClosed={() => ctx.closeFind(active.id)}>
-                      <box
-                        testID={`${p}find-bar`}
-                        orientation="horizontal"
-                        spacing={Spacing.sm}
-                        style={{ padding: Spacing.sm, minWidth: FIND_BAR_WIDTH }}
-                      >
-                        {/* Adwaita's `.error` on the entry is what a search that
-                            found nothing looks like in GNOME; the count label alone
-                            leaves the field claiming everything is fine. Empty
-                            rather than absent, so the class comes back off. */}
-                        <searchinput
-                          ref={(node) => {
-                            if (!node) return;
-                            if (findFocused.current === node.id) return;
-                            findFocused.current = node.id;
-                            sendCommand(node as NdNodeRef<"searchinput">, "focus");
-                          }}
-                          testID={`${p}find-query`}
-                          placeholder="Find in Page"
-                          cssClasses={findFailed(find) ? ["error"] : []}
-                          style={{ hexpand: true }}
-                          onChanged={(e) => ctx.runFind(active.id, e.text)}
-                          onActivate={() => ctx.findCommand(active.id, "findNext")}
-                        />
-                        <label
-                          key={`${find.query}:${find.count}:${find.found}`}
-                          testID={`${p}find-count`}
-                          text={findSummary(find)}
-                          cssClasses={["dimmed", "numeric"]}
-                        />
-                        <button
-                          testID={`${p}find-previous`}
-                          iconName="go-up-symbolic"
-                          tooltip="Previous match"
-                          cssClasses={["flat"]}
-                          onClick={() => ctx.findCommand(active.id, "findPrevious")}
-                        />
-                        <button
-                          testID={`${p}find-next`}
-                          iconName="go-down-symbolic"
-                          tooltip="Next match"
-                          cssClasses={["flat"]}
-                          onClick={() => ctx.findCommand(active.id, "findNext")}
-                        />
-                        {/* Escape closes the popover, which is what fires
-                            onClosed; the button is the same exit for a
-                            pointer. */}
-                        <button
-                          testID={`${p}find-close`}
-                          iconName="window-close-symbolic"
-                          tooltip="Close"
-                          cssClasses={["flat"]}
-                          onClick={() => ctx.closeFind(active.id)}
-                        />
-                      </box>
+                  <Show when={find().open}>
+                    <popover testID={`${p()}find-popover`} open position="bottom" onClosed={() => ctx.closeFind(active().id)}>
+                      <FindBar />
                     </popover>
-                  )}
+                  </Show>
                 </box>
               </overlay>
             </box>
@@ -2044,3 +2087,7 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
     </window>
   );
 }
+
+/// What a window's derived values fall back to in the moment between its last
+/// tab going and the window itself being taken down.
+const NO_TAB: SessionTab = { id: "", url: "", title: "", pinned: false };
