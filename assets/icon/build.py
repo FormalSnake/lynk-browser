@@ -32,10 +32,17 @@ def key_green(path: Path) -> Image.Image:
     return Image.fromarray(out, "RGBA")
 
 
-def fit(img: Image.Image, scale: float, offset=(0, 0)) -> Image.Image:
+def fit(img: Image.Image, scale: float, offset=(0, 0), pad=0) -> Image.Image:
     """Crops to the opaque bounds, scales the longer side to `scale` of the
-    canvas and centres it, nudged by `offset` pixels."""
-    box = img.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
+    canvas and centres it, nudged by `offset` pixels. With `pad`, the bounds
+    come from solid alpha and grow by `pad` on every side, so faint keying
+    specks cannot pull the crop off centre while a soft shadow survives."""
+    if pad:
+        img.putalpha(img.getchannel("A").point(lambda v: 0 if v < 16 else v))
+        l, t, r, b = img.getchannel("A").point(lambda v: 255 if v > 64 else 0).getbbox()
+        box = (l - pad, t - pad, r + pad, b + pad)
+    else:
+        box = img.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
     img = img.crop(box)
     k = scale * SIZE / max(img.size)
     img = img.resize((round(img.width * k), round(img.height * k)), Image.LANCZOS)
@@ -48,7 +55,7 @@ def main() -> None:
     # Linux: the whole Pantheon tile, shadow included. elementary draws app
     # icons inside a 128px canvas with a few pixels of air, so the tile and
     # its shadow take 88% of the square.
-    fit(key_green(SRC / "pantheon.jpg"), 0.88).save(HERE / "linux.png", optimize=True)
+    fit(key_green(SRC / "pantheon.jpg"), 0.88, pad=28).save(HERE / "linux.png", optimize=True)
 
     # macOS: two Icon Composer layers. The background is opaque and
     # full-bleed (the system masks it to the icon shape); the chevron sits low
@@ -64,6 +71,7 @@ def main() -> None:
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, SIZE - 1, SIZE - 1), radius=230, fill=255)
     flat = Image.new("RGBA", (SIZE, SIZE))
     flat.paste(preview, mask=mask.filter(ImageFilter.GaussianBlur(1)))
+    (HERE / "candidates").mkdir(exist_ok=True)
     flat.save(HERE / "candidates" / "mac-flat-preview.png")
 
 
