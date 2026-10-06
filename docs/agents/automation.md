@@ -3,7 +3,7 @@
 Ground truth for the method surface, param/result shapes, and error codes below is
 `schema/rpc.json` (M8-D8), the single source of truth `tools/codegen.ts` compiles into both
 `src/generated/rpc.zig` (consumed by `src/automation.zig`'s dispatch) and
-`packages/react/src/generated/rpc.ts` (consumed by `packages/test/src/socket.ts`'s typed
+`packages/core/src/generated/rpc.ts` (consumed by `packages/test/src/socket.ts`'s typed
 `AutomationClient.call<M>`). A method/param/result rename in the schema is a compile error on
 whichever side still references the old shape instead of a silent wire mismatch, the same
 schema-to-dual-codegen pattern already used for `schema/widgets.json`. This doc is a
@@ -32,7 +32,11 @@ opens). `packages/mcp` is a stdio MCP server that bridges this socket to MCP too
 `JsonNode` shape (from `getTree`/nested in `root`/`children`): `{ref: number, type: string, testID:
 string \| null, text: string \| null, visible: boolean, geometry: {x,y,w,h} \| null, children:
 JsonNode[], itemCount: number \| null, rows: {title: string, badge: string \| null, iconName:
-string \| null}[] \| null}`. `itemCount` is non-null only for data-driven widgets (currently
+string \| null}[] \| null, minSize: {w, h} \| null, material: string \| null}`. `material` is what a
+`view` tile box is drawn with on AppKit: `glass`, `raised-glass` (the `glass` and `raised` classes) or
+`fill`, null on every other node and on GTK. `minSize` is the smallest size the backend's layout
+will give the node (GTK's `gtk_widget_measure` minimum, null on AppKit); a window whose root
+`minSize.w` exceeds its width is what GTK logs as "Allocation width too small". `itemCount` is non-null only for data-driven widgets (currently
 `ListView`); it is the row count, never a walk of GTK's recycled row widgets. `rows` is non-null
 only for row-driven widgets (currently `SourceList`, M11) and carries each row's ordered
 `{title, badge, iconName}`.
@@ -84,7 +88,7 @@ For anything beyond those, talk to the automation socket directly (see `packages
 `AutomationClient` for the client-side pattern, used by every `scripts/*-drive.ts` script).
 `AutomationClient.call<M extends RpcMethodName>(method, ...params): Promise<RpcResult<M>>` is
 schema-typed, tRPC-style (M8-D8): the method name, its params shape, and its result type are all
-constrained by the generated `packages/react/src/generated/rpc.ts`, so `call("click", { ref })`
+constrained by the generated `packages/core/src/generated/rpc.ts`, so `call("click", { ref })`
 returns a typed `ClickResult` and a schema rename is a `tsc` error at the call site rather than a
 runtime surprise.
 
@@ -94,7 +98,7 @@ runtime surprise.
   adjustments). A `ListView` node cannot be scrolled directly; scroll its wrapping `ScrollView`
   instead, if one wraps it.
 - **No `TabView` page-switch RPC.** There is no automation action to change which tab is active.
-- **No `ListView` row-activate/select action.** The widget emits `onRowActivated` upward to React,
+- **No `ListView` row-activate/select action.** The widget emits `onRowActivated` upward to the app,
   but there is no automation method to trigger row activation/selection from the RPC side.
 - **Screenshot-after-scroll can race frame invalidation.** Taking a `screenshot` immediately after a
   `scroll` can occasionally return a texture from before the scroll finished compositing
@@ -165,9 +169,13 @@ Three subcommands, all under `tools/ndshot/bin/ndshot`:
   codesign identity, to help spot a stale grant after a rebuild). Exit 0 if granted, 2 if not.
 - `ndshot list` enumerates every capturable window as one JSON object per line: `{"pid":…,
   "windowID":…, "app":"…", "title":"…", "x":…, "y":…, "width":…, "height":…, "onScreen":…}`.
-- `ndshot capture --out <path.png> [--pid <pid>] [--title <substring>] [--window-id <id>]`
+- `ndshot capture --out <path.png> [--pid <pid>] [--title <substring>] [--window-id <id>] [--region] [--no-focus]`
   captures the first matching window to a full-resolution PNG. `--title` is a case-insensitive
   substring match; `--pid`/`--title` compose (both must match); `--window-id` wins outright.
+  `--region` captures the screen area under the window instead, with the app's context menus,
+  sheets, popovers and open/save panels composited on top. The window is raised and made key
+  first (Accessibility, falling back to SkyLight), so captures show the focused state;
+  `--no-focus` skips that.
 
 Example capturing the ND Notes window:
 
@@ -177,7 +185,13 @@ tools/ndshot/bin/ndshot capture --title "ND Notes" --out /tmp/nd.png
 
 Exit codes across all three subcommands: `0` success, `2` no Screen Recording access (grant
 instructions printed to stderr), `3` no window matched the given filters (the candidate window list
-is printed to stderr so an agent can self-correct), `4` capture or PNG-write failure.
+is printed to stderr so an agent can self-correct), `4` capture or PNG-write failure, `5`
+ScreenCaptureKit gave no answer within 15s (or another ndshot held the queue for 60s).
+
+replayd tracks ScreenCaptureKit clients by executable path, so a second ndshot connecting drops
+the first one's in-flight request without ever completing it. ndshot therefore runs one at a time
+(a lock in the per-user temp dir; concurrent invocations queue), and the host's `--nd-capture`
+helpers do the same per host binary.
 
 **One-time grant flow:** the first invocation of `list` or `capture` calls
 `CGRequestScreenCaptureAccess()`, which triggers the system permission prompt. That prompt is
@@ -185,3 +199,10 @@ interactive, and only the machine's owner can complete it. Grant it via
 System Settings → Privacy & Security → Screen Recording once; the grant then sticks to this binary's
 path and ad hoc signature (see above) across future runs and rebuilds. Do not script around this or
 loop retrying it; `ndshot doctor` exists so an agent can check the state instead of guessing.
+
+**SIP disabled:** `ndshot doctor --grant` skips System Settings and writes the Screen Recording,
+Accessibility and PostEvent rows into `/Library/Application Support/com.apple.TCC/TCC.db` itself, through `sudo sqlite3`. It refuses
+unless `csrutil status` reports disabled, since that file is SIP-protected. The row's code
+requirement is `identifier "com.nativedesktop.ndshot"` rather than the cdhash Settings stores for an
+ad hoc binary, so the grant survives rebuilds that change the compiled bytes. Run it once per
+checkout path; the grant is keyed to the binary's path.
