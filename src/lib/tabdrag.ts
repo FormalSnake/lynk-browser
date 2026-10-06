@@ -7,7 +7,7 @@ export interface TabDrag {
   url: string;
 }
 
-const MARK = "nativebrowser-tab";
+const MARK = "lynk-tab";
 
 export function tabPayload(drag: TabDrag): string {
   return [MARK, drag.profile, drag.tabId, drag.url].join("\n");
