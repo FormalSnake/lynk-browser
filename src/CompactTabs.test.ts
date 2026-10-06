@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Spacing } from "@nativedesktop/solid";
 import { ADDRESS_MIN_WIDTH, tabRunMetrics, type CompactTab } from "./CompactTabs.tsx";
 
 const tabs = (loose: number, pinned = 0): CompactTab[] => [
@@ -14,7 +15,7 @@ describe("tabRunMetrics", () => {
       for (let width = 1440; width >= 720; width -= 40) {
         const m = tabRunMetrics(width, run, active, 1, "gtk", true);
         expect(m.shown.some((t) => t.id === active)).toBe(true);
-        const used = m.shown.reduce((sum, t) => sum + (t.pinned ? 36 : t.id === active ? m.activeWidth : m.width) + 4, 0);
+        const used = m.shown.reduce((sum, t) => sum + (t.pinned ? 36 : t.id === active ? m.activeWidth : m.width) + Spacing.xs, 0);
         // What the row has left for the field once the tabs and the rest of
         // the row (the 424 px of GTK furniture, less the layout button below 960 px, and one 44 px slot) are counted.
         expect(width - 424 + (width >= 960 ? 0 : 40) - 44 - used).toBeGreaterThanOrEqual(ADDRESS_MIN_WIDTH);
@@ -36,7 +37,7 @@ describe("tabRunMetrics", () => {
           expect(m.shown.some((t) => t.id === active)).toBe(true);
           expect(m.activeWidth).toBeGreaterThanOrEqual(200);
           expect(m.activeWidth).toBeLessThanOrEqual(280);
-          const used = m.shown.reduce((sum, t) => sum + (t.id === active ? m.activeWidth : t.pinned ? 36 : m.width) + 4, 0);
+          const used = m.shown.reduce((sum, t) => sum + (t.id === active ? m.activeWidth : t.pinned ? 36 : m.width) + Spacing.xs, 0);
           expect(width - furniture + (width >= 960 ? 0 : 40) - 44 - used).toBeGreaterThanOrEqual(-4);
         }
       });
