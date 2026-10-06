@@ -12,11 +12,12 @@
 <h1 align="center">Lynk Browser</h1>
 
 <p align="center">
-  <a href="https://github.com/FormalSnake/NativeDesktop"><img src="https://img.shields.io/badge/nativedesktop-0.4.55-345ec3?style=for-the-badge&labelColor=161616" alt="NativeDesktop 0.4.55"></a>
+  <a href="https://github.com/FormalSnake/NativeDesktop"><img src="https://img.shields.io/badge/nativedesktop-0.4.56-345ec3?style=for-the-badge&labelColor=161616" alt="NativeDesktop 0.4.56"></a>
   <a href="nativedesktop.config.ts"><img src="https://img.shields.io/badge/chromium-CEF_151-345ec3?style=for-the-badge&labelColor=161616&logo=googlechrome&logoColor=white" alt="Chromium through CEF 151"></a>
   <a href="#install"><img src="https://img.shields.io/badge/macOS-AppKit-345ec3?style=for-the-badge&labelColor=161616&logo=apple&logoColor=white" alt="macOS, AppKit"></a>
   <a href="#install"><img src="https://img.shields.io/badge/linux-GTK4-345ec3?style=for-the-badge&labelColor=161616&logo=gtk&logoColor=white" alt="Linux, GTK4"></a>
-  <a href="#development"><img src="https://img.shields.io/badge/tests-54-345ec3?style=for-the-badge&labelColor=161616&logo=bun&logoColor=white" alt="54 unit tests"></a>
+  <a href="#development"><img src="https://img.shields.io/badge/tests-57-345ec3?style=for-the-badge&labelColor=161616&logo=bun&logoColor=white" alt="57 unit tests"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-cccccc?style=for-the-badge&labelColor=161616" alt="MIT licence"></a>
 </p>
 
 A keyboard-first browser in the style of Arc. Tabs sit in a quiet sidebar,
@@ -174,3 +175,5 @@ blocking runs [brave/adblock-rust](https://github.com/brave/adblock-rust) over
 [uBlock Origin](https://github.com/gorhill/uBlock)'s lists, and reading mode is
 Mozilla's [Readability](https://github.com/mozilla/readability). The sidebar
 and command bar take after [Arc](https://arc.net).
+
+MIT licensed. See [`LICENSE`](LICENSE).

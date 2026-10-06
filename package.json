@@ -27,5 +27,6 @@
     "babel-plugin-nativedesktop": "^0.4.56",
     "babel-plugin-react-compiler": "1.0.0",
     "@nativedesktop/test": "^0.4.56"
-  }
+  },
+  "license": "MIT"
 }
