@@ -41,3 +41,9 @@ export const KEYS = {
 } as const;
 
 export type KeyId = keyof typeof KEYS;
+
+/** Chrome's tab chords: the first eight tabs by number, and 9 for the last. */
+export function tabKey(index: number, count: number): string | undefined {
+  if (index === count - 1 && index >= 8) return "primary+9";
+  return index < 8 ? `primary+${index + 1}` : undefined;
+}

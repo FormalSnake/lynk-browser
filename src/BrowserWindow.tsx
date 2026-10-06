@@ -59,7 +59,7 @@ import {
   type PermissionPrompt,
 } from "./lib/permissions.ts";
 import type { SessionState, SessionTab, SessionWindow } from "./lib/session.ts";
-import { KEYS } from "./lib/keys.ts";
+import { KEYS, tabKey } from "./lib/keys.ts";
 import { blockedSentence, commandTitle, omniRows, shortcutLabel, type OmniMode, type OmniTarget } from "./lib/omnibox.ts";
 import { SEARCH_ENGINES, engineOf, type Layout, type SettingsState } from "./lib/settings.ts";
 import { parseTabPayload, tabPayload } from "./lib/tabdrag.ts";
@@ -1540,7 +1540,13 @@ export function BrowserWindow({ win, first, ctx }: BrowserWindowProps): React.Re
             {moveItems("menu-", menuWin, ctx.moveTargets(menuWin.id))}
             <menuitem role="separator" testID="menu-tabs-sep" />
             {menuWin.tabs.map((t, i) => (
-              <menuitem key={t.id} testID={`menu-tab-${i}`} label={tabLabel(t)} onSelect={() => ctx.selectTab(t.id)} />
+              <menuitem
+                key={t.id}
+                testID={`menu-tab-${i}`}
+                label={tabLabel(t)}
+                accelerator={tabKey(i, menuWin.tabs.length)}
+                onSelect={() => ctx.selectTab(t.id)}
+              />
             ))}
           </menu>
           <menu label="Go" testID="menu-go">
