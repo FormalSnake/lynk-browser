@@ -1747,12 +1747,16 @@ export function BrowserWindow(props: BrowserWindowProps) {
               onSelect={() => menuTarget()?.togglePanel("history")}
             />
             <menuitem role="separator" testID="menu-history-sep" />
-            <For each={ctx.history} fallback={<menuitem testID="menu-history-empty" label="No History Yet" enabled={false} />}>
+            <For
+              each={ctx.history}
+              keyed={(v) => v.url}
+              fallback={<menuitem testID="menu-history-empty" label="No History Yet" enabled={false} />}
+            >
               {(v, i) => (
                 <menuitem
                   testID={`menu-history-${i()}`}
-                  label={v.title || displayUrl(v.url)}
-                  onSelect={() => ctx.openTab(menuWin().id, v.url)}
+                  label={v().title || displayUrl(v().url)}
+                  onSelect={() => ctx.openTab(menuWin().id, v().url)}
                 />
               )}
             </For>
