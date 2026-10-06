@@ -16,9 +16,17 @@ Opening the bar while it is open reseeds it. It never stacks a second bar.
 
 ## Rows
 
+One rule covers both modes: typed text always gets its own row, ahead of
+every open tab. Return on what you typed searches it or loads it, never
+switches tabs. A tab that matches by title, host or address is the row
+below, hint "Switch to Tab", and is only switched to when you arrow down to
+it.
+
 Address mode (⌘T, ⌘L), in this order:
 
-1. The completed address, when history has one for what was typed.
+1. The completed address, when history has one for what was typed. It is
+   what the field shows, so Enter opens it, even when a tab already has it
+   open; switching to that tab stays its own row further down.
 2. What Enter does with the text as typed: "words" plus "<engine> Search"
    (hint "Search"), or the address itself (hint "Open", or "Open in New Tab"
    after ⌘T).
@@ -27,9 +35,14 @@ Address mode (⌘T, ⌘L), in this order:
    is never also offered as history.
 5. Commands whose name matches, each with its shortcut as the hint.
 
-Switcher mode (⌘K): the open tabs, most recently shown first, then every
-command. The first row is the page you were on last, so ⌘K then Return goes
-back to it.
+Switcher mode (⌘K):
+
+1. With text typed, the typed row as above, loading in this tab.
+2. The open tabs that match, most recently shown first.
+3. Commands whose name matches.
+
+With nothing typed the first row is the page you were on last, so ⌘K then
+Return goes back to it.
 
 The commands cover every action:
 - Tabs: new, close, reopen, next, previous, pin, duplicate, move to a new

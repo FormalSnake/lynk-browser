@@ -30,15 +30,15 @@ written in React with no HTML in the interface.
 
 | | |
 |---|---|
-| ![The command bar matching an open tab](docs/images/mac-command-bar.png) | ![The history panel](docs/images/mac-history.png) |
-| The command bar finds an open tab before it searches | History, searchable, one chord away |
+| ![The command bar searching what was typed, with the matching open tab below](docs/images/mac-command-bar.png) | ![The history panel](docs/images/mac-history.png) |
+| The command bar searches what you typed, and offers the open tab below it | History, searchable, one chord away |
 
 ## What's in it
 
 | | |
 |---|---|
 | Two layouts | Sidebar (pinned tiles, tab list, "+ New tab") or a compact row of tabs where the active tab is the address. `Alt+Cmd+S` switches. |
-| Command bar | `Cmd+T` and `Cmd+L` rank a completed address, the typed search, open tabs, history, then commands. `Cmd+K` lists tabs by recency, then every command. Nothing leaves the machine before Return. |
+| Command bar | `Cmd+T` and `Cmd+L` rank a completed address, the typed search, open tabs, history, then commands. `Cmd+K` lists tabs by recency, then every command. Typed text always searches first; a matching tab is the row below. Nothing leaves the machine before Return. |
 | Pinned tiles | Favicon tiles, or letter tiles as a plainer look. A pinned tab remembers its page and can reset to it. |
 | Native panels | History (SQLite), bookmarks and downloads as searchable sheets instead of Chromium's pages. |
 | Reading mode | Mozilla Readability over a copy of the page, laid out as a shadow-root overlay. The page underneath is untouched. |

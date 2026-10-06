@@ -2,9 +2,12 @@
 // in its tabs, the history hits and the engine, and gets rows back, so the
 // ranking can be tested without a host. docs/omnibox.md is the spec.
 //
-// ⌘T and ⌘L rank the typed address, open tabs, history and commands; ⌘K is
-// the switcher, open tabs then commands. Every action is a command, so none
-// needs a button. Nothing typed leaves the machine until Return.
+// Typed text always gets its own row, ahead of any open tab, so Return on
+// what was typed searches or loads it and a tab is only switched to when its
+// row is picked. ⌘T and ⌘L rank the typed address, open tabs, history and
+// commands; ⌘K is the switcher, open tabs then commands. Every action is a
+// command, so none needs a button. Nothing typed leaves the machine until
+// Return.
 import { KEYS, type KeyId } from "./keys.ts";
 import { displayUrl, hostOf, isSearch, toUrl } from "./url.ts";
 
@@ -229,15 +232,8 @@ function addressRows(input: OmniInput): OmniRow[] {
       });
       seen.add(done.url);
     }
-    const target = toUrl(query);
-    if (target && !seen.has(target)) {
-      const searching = isSearch(target);
-      rows.push(
-        searching
-          ? { id: "url", title: query, subtitle: `${input.engineName} Search`, iconName: "system-search-symbolic", hint: "Search" }
-          : { id: "url", title: displayUrl(target) || query, iconName: "web-browser-symbolic", hint: openHint },
-      );
-    }
+    const typed = typedRow(query, input.engineName, openHint);
+    if (typed && !seen.has(typed.url)) rows.push(typed.row);
   }
 
   // An open tab is offered as a switch, never also as a history row that
@@ -264,11 +260,30 @@ function addressRows(input: OmniInput): OmniRow[] {
   return rows;
 }
 
-/// ⌘K: the open tabs, most recently shown first, then every command. The
-/// first row is the page you were just on, so ⌘K then Return goes back to it.
+/// ⌘K: the open tabs, most recently shown first, then every command. With
+/// nothing typed the first row is the page you were just on, so ⌘K then
+/// Return goes back to it; with text typed the first row searches or loads it,
+/// as in the address bar.
 function switcherRows(input: OmniInput): OmniRow[] {
-  const lowered = input.query.trim().toLowerCase();
-  return [...tabRows(input.tabs, lowered, SWITCHER_TABS, input.favicon), ...commandRows(input, lowered)];
+  const query = input.query.trim();
+  const lowered = query.toLowerCase();
+  const typed = typedRow(query, input.engineName, "Open");
+  return [
+    ...(typed ? [typed.row] : []),
+    ...tabRows(input.tabs, lowered, SWITCHER_TABS, input.favicon),
+    ...commandRows(input, lowered),
+  ];
+}
+
+/// What Enter does with the text as typed: search it, or open it when it is
+/// an address. Its id is "url", which the window runs as the typed text.
+function typedRow(query: string, engineName: string, openHint: string): { url: string; row: OmniRow } | null {
+  const url = toUrl(query);
+  if (!url) return null;
+  const row: OmniRow = isSearch(url)
+    ? { id: "url", title: query, subtitle: `${engineName} Search`, iconName: "system-search-symbolic", hint: "Search" }
+    : { id: "url", title: displayUrl(url) || query, iconName: "web-browser-symbolic", hint: openHint };
+  return { url, row };
 }
 
 function tabRows(tabs: OmniTab[], lowered: string, cap: number, favicon: (url: string) => string | undefined): OmniRow[] {
