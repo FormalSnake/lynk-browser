@@ -1,4 +1,4 @@
-# NativeBrowser — plan of record
+# Lynk Browser plan of record
 
 Goal: an Arc/Edge-style sidebar browser (vertical tabs, native chrome only) built
 on NativeDesktop's `<webview>` (WebKitGTK on Linux, WKWebView on macOS), with a

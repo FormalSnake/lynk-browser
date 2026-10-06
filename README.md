@@ -89,14 +89,11 @@ changes with every build, so the mac bundle is signed with a real identity.
 Without `appimagetool` the Linux packager writes a bare squashfs instead,
 which cannot run directly. Run `dist/linux/AppDir/AppRun` to try the payload.
 
-### Coming from NativeBrowser
+### Where data lives
 
-The app was called NativeBrowser. `app.previousName` makes the first launch
-under the new name rename the old data directory to `lynk`
-(`~/Library/Application Support/lynk`, `~/.local/share/lynk`) and, on macOS,
-move the Chromium profile to the new executable's. It happens once, and only
-when no `lynk` directory exists yet. A host started by hand rather than through
-`nd dev` needs `ND_APP_PREVIOUS_NAME=NativeBrowser` for the move.
+Settings, history and bookmarks live in `~/Library/Application Support/lynk`
+on macOS and `~/.local/share/lynk` on Linux, the Chromium profile in `cef`
+inside it. Dev and packaged runs share both.
 
 ## Usage
 
