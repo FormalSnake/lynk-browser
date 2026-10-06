@@ -11,10 +11,10 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
-    "@nativedesktop/cli": "^0.4.55",
-    "@nativedesktop/data": "^0.4.55",
-    "@nativedesktop/native": "^0.4.55",
-    "@nativedesktop/react": "^0.4.55",
+    "@nativedesktop/cli": "^0.4.56",
+    "@nativedesktop/data": "^0.4.56",
+    "@nativedesktop/native": "^0.4.56",
+    "@nativedesktop/react": "^0.4.56",
     "react": "19.2.7"
   },
   "devDependencies": {
@@ -24,8 +24,8 @@
     "@babel/preset-typescript": "8.0.1",
     "@types/bun": "1.3.13",
     "@types/react": "19.2.17",
-    "babel-plugin-nativedesktop": "^0.4.55",
+    "babel-plugin-nativedesktop": "^0.4.56",
     "babel-plugin-react-compiler": "1.0.0",
-    "@nativedesktop/test": "^0.4.55"
+    "@nativedesktop/test": "^0.4.56"
   }
 }
