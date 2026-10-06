@@ -46,6 +46,9 @@ writeFileSync(
 const env: Record<string, string> = {};
 for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
 delete env.NATIVE_AUTOMATION;
+// The host runs the entry as it is, so the Solid transform is preloaded the
+// way `nd dev` and a packaged app preload it.
+env.BUN_OPTIONS = [env.BUN_OPTIONS, "--preload=@nativedesktop/solid/register"].filter(Boolean).join(" ");
 const hostArgs = (process.env.NB_IDENTITY_HOST_ARGS ?? "").split(" ").filter(Boolean);
 const app = Bun.spawn([host, `--remote-debugging-port=${PORT}`, "--remote-allow-origins=*", ...hostArgs], {
   cwd: join(import.meta.dir, ".."),
