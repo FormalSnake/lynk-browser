@@ -6,3 +6,6 @@ screenshots/
 *.png
 progress/
 .shots-store-*
+assets/icon/candidates/
+!assets/icon/*.png
+!assets/brand/**/*.png

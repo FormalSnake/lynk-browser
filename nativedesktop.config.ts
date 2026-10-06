@@ -7,18 +7,23 @@ export default defineConfig({
   native: { plugins: [] },
 
   app: {
-    id: "dev.nativebrowser.NativeBrowser",
-    name: "NativeBrowser",
-    displayName: "NativeBrowser",
+    id: "dev.formalsnake.Lynk",
+    name: "Lynk Browser",
+    displayName: "Lynk Browser",
+    previousName: "NativeBrowser",
     version: "0.1.0",
     categories: ["Network", "WebBrowser"],
-    // Layered, so one piece of art dresses both platforms: macOS 26 gets the
-    // Icon Composer bundle with the glass body, and the same composition
-    // flattens to the SVG Linux installs into hicolor.
+    // Linux gets the elementary (Pantheon) style tile; macOS 26 gets the
+    // skeuomorphic art as Icon Composer layers so the system can apply glass,
+    // dark and tinted looks. Sources and prompts live in assets/icon.
     icon: {
+      linux: "assets/icon/linux.png",
       layered: {
-        background: { gradient: ["#2B2ED8", "#7A2AD8"] },
-        layers: ["assets/compass.svg"],
+        background: "#0c1736",
+        layers: [
+          { image: "assets/icon/mac-background.png", specular: false, translucency: false, shadow: false },
+          { image: "assets/icon/mac-foreground.png", specular: true, translucency: false, shadow: 0.5 },
+        ],
       },
     },
   },

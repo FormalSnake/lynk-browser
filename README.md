@@ -1,4 +1,4 @@
-# NativeBrowser
+# Lynk Browser
 
 A sidebar browser built on [NativeDesktop](https://github.com/FormalSnake/NativeDesktop). Vertical
 tabs, native chrome, one live `<webview>` per tab, Chromium on both platforms. There is no HTML in
@@ -53,14 +53,22 @@ whose search engine, homepage and restore-on-launch all take effect.
 ## Package it
 
 ```bash
-bunx nd package mac     # dist/mac/NativeBrowser.app, ad-hoc signed
+bunx nd package mac     # dist/mac/Lynk Browser.app
 bunx nd package linux   # dist/linux/AppDir plus an AppImage
 ```
 
-The app icon is `assets/compass.svg`, declared as a layered icon in
-`nativedesktop.config.ts`. macOS gets an Icon Composer bundle compiled to `Assets.car` and `.icns`;
-Linux gets the same art flattened into the hicolor theme. On a box without appimagetool the packager
-falls back to a bare squashfs image, which cannot be executed directly. Run `dist/linux/AppDir/AppRun`
+The icons live in `assets/icon`: an elementary-style tile (`linux.png`) that Linux installs into the
+hicolor theme, and two Icon Composer layers (`mac-background.png`, `mac-foreground.png`) that macOS
+compiles to `Assets.car` and `.icns`. They were generated through CanaryLLM from the prompts in
+`assets/icon/prompts.json` (`bun assets/icon/generate.ts <key>`), and `assets/icon/build.py` keys the
+chosen originals in `assets/icon/src` into those files.
+
+The app was called NativeBrowser before. `app.previousName` makes the first launch under the new
+name move the old data directory to `lynk` (dev and packaged runs share it) and, on macOS, the old
+Chromium profile to the new executable's. A launch that runs the host by hand instead of through
+`nd dev` sets `ND_APP_PREVIOUS_NAME=NativeBrowser` for the data directory move.
+
+On a box without appimagetool the packager falls back to a bare squashfs image, which cannot be executed directly. Run `dist/linux/AppDir/AppRun`
 to test the payload there.
 
 ## Layout
