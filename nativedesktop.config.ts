@@ -10,7 +10,6 @@ export default defineConfig({
     id: "dev.formalsnake.Lynk",
     name: "Lynk Browser",
     displayName: "Lynk Browser",
-    previousName: "NativeBrowser",
     version: "0.1.0",
     categories: ["Network", "WebBrowser"],
     // Linux gets the elementary (Pantheon) style tile; macOS 26 gets the

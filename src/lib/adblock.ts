@@ -24,7 +24,7 @@ import {
 const DAY = 24 * 60 * 60 * 1000;
 const WEEK = 7 * DAY;
 
-/// One thing the user took off a site, in the Search browser's shape: the
+/// One thing the user took off a site: the
 /// selector the rule is made of, and words for the list of what is hidden.
 export interface Veil {
   selector: string;

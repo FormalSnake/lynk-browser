@@ -8,10 +8,9 @@ switching is clean both ways: no toolbar left behind in the sidebar layout, no
 controls row or card left in compact, the traffic lights where each layout puts
 them.
 
-The reference is Search (github.com/driceroland/Search), a browser that looks
-like Arc with the chrome taken away: the command bar does the work from the
-keyboard, and the column only lists tabs. Its sizes, spacing and restraint are
-the ones below, set to each platform's own type and colours rather than copied.
+The reference is Arc with the chrome taken away: the command bar does the work
+from the keyboard, and the column only lists tabs. The sizes and spacing below
+are set to each platform's own type and colours.
 
 ## Window
 
@@ -26,13 +25,13 @@ the ones below, set to each platform's own type and colours rather than copied.
   libadwaita's card.
 - AppKit has no card: public API gives no way to make the margin around it
   Liquid Glass, so the page runs full-bleed to the window's top, trailing and
-  bottom edges beside the sidebar, as in Search, and never under the sidebar.
+  bottom edges beside the sidebar, and never under the sidebar.
   With the sidebar hidden it fills the window.
 - GTK: the page is inset and clipped to the card's curve, with a hairline; on
   X11 the CEF page's own window gets a bounding shape.
 - Window controls follow the platform:
   - macOS: the traffic lights sit in the sidebar's first row, vertically
-    centred on it, the close button as far from the window's left edge as from its top (19 pt, Search's), on the same leading margin as the tiles
+    centred on it, the close button as far from the window's left edge as from its top (19 pt), on the same leading margin as the tiles
     and rows under them (`<windowcontrols side="start">`; the framework moves
     the window's own buttons onto the slot).
   - GTK: the desktop's `gtk-decoration-layout` decides. Buttons it puts on the
@@ -133,7 +132,7 @@ tile's own pressed state.
 
 ## Not built
 
-- Search's in-row address editing: the row on show opens the command bar
+- In-row address editing: the row on show opens the command bar
   instead, which is where the address is edited in this app.
 - The private window keeps its current sidebar: its address is a text entry
   of its own, and the quiet column there needs a command bar in that window

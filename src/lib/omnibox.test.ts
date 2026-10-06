@@ -71,14 +71,43 @@ test("the switcher lists open tabs first, then every command", () => {
   expect(rows.some((r) => r.id === "cmd:copy-address")).toBe(true);
 });
 
-test("a filtered switcher keeps matching tabs and commands", () => {
+test("a filtered switcher searches first, then matching tabs and commands", () => {
   expect(omniRows({ ...base, mode: "switcher", query: "zoom" }).map((r) => r.id)).toEqual([
+    "url",
     "cmd:zoom-in",
     "cmd:zoom-out",
     "cmd:zoom-reset",
   ]);
-  expect(omniRows({ ...base, mode: "switcher", query: "unpin", pinned: true }).map((r) => r.title)).toEqual(["Unpin Tab"]);
-  expect(omniRows({ ...base, mode: "switcher", query: "exten", chromium: false })).toEqual([]);
+  expect(omniRows({ ...base, mode: "switcher", query: "unpin", pinned: true }).map((r) => r.title)).toEqual(["unpin", "Unpin Tab"]);
+  expect(omniRows({ ...base, mode: "switcher", query: "exten", chromium: false }).map((r) => r.id)).toEqual(["url"]);
+});
+
+// Typed text that matches an open tab searches on Return; the switch is the
+// row below it, never the default.
+const zigTab = { id: "z", title: "Home ⚡ Zig Programming Language", url: "https://ziglang.org/" };
+
+test("typed text matching an open tab's title or host searches first, the tab second", () => {
+  for (const mode of ["address", "switcher"] as const) {
+    for (const query of ["zig", "ziglang", "programming"]) {
+      const rows = omniRows({ ...base, mode, query, tabs: [zigTab] });
+      expect(rows[0]).toMatchObject({ id: "url", title: query, subtitle: "Google Search", hint: "Search" });
+      expect(rows[1]).toMatchObject({ id: "tab:z", hint: "Switch to Tab" });
+    }
+  }
+});
+
+test("typed text matching an open tab's address opens it first, the tab second", () => {
+  for (const mode of ["address", "switcher"] as const) {
+    const rows = omniRows({ ...base, mode, query: "ziglang.org", tabs: [zigTab] });
+    expect(rows[0]).toMatchObject({ id: "url", title: "ziglang.org", hint: "Open" });
+    expect(rows[1]).toMatchObject({ id: "tab:z", hint: "Switch to Tab" });
+  }
+});
+
+test("an inline completion of an open tab's address opens it, and the switch stays its own row", () => {
+  const rows = omniRows({ ...base, query: "zig", tabs: [zigTab], history: [{ url: "https://ziglang.org/", title: "Zig" }] });
+  expect(rows.map((r) => r.id)).toEqual(["go:https://ziglang.org/", "url", "tab:z"]);
+  expect(rows[0]).toMatchObject({ completion: "ziglang.org", hint: "Open" });
 });
 
 test("shortcut labels follow the platform", () => {
@@ -109,9 +138,9 @@ test("tabs step with Ctrl+Tab off macOS", () => {
 
 test("Put Tab to Sleep is offered only for a tab that can sleep", () => {
   const ids = (canSleep: boolean) => omniRows({ ...base, mode: "switcher", query: "sleep", canSleep }).map((r) => r.id);
-  expect(ids(true)).toEqual(["cmd:sleep-tab"]);
-  expect(ids(false)).toEqual([]);
-  expect(omniRows({ ...base, mode: "switcher", query: "memory", canSleep: true }).map((r) => r.id)).toEqual(["cmd:sleep-tab"]);
+  expect(ids(true)).toEqual(["url", "cmd:sleep-tab"]);
+  expect(ids(false)).toEqual(["url"]);
+  expect(omniRows({ ...base, mode: "switcher", query: "memory", canSleep: true }).map((r) => r.id)).toEqual(["url", "cmd:sleep-tab"]);
 });
 
 test("reading mode and the floating video are commands with their chords", () => {

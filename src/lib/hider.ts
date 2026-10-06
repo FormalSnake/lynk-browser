@@ -1,4 +1,4 @@
-/// ⇧⌘H, "hide anything, for good", after the Search browser's Curtain: point
+/// ⇧⌘H, "hide anything, for good": point
 /// at an element, click, and it is gone on that site from then on. The pick
 /// becomes a `site##selector` user rule (lib/adblock.ts), which the blocker
 /// applies at document start, so a hidden element is never seen arriving.

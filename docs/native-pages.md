@@ -18,7 +18,7 @@ restored tab (`onNavigated`, which sends the tab back to where it was).
 | `chrome://downloads` | Replaced | See below. |
 | `chrome://newtab` | Replaced | The app has its own new tab page (a tab with no address), and Cmd/Ctrl+T opens the command bar (omnibox branch). `chrome://newtab`, `chrome://new-tab-page`, `about:newtab` and the local NTP become that tab, so Chromium's NTP never shows. |
 | `chrome://tab-search` | Replaced | It is a toolbar bubble, not a page, and the command bar already searches open tabs. The URL opens the command bar. The Cmd/Ctrl+Shift+A chord reaches the app as a Chrome command, which the `no-escape` branch routes (`IDC_TAB_SEARCH` wants a `tabSearch` entry there). |
-| `chrome://history` | Replaced | The History panel (owner's direction, after the Search browser): every visit by day, searchable, a line removed with its button, Clear… for the list, and Cookies and Site Data… opens Chromium's own clearing page. It reads the app's visit log; Chromium's history database, which `chrome.history` extensions see, is not cleared from here. |
+| `chrome://history` | Replaced | The History panel: every visit by day, searchable, a line removed with its button, Clear… for the list, and Cookies and Site Data… opens Chromium's own clearing page. It reads the app's visit log; Chromium's history database, which `chrome.history` extensions see, is not cleared from here. |
 | `chrome://bookmarks` | Replaced | The Bookmarks panel: the app's own list (bookmarks.json), searchable, Bookmark This Page from the View menu or the panel's foot. Flat: folders are the sidebar's pinned tabs. `chrome.bookmarks` extensions see Chromium's model, not this list. |
 | `chrome://settings`, `extensions`, `passwords`, `flags`, `version`, `policy`, ... | Kept | Owner's call: these stay Chromium's. |
 
@@ -45,8 +45,7 @@ Surfaces:
 
 ## Panels
 
-History, Downloads and Bookmarks are one kind of thing, after the Search
-browser the owner pointed at: a `<dialog>` over the window (a floating card
+History, Downloads and Bookmarks are one kind of thing: a `<dialog>` over the window (a floating card
 under a header bar on libadwaita, a sheet on AppKit), the search field holding
 the caret, Return opening the first match, Esc or the same chord putting it
 away. Chords are Chrome's own, in `src/lib/keys.ts` with the rest: History ⌘Y /
