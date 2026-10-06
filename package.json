@@ -11,14 +11,20 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
-    "@nativedesktop/cli": "^0.4.56",
-    "@nativedesktop/data": "^0.4.56",
-    "@nativedesktop/native": "^0.4.56",
-    "@nativedesktop/solid": "^0.4.56",
+    "@nativedesktop/cli": "file:../NativeDesktop-solid/packages/nd",
+    "@nativedesktop/core": "file:../NativeDesktop-solid/packages/core",
+    "@nativedesktop/data": "file:../NativeDesktop-solid/packages/data",
+    "@nativedesktop/host": "file:../NativeDesktop-solid/packages/host",
+    "@nativedesktop/native": "file:../NativeDesktop-solid/packages/native",
+    "@nativedesktop/solid": "file:../NativeDesktop-solid/packages/solid",
     "solid-js": "2.0.0-rc.13"
   },
   "devDependencies": {
     "@types/bun": "1.3.13",
-    "@nativedesktop/test": "^0.4.56"
+    "@nativedesktop/test": "file:../NativeDesktop-solid/packages/test"
+  },
+  "overrides": {
+    "@nativedesktop/host": "file:../NativeDesktop-solid/packages/host",
+    "@nativedesktop/core": "file:../NativeDesktop-solid/packages/core"
   }
 }
