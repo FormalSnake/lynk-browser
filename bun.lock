@@ -6,15 +6,15 @@
       "name": "lynk",
       "dependencies": {
         "@mozilla/readability": "^0.6.0",
-        "@nativedesktop/cli": "^0.5.2",
-        "@nativedesktop/data": "^0.5.2",
-        "@nativedesktop/host": "^0.5.2",
-        "@nativedesktop/native": "^0.5.2",
-        "@nativedesktop/react": "^0.5.2",
+        "@nativedesktop/cli": "^0.5.3",
+        "@nativedesktop/data": "^0.5.3",
+        "@nativedesktop/host": "^0.5.3",
+        "@nativedesktop/native": "^0.5.3",
+        "@nativedesktop/react": "^0.5.3",
         "solid-js": "2.0.0-rc.13",
       },
       "devDependencies": {
-        "@nativedesktop/test": "^0.5.2",
+        "@nativedesktop/test": "^0.5.3",
         "@types/bun": "1.3.13",
       },
     },
@@ -98,21 +98,21 @@
 
     "@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.2.5", "", { "dependencies": { "@tybys/wasm-util": "^0.10.3" }, "peerDependencies": { "@emnapi/core": "^1.7.1 || ^2.0.0-alpha.4", "@emnapi/runtime": "^1.7.1 || ^2.0.0-alpha.4" } }, "sha512-HshSvXzmBxNzqejd3k/KemgQ3hdREUYFRRrgxOZ+gPljDIsO2SDZrVZMd4Z/HsxudQbE62OVyVFE8z9BCurfjA=="],
 
-    "@nativedesktop/cli": ["@nativedesktop/cli@0.5.2", "", { "dependencies": { "@nativedesktop/host": "0.5.2" }, "bin": { "nd": "src/index.ts" } }, "sha512-pHEACah35ykI5qpVjU4SdCzxJmY3oIAlFnCeqC+blhL4NoB2goBC6CSiJUuyEdvrdXigvMnoovTyM1vsoIoofg=="],
+    "@nativedesktop/cli": ["@nativedesktop/cli@0.5.3", "", { "dependencies": { "@nativedesktop/host": "0.5.3" }, "bin": { "nd": "src/index.ts" } }, "sha512-DHP1X564XUDcCRyJX3bZk6HE1E9znlQwk06KRu0pIJZ11VWlsq67tcdb+mm/mUofWFJjVJhHodNINyeSJkudYA=="],
 
-    "@nativedesktop/data": ["@nativedesktop/data@0.5.2", "", { "peerDependencies": { "solid-js": "2.0.0-rc.13" }, "optionalPeers": ["solid-js"] }, "sha512-t4W9pz6Ewsbnmx6lJ3gy/x+ilnJUcrSdU6ahFt9C+aXu4lHnuBD9bZIuKXxPeE/L+6YTvWQndOyBdeB+2fOmqA=="],
+    "@nativedesktop/data": ["@nativedesktop/data@0.5.3", "", { "peerDependencies": { "solid-js": "2.0.0-rc.13" }, "optionalPeers": ["solid-js"] }, "sha512-Gr8uVDYKAdo6JIeyOHuWG8g6LXg4h8BBhNK3yLHbp+GjJzpcRlaA6lrhdDjKfoOpYo2QEGIgKocfw0PdO0t/3A=="],
 
-    "@nativedesktop/host": ["@nativedesktop/host@0.5.2", "", { "optionalDependencies": { "@nativedesktop/host-darwin-arm64": "0.5.2", "@nativedesktop/host-linux-x64": "0.5.2" } }, "sha512-frNMxz1IX8sk5AlahYy23IFRsAXuuwHPLb0t9iGW9omFOnKtXiDixCZCdQVWtpTFavY2CvxII9vG+hBTWWFvwA=="],
+    "@nativedesktop/host": ["@nativedesktop/host@0.5.3", "", { "optionalDependencies": { "@nativedesktop/host-darwin-arm64": "0.5.3", "@nativedesktop/host-linux-x64": "0.5.3" } }, "sha512-77IzyDuIHLYc4Hx9VgapoUKNJ5KRBPZFdomOrstOc96yY1MkUz6u+xDZMMuslGhsuQfhbZj7Td/0M6cFwqvcdg=="],
 
-    "@nativedesktop/host-darwin-arm64": ["@nativedesktop/host-darwin-arm64@0.5.2", "", { "os": "darwin", "cpu": "arm64" }, "sha512-a6Tb6LVBkqNETXlb6zfiLRA/8/HEJR0ZmAvKfPkN2iQ3G6dNHejHmJbM+lTI14Lhjp/W+NB/nAl+VrwE2nsLHA=="],
+    "@nativedesktop/host-darwin-arm64": ["@nativedesktop/host-darwin-arm64@0.5.3", "", { "os": "darwin", "cpu": "arm64" }, "sha512-T0qu91A4kWVzmZods0WfMXAP2g0aoPfsC89SsrIV2Gon/7bSIEsd6SqulJpAsoAlPVi2Sqqz5duDrrSbzk6dbw=="],
 
-    "@nativedesktop/host-linux-x64": ["@nativedesktop/host-linux-x64@0.5.2", "", { "os": "linux", "cpu": "x64" }, "sha512-aGVz9JqUKz9EdQg7t7WqZKVfsdyzkajMddrSeavgsWLQsxeYLRr23heR+GWhK1j0Vy62CGNVQ6HdGuNMB0ol3g=="],
+    "@nativedesktop/host-linux-x64": ["@nativedesktop/host-linux-x64@0.5.3", "", { "os": "linux", "cpu": "x64" }, "sha512-3ofAuSy3GPXiyOAOklhDs33gEIwSb2R5UGK7SB6RVqB82rc4eWPUmA7eRou14ygeRPZ2ts39tEgNeN8mnUVzYw=="],
 
-    "@nativedesktop/native": ["@nativedesktop/native@0.5.2", "", {}, "sha512-VvrL3ISsdmAyOmRF/6cV2+kmXqRs951D9R/h82OawgSeFHjwLXHKSiTFFPqBQ5yXDMuNEbacXGIupakRdAuPcg=="],
+    "@nativedesktop/native": ["@nativedesktop/native@0.5.3", "", {}, "sha512-Mh2BukEC0o2KUiMeX+ZBJYfysJz1z5oV1ggtu0CwO1QQtgAxZoicBxX5/Fv9/U9g4ZUoZv1bxRD9bT4TR8wvIw=="],
 
-    "@nativedesktop/react": ["@nativedesktop/react@0.5.2", "", { "dependencies": { "@babel/core": "7.29.7", "@babel/preset-typescript": "7.29.7", "@solidjs/compiler": "2.0.0-rc.13", "@solidjs/universal": "2.0.0-rc.13", "babel-preset-solid": "2.0.0-rc.2" }, "peerDependencies": { "solid-js": "2.0.0-rc.13" }, "bin": { "nd-solid-build": "src/build.ts" } }, "sha512-kEqXn2OcPW41ss8SyYY3bZakMVq3LCiJIJtZHPwxacEfRRJ+/YESNOF6z0SZAfsoW9/HYcF/TYMnWF4Jy+MLBA=="],
+    "@nativedesktop/react": ["@nativedesktop/react@0.5.3", "", { "dependencies": { "@babel/core": "7.29.7", "@babel/preset-typescript": "7.29.7", "@solidjs/compiler": "2.0.0-rc.13", "@solidjs/universal": "2.0.0-rc.13", "babel-preset-solid": "2.0.0-rc.2" }, "peerDependencies": { "solid-js": "2.0.0-rc.13" }, "bin": { "nd-solid-build": "src/build.ts" } }, "sha512-Cpb1vZDgaNKUEfVasb1KW6nUZyCiSAgWqwpuWrPUW/++V29SEwU3BoVFG3SrKepN1/m7koTuD6mxIMYVkSX6Hg=="],
 
-    "@nativedesktop/test": ["@nativedesktop/test@0.5.2", "", { "dependencies": { "@nativedesktop/host": "0.5.2", "@nativedesktop/react": "0.5.2" } }, "sha512-4GrYj4Fj8NBunH015fzxHd7HDmiHFN6vD8Ge+8NR+QS23zSuMVVZXofjX5elI+teyqxB/USyThANTKFHVeWtlw=="],
+    "@nativedesktop/test": ["@nativedesktop/test@0.5.3", "", { "dependencies": { "@nativedesktop/host": "0.5.3", "@nativedesktop/react": "0.5.3" } }, "sha512-IrhJDg+ffKS9pIpZTzn1Ic0ASEF0WswIhvSdF67JOoM+3aLNhe7U2mXIiQDv8/m1G8rIeJfeMClg7mH+xNsFIg=="],
 
     "@solidjs/compiler": ["@solidjs/compiler@2.0.0-rc.13", "", { "optionalDependencies": { "@solidjs/compiler-darwin-arm64": "2.0.0-rc.13", "@solidjs/compiler-darwin-x64": "2.0.0-rc.13", "@solidjs/compiler-linux-arm64-gnu": "2.0.0-rc.13", "@solidjs/compiler-linux-x64-gnu": "2.0.0-rc.13", "@solidjs/compiler-wasm32-wasi": "2.0.0-rc.13", "@solidjs/compiler-win32-x64-msvc": "2.0.0-rc.13" } }, "sha512-OveR/xhLKo8MTJO/53jgjHuBW54c6/a9B/jiSjDrBeQ3JSbODUxQ8t58WBSlHaxyowPd27TwhVkLo3zeT1YqMQ=="],
 
