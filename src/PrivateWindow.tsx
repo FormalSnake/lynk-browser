@@ -8,12 +8,12 @@
 // no command palette (its ranking reads history) and no downloads list; the
 // address field IS the address bar, which is also the only place in the app
 // that exercises `<searchinput>` on GTK.
-import { Activity, Platform, Spacing, executeJavaScript, newWindowRequest, sendCommand } from "@nativedesktop/solid";
+import { Activity, Platform, Spacing, executeJavaScript, newWindowRequest, sendCommand } from "@nativedesktop/react";
 import type {
   NdNodeRef,
   SourceTreeAction,
   SourceTreeNode,
-} from "@nativedesktop/solid";
+} from "@nativedesktop/react";
 import { For, Show, createMemo, createSignal, onSettled } from "solid-js";
 
 import type { MoveTarget } from "./BrowserWindow.tsx";

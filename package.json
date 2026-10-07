@@ -12,11 +12,10 @@
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "@nativedesktop/cli": "^0.5.0",
-    "@nativedesktop/core": "^0.5.0",
     "@nativedesktop/data": "^0.5.0",
     "@nativedesktop/host": "^0.5.0",
     "@nativedesktop/native": "^0.5.0",
-    "@nativedesktop/solid": "^0.5.0",
+    "@nativedesktop/react": "^0.5.0",
     "solid-js": "2.0.0-rc.13"
   },
   "devDependencies": {

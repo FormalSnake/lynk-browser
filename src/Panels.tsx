@@ -3,8 +3,8 @@
 // `<dialog>`s: a floating card under a header bar on libadwaita, a sheet on
 // AppKit, and both close on Esc. The search field has the
 // caret when a panel opens; Return opens the first match.
-import { Platform, Spacing, sendCommand, useStoreValue } from "@nativedesktop/solid";
-import type { JSX, NdNodeRef } from "@nativedesktop/solid";
+import { Platform, Spacing, sendCommand, useStoreValue } from "@nativedesktop/react";
+import type { JSX, NdNodeRef } from "@nativedesktop/react";
 import { For, Show, createEffect, createMemo, createSignal, onSettled } from "solid-js";
 
 import { DownloadRow, type DownloadActions } from "./Downloads.tsx";

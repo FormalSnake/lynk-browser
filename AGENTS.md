@@ -15,7 +15,7 @@ Three load-bearing rules:
    them inside JSX, a memo or an effect; props are passed as values and never destructured;
    `createEffect` takes a compute and an apply function; refs are variables or callbacks. Lists use
    `<For>`, conditionals `<Show>`, error boundaries `<Errored>`. `node_modules/solid-js/CHEATSHEET.md`
-   lists what changed from 1.x. The JSX transform is a Bun preload (`@nativedesktop/solid/register`)
+   lists what changed from 1.x. The JSX transform is a Bun preload (`@nativedesktop/react/register`)
    that `nd dev`, `nd build` and `nd package` pass for you.
 3. **Styling is not web CSS.** There is no `flex`, `grid`, `position`, `display`, or
    `justifyContent`. See `docs/agents/styling.md`.
@@ -23,7 +23,7 @@ Three load-bearing rules:
 The CLI is `@nativedesktop/cli` (the `nd` bin): `nd dev` for hot reload, `nd build` to compile to
 `dist/main.js`, `nd package [mac|linux]` to assemble and sign the platform bundle from
 `nativedesktop.config.ts`, and `nd doctor` for packaging/toolchain readiness checks. The app depends
-on `@nativedesktop/solid` and `solid-js` plus `@nativedesktop/native`; optional packages from the
+on `@nativedesktop/react` and `solid-js` plus `@nativedesktop/native`; optional packages from the
 same family are `@nativedesktop/data` (worker SQLite), `@nativedesktop/rpc`, and
 `@nativedesktop/test` (the automation harness for scripted tests).
 
@@ -31,7 +31,7 @@ Two framework defaults: unhandled promise rejections are reported and survived w
 exceptions stay fatal (tune with `setUnhandledErrorPolicy`, subscribe with `onUnhandledError`); a
 render error under `<Errored>` is reported and survived, one no boundary catches is fatal; and
 persistent settings go through `createStore` (`await store.load()` before `render()`, then
-synchronous `get()` and the `useStoreValue` signal). All of these come from `@nativedesktop/solid`.
+synchronous `get()` and the `useStoreValue` signal). All of these come from `@nativedesktop/react`.
 
 If you touch the framework itself rather than this app, read `docs/agents/zig-idiom.md` first. The
 Zig here is 0.16, not the pre-2025 APIs most training data assumes.

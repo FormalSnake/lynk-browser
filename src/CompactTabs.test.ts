@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Spacing } from "@nativedesktop/solid";
+import { Spacing } from "@nativedesktop/react";
 import { ADDRESS_MIN_WIDTH, tabRunMetrics, type CompactTab } from "./CompactTabs.tsx";
 
 const tabs = (loose: number, pinned = 0): CompactTab[] => [

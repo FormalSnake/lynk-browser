@@ -50,7 +50,7 @@ Each from its own detached worktree (`~/Developer/bench-{react,solid}-{app,fw}`)
   `-c release`), bun 1.4.2.
 - JS as `nd package` runs it: React through the app's `compile` script (babel with the React
   Compiler) and `ND_SCRIPT=dist/main.tsx`; Solid through `nd-solid-build` and
-  `ND_SCRIPT=dist/main.js` with `BUN_OPTIONS=--preload=@nativedesktop/solid/register`.
+  `ND_SCRIPT=dist/main.js` with `BUN_OPTIONS=--preload=@nativedesktop/react/register`.
 - React runs its development build in both release and here: nothing sets `NODE_ENV`, and with
   `NODE_ENV=production` `@nativedesktop/react` fails at startup ("React Refresh runtime should not
   be included in the production bundle"), so a production React could not be measured. Solid's

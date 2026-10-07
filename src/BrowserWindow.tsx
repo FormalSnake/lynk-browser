@@ -19,14 +19,14 @@ import {
   showAlert,
   showToast,
   useStoreValue,
-} from "@nativedesktop/solid";
+} from "@nativedesktop/react";
 import type {
   ContextMenuItemClick,
   ExtensionActionState,
   JSX,
   MenuEntry,
   NdNodeRef,
-} from "@nativedesktop/solid";
+} from "@nativedesktop/react";
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onSettled } from "solid-js";
 
 import { INSET, Sidebar } from "./Sidebar.tsx";

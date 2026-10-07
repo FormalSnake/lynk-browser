@@ -4,8 +4,8 @@
 // address live on the keyboard and the command bar, not here. Everything a
 // popover hangs off is handed in by the window, which owns those popovers'
 // state.
-import { Activity, Platform } from "@nativedesktop/solid";
-import type { JSX, MenuEntry } from "@nativedesktop/solid";
+import { Activity, Platform } from "@nativedesktop/react";
+import type { JSX, MenuEntry } from "@nativedesktop/react";
 import { For, Show, createMemo, createSignal } from "solid-js";
 
 import type { SessionTab } from "./lib/session.ts";

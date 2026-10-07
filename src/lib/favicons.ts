@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { inflateSync } from "node:zlib";
-import { ensureAppDataDir } from "@nativedesktop/solid";
-import type { Appearance } from "@nativedesktop/solid";
+import { ensureAppDataDir } from "@nativedesktop/react";
+import type { Appearance } from "@nativedesktop/react";
 
 /// Favicons are cached by ORIGIN, not by page: one icon per site is what a
 /// sidebar shows, and it means a tab restored before its page loads already has

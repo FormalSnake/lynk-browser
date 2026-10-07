@@ -1,4 +1,4 @@
-import { sendCommand, type NdNodeRef } from "@nativedesktop/solid";
+import { sendCommand, type NdNodeRef } from "@nativedesktop/react";
 
 /// The Chrome Web Store decides "is this Google Chrome" on the server, from the
 /// X-Browser-Validation header that only Google's own builds can sign; no

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, resolve } from "node:path";
-import { createStore } from "@nativedesktop/solid";
+import { createStore } from "@nativedesktop/react";
 import { fileNameFromUrl, hostOf } from "./url.ts";
 
 /// `pending` is asked for but not yet answered (a save panel is up);

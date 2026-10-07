@@ -1,4 +1,4 @@
-import { createStore } from "@nativedesktop/solid";
+import { createStore } from "@nativedesktop/react";
 
 import type { PermissionDecision, SitePermissions } from "./permissions.ts";
 

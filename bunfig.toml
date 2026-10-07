@@ -1,7 +1,7 @@
 # Pin the classic hoisted layout so the app's `bun install` never flips to
 # Bun 1.3+'s isolated (pnpm-style) linker. See the root bunfig.toml in the
 # NativeDesktop repo for why that default is unsafe here: it can leave a
-# `file:`/`link:`-referenced package (e.g. a local @nativedesktop/solid
+# `file:`/`link:`-referenced package (e.g. a local @nativedesktop/react
 # checkout during framework development) without its own transitive deps on
 # disk, and the host's Bun child can't resolve them.
 [install]
@@ -14,4 +14,4 @@ linker = "hoisted"
 # build, as `nd dev` does.
 [test]
 root = "src"
-preload = ["@nativedesktop/solid/register"]
+preload = ["@nativedesktop/react/register"]

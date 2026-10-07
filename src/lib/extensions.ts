@@ -1,4 +1,4 @@
-import type { ExtensionAction, InstalledExtension } from "@nativedesktop/solid";
+import type { ExtensionAction, InstalledExtension } from "@nativedesktop/react";
 
 /// One extension as the toolbar draws it. The two framework lists each carry
 /// half of what a row needs, so a row is the join of them on the id.

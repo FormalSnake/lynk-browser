@@ -30,7 +30,7 @@ import {
   useStoreValue,
   Spacing,
   system,
-} from "@nativedesktop/solid";
+} from "@nativedesktop/react";
 import type {
   ContextMenuItem,
   ContextMenuItemClick,
@@ -41,7 +41,7 @@ import type {
   ExtensionActionState,
   InstalledExtension,
   NdNodeRef,
-} from "@nativedesktop/solid";
+} from "@nativedesktop/react";
 import { For, Show, createEffect, createMemo, createSignal, createStore, onSettled } from "solid-js";
 
 import {

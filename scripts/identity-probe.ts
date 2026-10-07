@@ -120,7 +120,7 @@ for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = 
 delete env.NATIVE_AUTOMATION;
 // The host runs the entry as it is, so the Solid transform is preloaded the
 // way `nd dev` and a packaged app preload it.
-env.BUN_OPTIONS = [env.BUN_OPTIONS, "--preload=@nativedesktop/solid/register"].filter(Boolean).join(" ");
+env.BUN_OPTIONS = [env.BUN_OPTIONS, "--preload=@nativedesktop/react/register"].filter(Boolean).join(" ");
 // NB_IDENTITY_HOST_ARGS: extra host flags, e.g. --use-mock-keychain on a mac
 // run, which keeps a throwaway profile out of the login keychain.
 const hostArgs = (process.env.NB_IDENTITY_HOST_ARGS ?? "").split(" ").filter(Boolean);

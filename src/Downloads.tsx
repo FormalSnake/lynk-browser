@@ -1,4 +1,4 @@
-import { Platform, Spacing } from "@nativedesktop/solid";
+import { Platform, Spacing } from "@nativedesktop/react";
 import { Show } from "solid-js";
 import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";

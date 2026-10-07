@@ -3,8 +3,8 @@
 // address: it carries the padlock and the zoom, and a click on it opens the
 // command bar on its address, as the sidebar's row does. A private window has
 // no command bar, so its row ends in an address field instead.
-import { Platform, Spacing } from "@nativedesktop/solid";
-import type { JSX, MenuEntry } from "@nativedesktop/solid";
+import { Platform, Spacing } from "@nativedesktop/react";
+import type { JSX, MenuEntry } from "@nativedesktop/react";
 import { For, Show, createSignal } from "solid-js";
 
 /// A tab is about 156pt when the row has space for it. TITLE_FLOOR is where a

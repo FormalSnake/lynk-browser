@@ -1,4 +1,4 @@
-import { render } from "@nativedesktop/solid";
+import { render } from "@nativedesktop/react";
 import { App } from "./App.tsx";
 import { loadBlockingState } from "./lib/adblock.ts";
 import { bookmarks, normalizeBookmarks } from "./lib/bookmarks.ts";

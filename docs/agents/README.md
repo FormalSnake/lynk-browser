@@ -67,14 +67,14 @@ crash-overlay's Restart button; this is what `nd dev` sets for you.
 
 `ND_DEV=1` runs the Bun child under `bun --hot`, which keeps the same OS process and socket across
 an edit but re-evaluates the entire module graph, `node_modules` included, and keeps only
-`globalThis`. `@nativedesktop/solid/register` (`packages/solid/src/register.ts`, preloaded by
+`globalThis`. `@nativedesktop/react/register` (`packages/solid/src/register.ts`, preloaded by
 `nd dev`) makes that state-preserving:
 
 - Each component module compiles with Solid's refresh transform against the `solid-js/refresh`
   runtime. A module's previous accept callbacks run once its new copy has evaluated and patch the
   live component proxies to the new code, so an edit remounts only the components whose code
   changed.
-- `solid-js`, `@solidjs/signals`, `@solidjs/universal` and `@nativedesktop/solid` are pinned: the
+- `solid-js`, `@solidjs/signals`, `@solidjs/universal` and `@nativedesktop/react` are pinned: the
   first evaluation of each file records its namespace on `globalThis` and every later load is a
   facade re-exporting it. A fresh `solid-js` would own a second reactive graph the live tree knows
   nothing about, and a fresh renderer would lose its retained tree.
@@ -99,13 +99,13 @@ it.
 ## Ahead-of-time build
 
 JSX is compiled at load time by the register preload (babel-preset-solid's universal transform, whose output imports its helpers from
-`@nativedesktop/solid`). `nd build` instead runs the app's `compile` script, which in the template
+`@nativedesktop/react`). `nd build` instead runs the app's `compile` script, which in the template
 is `nd-solid-build src/main.tsx --outdir dist` (`packages/solid/src/build.ts`): it bundles the
 app's own modules into `dist/main.js` with the transform already applied and leaves packages
 external. For a compiled run use `bun run compile && ND_SCRIPT=dist/main.js <host-binary>`; `nd
 build` only compiles, it does not launch the host. A `.tsx` is treated as Solid when its nearest
-`package.json` depends on `@nativedesktop/solid`, or per file with a
-`/** @jsxImportSource @nativedesktop/solid */` pragma.
+`package.json` depends on `@nativedesktop/react`, or per file with a
+`/** @jsxImportSource @nativedesktop/react */` pragma.
 
 ## MCP tools
 

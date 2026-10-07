@@ -4,7 +4,7 @@
 // over the middle of the page. The sidebar puts it among the small glyphs at
 // its foot, beside the padlock, with the popover above it; compact puts it at
 // the end of the active tab, with the popover below.
-import { Platform, Spacing } from "@nativedesktop/solid";
+import { Platform, Spacing } from "@nativedesktop/react";
 import { Show, createEffect, createSignal, untrack } from "solid-js";
 import { ZOOM_MAX, ZOOM_MIN, ZOOM_NOTICE_MS, isDefaultZoom, zoomPercent } from "./lib/zoom.ts";
 

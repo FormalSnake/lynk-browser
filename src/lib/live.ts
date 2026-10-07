@@ -1,5 +1,5 @@
 import { createStore, onCleanup } from "solid-js";
-import type { Store } from "@nativedesktop/solid";
+import type { Store } from "@nativedesktop/react";
 
 type Plain = Record<string, unknown>;
 
