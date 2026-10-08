@@ -52,6 +52,16 @@ function moveTo<T extends { id: string }>(list: T[], id: string, to: number): T[
   return rest;
 }
 
+function sameMenu(a: MenuEntry[], b: MenuEntry[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((x, i) => {
+      const y = b[i]!;
+      return x.id === y.id && x.label === y.label && x.enabled === y.enabled && x.separator === y.separator && x.accelerator === y.accelerator;
+    })
+  );
+}
+
 /// The letter a tile shows when the site has no icon yet.
 function monogram(label: string): string {
   const ch = label.replace(/^www\./, "").trim().charAt(0);
@@ -165,13 +175,28 @@ export function Sidebar(props: SidebarProps) {
     return i < rows.length ? tabs.indexOf(rows[i]!) : tabs.indexOf(rows[rows.length - 1]!) + 1;
   }
 
-  function sleeping(t: SessionTab): string[] {
-    return props.asleep(t.id) ? ["dimmed"] : [];
+  /// What a row or a tile shows of its tab, each kept apart from whether it
+  /// is the tab on show. The compiler applies an element's dynamic props in
+  /// one effect, so with these read straight from props a switch would build
+  /// every tab's menu and drag payload again; as memos the two rows that
+  /// change re-read their cached values and the rest do not run at all.
+  function shows(tab: () => SessionTab) {
+    return {
+      live: createMemo(() => tab().id === props.activeId),
+      asleep: createMemo(() => props.asleep(tab().id)),
+      label: createMemo(() => props.labelFor(tab())),
+      hover: createMemo(() => props.hoverFor(tab())),
+      icon: createMemo(() => props.iconFor(tab().url)),
+      // Rebuilt on every switch (whether a tab can sleep depends on which is
+      // on show), so it only notifies when an entry actually changed.
+      menu: createMemo(() => props.menuFor(tab()), { equals: sameMenu }),
+      payload: createMemo(() => props.dragPayload(tab())),
+    };
   }
 
   function Pin(v: { tab: SessionTab; slot: number }) {
-    const live = (): boolean => v.tab.id === props.activeId;
-    const icon = (): string | undefined => (props.pinStyle === "icons" ? props.iconFor(v.tab.url) : undefined);
+    const { live, asleep, label, hover, icon: favicon, menu, payload } = shows(() => v.tab);
+    const icon = (): string | undefined => (props.pinStyle === "icons" ? favicon() : undefined);
     return (
       <box
         testID={`${p()}tab-slot-${v.tab.id}`}
@@ -181,7 +206,7 @@ export function Sidebar(props: SidebarProps) {
         spacing={0}
         // AppKit: each tile its own glass pill, the one on show raised and
         // brighter. GTK keeps the flat tile.
-        cssClasses={[...(gtk ? ["view"] : live() ? ["view", "glass", "raised"] : ["view", "glass"]), ...sleeping(v.tab)]}
+        cssClasses={[...(gtk ? ["view"] : live() ? ["view", "glass", "raised"] : ["view", "glass"]), ...(asleep() ? ["dimmed"] : [])]}
         dropTarget
         onDragOver={() => {
           if (dragging() && (reorder()?.to ?? -1) !== v.slot) setReorder({ id: dragging(), to: v.slot });
@@ -191,17 +216,17 @@ export function Sidebar(props: SidebarProps) {
         <button
           testID={`${p()}tab-${v.tab.id}`}
           iconData={icon()}
-          label={icon() ? undefined : monogram(props.labelFor(v.tab))}
-          tooltip={props.hoverFor(v.tab)}
+          label={icon() ? undefined : monogram(label())}
+          tooltip={hover()}
           cssClasses={live() ? ["flat"] : ["flat", "dimmed"]}
           // Adwaita's side padding would make a column wider than a
           // letter or an icon needs, and cost the grid a column.
           style={{ hexpand: true, valign: "fill", font: REGULAR, padding: gtk ? { left: 0, right: 0 } : undefined }}
           onClick={() => pick(v.tab)}
-          contextMenu={props.menuFor(v.tab)}
+          contextMenu={menu()}
           onContextMenuSelected={(e) => props.onMenu(v.tab, e.text)}
           draggable
-          dragPayload={props.dragPayload(v.tab)}
+          dragPayload={payload()}
           onDragStarted={(e) => {
             setDragging(v.tab.id);
             props.onDragStart(e.text);
@@ -222,8 +247,8 @@ export function Sidebar(props: SidebarProps) {
   }
 
   function Row(v: { tab: SessionTab }) {
-    const live = (): boolean => v.tab.id === props.activeId;
-    const pointed = (): boolean => hovered() === v.tab.id;
+    const { live, asleep, label, hover, icon, menu, payload } = shows(() => v.tab);
+    const pointed = createMemo(() => hovered() === v.tab.id);
     return (
       <>
         <Show when={props.dropIndex === props.tabs.indexOf(v.tab)}>
@@ -234,25 +259,25 @@ export function Sidebar(props: SidebarProps) {
           orientation="horizontal"
           // The tab on show is the one filled row; the rest only answer the
           // pointer, and read in the quieter ink.
-          cssClasses={live() ? ["view"] : ["activatable", ...sleeping(v.tab)]}
+          cssClasses={live() ? ["view"] : asleep() ? ["activatable", "dimmed"] : ["activatable"]}
           style={{ minHeight: TAB_ROW_HEIGHT, hexpand: true, padding: { left: rowInset, right: 2 } }}
           onHoverChanged={(e) => setHovered(e.checked ? v.tab.id : "")}
         >
           <button
             testID={`${p()}tab-${v.tab.id}`}
-            label={props.labelFor(v.tab)}
-            iconData={props.iconFor(v.tab.url)}
+            label={label()}
+            iconData={icon()}
             iconName="web-browser-symbolic"
             labelAlign="start"
             ellipsize
-            tooltip={props.hoverFor(v.tab)}
+            tooltip={hover()}
             cssClasses={live() ? ["flat", "body"] : ["flat", "body", "dimmed"]}
             style={{ hexpand: true, valign: "center", font: REGULAR }}
             onClick={() => pick(v.tab)}
-            contextMenu={props.menuFor(v.tab)}
+            contextMenu={menu()}
             onContextMenuSelected={(e) => props.onMenu(v.tab, e.text)}
             draggable
-            dragPayload={props.dragPayload(v.tab)}
+            dragPayload={payload()}
             onDragStarted={(e) => props.onDragStart(e.text)}
             onDragEnded={() => props.onDragEnd()}
           />
@@ -263,7 +288,7 @@ export function Sidebar(props: SidebarProps) {
                 <button
                   testID={`${p()}tab-close-${v.tab.id}`}
                   iconName="window-close-symbolic"
-                  tooltip={`Close ${props.labelFor(v.tab)}`}
+                  tooltip={`Close ${label()}`}
                   cssClasses={["flat", "dimmed"]}
                   size="small"
                   style={{ minWidth: TRAIL_WIDTH, valign: "center" }}

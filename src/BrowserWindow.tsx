@@ -82,6 +82,14 @@ export const TEST_HOOKS = process.env.NB_TEST_HOOKS === "1";
 /// Characters of the address the sidebar's address button shows.
 const SIDEBAR_ADDRESS_CHARS = 40;
 
+type Blocking = ReturnType<BrowserContext["blockingFor"]>;
+
+/// Blocking is read per tab and rebuilt on every switch; tabs on one site
+/// read the same.
+function sameBlocking(a: Blocking, b: Blocking): boolean {
+  return a.site === b.site && a.on === b.on && a.hidden === b.hidden && a.blocked === b.blocked;
+}
+
 function capLabel(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
@@ -313,7 +321,7 @@ export function BrowserWindow(props: BrowserWindowProps) {
   let slot: NdNodeRef<"box"> | undefined;
 
   const activeRt = (): Runtime => ctx.rt(active().id);
-  const activeBlocking = createMemo(() => ctx.blockingFor(active().id));
+  const activeBlocking = createMemo(() => ctx.blockingFor(active().id), { equals: sameBlocking });
   const find = (): FindState => ctx.findFor(active().id);
   const compact = (): boolean => prefs.layout === "compact";
   const gtk = Platform.backend === "gtk";
@@ -839,9 +847,10 @@ export function BrowserWindow(props: BrowserWindowProps) {
   });
   /// The tab run is sized from the window rather than from hexpand: GTK would
   /// hand every tab an equal share of the whole row, which left every title
-  /// at two characters.
-  const tabMetrics = createMemo(() =>
-    tabRunMetrics(props.win.width, tabs(), active().id, chromium() ? ctx.pinnedActions.length + 1 : 0, gtk ? "gtk" : "appkit", false),
+  /// at two characters. Lazy: only the compact layout reads it.
+  const tabMetrics = createMemo(
+    () => tabRunMetrics(props.win.width, tabs(), active().id, chromium() ? ctx.pinnedActions.length + 1 : 0, gtk ? "gtk" : "appkit", false),
+    { lazy: true },
   );
   const targets = (): MoveTarget[] => ctx.moveTargets(winId);
   const dropIndex = (): number | null => (ctx.dropHint?.windowId === winId ? ctx.dropHint.index : null);
@@ -1439,7 +1448,7 @@ export function BrowserWindow(props: BrowserWindowProps) {
   // accelerators are the app's, not this window's.
   const menuWin = createMemo((): SessionWindow => ctx.session.windows.find((w) => w.id === ctx.focusedWindowId && w.tabs.length > 0) ?? props.win);
   const menuActive = createMemo((): SessionTab => menuWin().tabs.find((t) => t.id === menuWin().activeId) ?? menuWin().tabs[0] ?? NO_TAB);
-  const menuBlocking = createMemo(() => ctx.blockingFor(menuActive().id));
+  const menuBlocking = createMemo(() => ctx.blockingFor(menuActive().id), { equals: sameBlocking });
   const menuRt = (): Runtime => ctx.rt(menuActive().id);
   const menuTarget = (): WindowController | undefined => ctx.controllerFor(menuWin().id);
 

@@ -225,6 +225,8 @@ export function App(props: AppProps) {
   const views = new Map<string, NdNodeRef<"webview">>();
   const slots = new Map<string, NdNodeRef<"box">>();
   const placed = new Map<string, string>();
+  /// The zoom factor each view was last set to or reported at.
+  const viewZoom = new WeakMap<NdNodeRef<"webview">, number>();
   /// Bumped whenever a view or a slot comes or goes, which is what runs the
   /// placement again.
   const [mounts, setMounts] = createSignal(0);
@@ -620,7 +622,7 @@ export function App(props: AppProps) {
       ...s,
       windows: s.windows.map((w) => (w.tabs.some((t) => t.id === id) && w.activeId !== id ? { ...w, activeId: id } : w)),
     }));
-    applyZoom(id, tabOf(id)?.url ?? "");
+    applyZoom(id, tabOf(id)?.url ?? "", true);
     refreshActionStates();
   }
 
@@ -730,15 +732,24 @@ export function App(props: AppProps) {
     return state.zoomByHost[hostOf(url)] ?? 1;
   }
 
-  function applyZoom(id: string, url: string): void {
+  /// `unlessSet`: a view already at its host's factor, as last sent or last
+  /// reported by the engine, is left alone. A tab switch passes it, so the
+  /// switch's commit is not queued behind a command that changes nothing.
+  function applyZoom(id: string, url: string, unlessSet = false): void {
     const node = view(id);
-    if (node) sendCommand(node, "setZoom", session.get().zoomByHost[hostOf(url)] ?? 1);
+    if (!node) return;
+    const factor = session.get().zoomByHost[hostOf(url)] ?? 1;
+    if (unlessSet && viewZoom.get(node) === factor) return;
+    viewZoom.set(node, factor);
+    sendCommand(node, "setZoom", factor);
   }
 
   function setZoom(tabId: string, next: number): void {
     if (!rememberZoom(tabId, next)) return;
     const node = view(tabId);
-    if (node) sendCommand(node, "setZoom", clampZoom(next));
+    if (!node) return;
+    viewZoom.set(node, clampZoom(next));
+    sendCommand(node, "setZoom", clampZoom(next));
   }
 
   /// A step from the menu, the palette or the zoom popover. The popover shows
@@ -770,6 +781,8 @@ export function App(props: AppProps) {
   /// made, and a level Chromium restored on navigation, need nothing here.
   function onZoomChanged(tabId: string, data: unknown): void {
     const change = data as { factor: number; source: string };
+    const node = view(tabId);
+    if (node) viewZoom.set(node, change.factor);
     if (change.source !== "page") return;
     if (!rememberZoom(tabId, change.factor)) return;
     bumpZoomNotice(tabId);
@@ -2059,11 +2072,14 @@ export function App(props: AppProps) {
   };
 
   /// The tabs that have a page, in id order, so no reorder of the tabs ever
-  /// reorders their views.
-  const liveTabs = createMemo(() =>
-    allTabs()
-      .filter((t) => t.url !== "" && isLive(t.id))
-      .sort((a, b) => tabNumber(a.id) - tabNumber(b.id)),
+  /// reorders their views. Whether a tab is live reads the tab on show, so
+  /// this runs on every switch; the same rows again notify nobody.
+  const liveTabs = createMemo(
+    () =>
+      allTabs()
+        .filter((t) => t.url !== "" && isLive(t.id))
+        .sort((a, b) => tabNumber(a.id) - tabNumber(b.id)),
+    { equals: (a, b) => a.length === b.length && a.every((t, i) => t === b[i]) },
   );
 
   return (
@@ -2078,7 +2094,8 @@ export function App(props: AppProps) {
         <For each={liveTabs()} keyed={(t) => t.id}>
           {(t) => {
             const id = t().id;
-            const shown = () => windows().some((w) => w.activeId === id) && rt(id).error === null;
+            // A memo, so a switch re-runs the two pages it changes, not all.
+            const shown = createMemo(() => windows().some((w) => w.activeId === id) && rt(id).error === null);
             return (
               <Activity mode={shown() ? "visible" : "hidden"}>
                 {/* `attempt` is the view's identity: Try Again and an address
