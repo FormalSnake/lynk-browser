@@ -437,7 +437,7 @@ export function App(props: AppProps) {
       case "reopenClosedTab":
         return reopenTab(windowId);
       case "closeTab":
-        return closeTab(fromTab);
+        return requestCloseTab(fromTab);
       case "nextTab":
         return cycleTab(windowId, 1);
       case "previousTab":
@@ -504,6 +504,19 @@ export function App(props: AppProps) {
         }),
       }),
     );
+  }
+
+  /// Tabs whose page is being asked whether it may go.
+  const closing = new Set<string>();
+
+  /// A close the user asked for. The page's beforeunload is asked first, as in
+  /// Chrome, and the tab goes once it agrees ("Leave site?" answered Leave, or
+  /// nothing to ask). A tab with no page has nothing to ask.
+  function requestCloseTab(id: string): void {
+    const node = view(id);
+    if (!node || !isLive(id)) return closeTab(id);
+    closing.add(id);
+    sendCommand(node, "requestClose");
   }
 
   /// A window the user closed. Its tabs go with it, the way closing a window
@@ -606,7 +619,7 @@ export function App(props: AppProps) {
   function closeOtherTabs(id: string): void {
     const w = session.get().windows.find((x) => x.tabs.some((t) => t.id === id));
     if (!w) return;
-    for (const t of w.tabs) if (t.id !== id && !t.pinned) closeTab(t.id);
+    for (const t of w.tabs) if (t.id !== id && !t.pinned) requestCloseTab(t.id);
   }
 
   function resetPinned(id: string): void {
@@ -698,6 +711,11 @@ export function App(props: AppProps) {
     // A page that navigated away is not waiting for its own answer any more,
     // and the id would otherwise stay in the queue for ever.
     denyPromptsFor(id);
+    // Somewhere else now, however it got there: a link, a redirect, back or
+    // forward. Chromium's own error page for the failed address reports that
+    // same address, which keeps the error up.
+    const failed = rt(id).error;
+    if (failed && failed.url !== url) patch(id, { error: null });
     // A page that changes its address without loading a new document keeps
     // the reader up over an article it no longer shows.
     const before = committed.get(id);
@@ -791,6 +809,8 @@ export function App(props: AppProps) {
   }
 
   function command(tabId: string, name: "goBack" | "goForward" | "reload" | "stop" | "exitFullscreen"): void {
+    // Reloading the address that failed is Try Again by another name.
+    if (name === "reload") patch(tabId, { error: null });
     const node = view(tabId);
     if (node) sendCommand(node, name);
   }
@@ -1910,6 +1930,9 @@ export function App(props: AppProps) {
         onBackAvailable={(e) => patch(id, { canGoBack: e.checked })}
         onForwardAvailable={(e) => patch(id, { canGoForward: e.checked })}
         onLoadFailed={(e) => patch(id, { error: e.data as { url: string; error: string } })}
+        onCloseApproved={() => {
+          if (closing.delete(id)) closeTab(id);
+        }}
         onNewWindow={(e) => openTabFromPage(id, e)}
         onBrowserCommand={(e) => onBrowserCommand(id, e.text)}
         onJavaScriptResult={onJavaScriptResult}
@@ -2006,7 +2029,7 @@ export function App(props: AppProps) {
     },
     moveTargets,
     openTab,
-    closeTab,
+    closeTab: requestCloseTab,
     selectTab,
     setPinned,
     canSleep,

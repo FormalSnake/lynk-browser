@@ -212,6 +212,17 @@ export function PrivateWindow(props: PrivateWindowProps) {
     props.onAdopt(drag.tabId);
   }
 
+  /// Tabs whose page is being asked whether it may go.
+  const closing = new Set<string>();
+
+  /// A close the user asked for, after the page's beforeunload agrees.
+  function requestCloseTab(id: string): void {
+    const node = views.get(id);
+    if (!node) return closeTab(id);
+    closing.add(id);
+    sendCommand(node, "requestClose");
+  }
+
   function closeTab(id: string): void {
     denyPromptsFor(id);
     views.delete(id);
@@ -337,6 +348,9 @@ export function PrivateWindow(props: PrivateWindowProps) {
           if (e.checked) setPageFullscreen(id);
           else if (pageFullscreen() === id) setPageFullscreen("");
         }}
+        onCloseApproved={() => {
+          if (closing.delete(id)) closeTab(id);
+        }}
         onBrowserCommand={(e) => {
           // The page's own Chrome shortcuts, for the ones this window has an
           // answer to. A new private window is this one, which is already
@@ -346,7 +360,7 @@ export function PrivateWindow(props: PrivateWindowProps) {
             if (immersive()) leaveFullscreen();
             else setBrowserFullscreen(true);
           }
-          if (e.text === "closeTab") closeTab(id);
+          if (e.text === "closeTab") requestCloseTab(id);
           const view = views.get(id);
           if (e.text === "print" && view) void executeJavaScript(view, "window.print()").catch(() => {});
         }}
@@ -413,7 +427,7 @@ export function PrivateWindow(props: PrivateWindowProps) {
                 }}
                 onActionClicked={(e) => {
                   const { nodeId, actionId } = e.data as { nodeId: string; actionId: string };
-                  if (actionId === "close") closeTab(nodeId);
+                  if (actionId === "close") requestCloseTab(nodeId);
                 }}
               />
             </box>
@@ -453,7 +467,7 @@ export function PrivateWindow(props: PrivateWindowProps) {
                   labelFor={(t) => t.title || (t.url ? displayUrl(t.url) : "New Tab")}
                   hoverFor={tabHover}
                   onSelect={setActiveId}
-                  onClose={closeTab}
+                  onClose={requestCloseTab}
                   dragPayload={(t) => tabPayload({ profile: "private", tabId: t.id, url: t.url })}
                   dropIndex={dropIndex()}
                   onDragOverIndex={setDropIndex}
