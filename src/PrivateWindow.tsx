@@ -8,10 +8,20 @@
 // no command palette (its ranking reads history) and no downloads list; the
 // address field IS the address bar, which is also the only place in the app
 // that exercises `<searchinput>` on GTK.
-import { Activity, Platform, Spacing, executeJavaScript, newWindowRequest, sendCommand } from "@nativedesktop/react";
+import {
+  Activity,
+  Platform,
+  Spacing,
+  allowPopups,
+  executeJavaScript,
+  newWindowRequest,
+  openBlockedPopup,
+  sendCommand,
+} from "@nativedesktop/react";
 import type {
   NdNodeRef,
   NewWindowRequest,
+  PopupBlocked,
   SourceTreeAction,
   SourceTreeNode,
 } from "@nativedesktop/react";
@@ -19,6 +29,7 @@ import { For, Show, createMemo, createSignal, onSettled } from "solid-js";
 
 import type { MoveTarget } from "./BrowserWindow.tsx";
 import { ADDRESS_MIN_WIDTH, CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
+import { PopupBlockedControl } from "./PopupBlocked.tsx";
 import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
 import { permissionSentence, splitTypes, type PermissionPrompt } from "./lib/permissions.ts";
 import { placeOpenedTab } from "./lib/session.ts";
@@ -47,10 +58,12 @@ interface PrivateTab {
   canGoBack: boolean;
   canGoForward: boolean;
   loading: boolean;
+  /// Pop-ups the engine blocked on the page now showing.
+  popups: PopupBlocked[];
 }
 
 function blankTab(id: string): PrivateTab {
-  return { id, url: "", title: "", canGoBack: false, canGoForward: false, loading: false };
+  return { id, url: "", title: "", canGoBack: false, canGoForward: false, loading: false, popups: [] };
 }
 
 /// How the rest of the app hands this window a tab from a normal window. The
@@ -88,6 +101,9 @@ export interface PrivateWindowProps {
   onPopupWindow: (popup: string, url: string, features: NewWindowRequest["features"], onNewWindow: (e: { text: string }) => void) => void;
   bridge: { current: PrivateBridge | null };
 }
+
+/// How many blocked pop-ups a tab lists, as in the main window.
+const BLOCKED_POPUPS_KEPT = 8;
 
 export function PrivateWindow(props: PrivateWindowProps) {
   const prefs = trackStore(settings);
@@ -313,8 +329,15 @@ export function PrivateWindow(props: PrivateWindowProps) {
         testID={`private-page-${id}`}
         style={{ hexpand: true, vexpand: true }}
         onNavigate={(e) => {
-          patch(id, { url: e.text });
+          // The blocked list belongs to the page that tried, as Chrome's does.
+          const moved = tabs().find((t) => t.id === id)?.url !== e.text;
+          patch(id, moved ? { url: e.text, popups: [] } : { url: e.text });
           setAdopting(false);
+        }}
+        onPopupBlocked={(e) => {
+          const blocked = e.data as PopupBlocked;
+          const now = tabs().find((t) => t.id === id)?.popups ?? [];
+          patch(id, { popups: [...now.filter((b) => b.url !== blocked.url), blocked].slice(-BLOCKED_POPUPS_KEPT) });
         }}
         onWindowClosed={() => closeTab(id)}
         onTitleChanged={(e) => patch(id, { title: e.text })}
@@ -512,6 +535,26 @@ export function PrivateWindow(props: PrivateWindowProps) {
                 </box>
               </popover>
             </box>
+            <PopupBlockedControl
+              prefix="private-"
+              position="bottom"
+              scope={active().id}
+              urls={active().popups.map((b) => b.url)}
+              site={hostOf(active().url)}
+              onOpen={(url) => {
+                const tab = active();
+                const blocked = tab.popups.find((b) => b.url === url);
+                const node = views.get(tab.id);
+                patch(tab.id, { popups: tab.popups.filter((b) => b.url !== url) });
+                if (blocked && node) void openBlockedPopup(node, blocked).catch(() => {});
+              }}
+              onAllow={() => {
+                const tab = active();
+                const node = views.get(tab.id);
+                if (node && tab.url) allowPopups(node, tab.url);
+                patch(tab.id, { popups: [] });
+              }}
+            />
             {/* Packed straight into the header bar, not boxed: the host
                 promotes a search entry there to the title widget with
                 hexpand, which is what gives it the row's whole free run. */}

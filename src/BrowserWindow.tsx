@@ -1120,7 +1120,7 @@ export function BrowserWindow(props: BrowserWindowProps) {
         prefix={p()}
         position={position}
         scope={`${active().id}:${position}`}
-        urls={activeRt().popups}
+        urls={activeRt().popups.map((b) => b.url)}
         site={hostOf(active().url)}
         onOpen={(url) => ctx.openBlockedPopup(active().id, url)}
         onAllow={() => ctx.allowSitePopups(active().id)}
