@@ -27,6 +27,7 @@ import {
   uninstallExtension as removeExtension,
   setContextMenuItems,
   watchExtensions,
+  webviewEngine,
   useStoreValue,
   Spacing,
   system,
@@ -135,6 +136,11 @@ import {
 } from "./lib/adblock.ts";
 import { HIDER_CHANNEL, HIDER_SOURCE, HIDER_WORLD, type HiderMessage } from "./lib/hider.ts";
 import { PrivateWindow, type PrivateBridge } from "./PrivateWindow.tsx";
+
+/// On Linux the engine runs the extension registry commands in pages of its
+/// own, outside any tab, so the app keeps no hidden views for them there: a
+/// hidden view is still a tab to Chrome, and its share picker offers every tab.
+const HOST_REGISTRY = process.platform === "linux";
 
 /// A window with no tabs left is closed, not kept around empty.
 function withoutEmptyWindows(s: SessionState): SessionState {
@@ -246,7 +252,7 @@ export function App(props: AppProps) {
   /// up. Not the config and not the platform: `ND_WEBVIEW_ENGINE=chromium`
   /// against a host that cannot start CEF falls back to the system engine and
   /// says so only on stderr, and everything chrome:// is a dead end there.
-  const [engine, setEngine] = createSignal<"unknown" | "chromium" | "system">("unknown");
+  const [engine, setEngine] = createSignal<"unknown" | "chromium" | "system">(HOST_REGISTRY ? webviewEngine.active() : "unknown");
   /// The engine's id for a download, per run, to the app's own, which lasts.
   const engineDownloads = new Map<string, string>();
   /// A tab a page opened, to the tab that opened it: where the next one it
@@ -1193,7 +1199,7 @@ export function App(props: AppProps) {
   /// what that reports, plus once when the panel is opened: a list nobody is
   /// watching is worse than one read a moment too often.
   function refreshExtensions(): void {
-    const node = extRegistry;
+    const node = registryView();
     if (!node) return;
     void listExtensions(node)
       .then((list) => {
@@ -1213,6 +1219,13 @@ export function App(props: AppProps) {
       })
       .catch(() => {});
     void listExtensionActions(node).then(setExtActions).catch(() => {});
+    if (HOST_REGISTRY) refreshActionStates();
+  }
+
+  /// The view the registry commands are sent to. On Linux it only receives
+  /// the answers, so any page view will do.
+  function registryView(): NdNodeRef<"webview"> | null {
+    return HOST_REGISTRY ? engineView() : extRegistry;
   }
 
   /// Store installs the user said yes to, by id, until they show up in the
@@ -1269,9 +1282,9 @@ export function App(props: AppProps) {
     let last: ExtensionActionState | null = null;
     for (let attempt = 0; attempt < tries; attempt++) {
       if (attempt > 0) await Bun.sleep(400);
-      const node = probes.get(id);
+      const node = HOST_REGISTRY ? registryView() : probes.get(id);
       if (!node) continue;
-      const state = await readExtensionAction(node).catch(() => null);
+      const state = await readExtensionAction(node, id).catch(() => null);
       if (!state) continue;
       last = state;
       const w = session.get().windows.find((x) => x.id === windowId);
@@ -1292,7 +1305,7 @@ export function App(props: AppProps) {
   /// every change the registry reports reads them again, for the window in
   /// front.
   function refreshActionStates(only?: ReadonlySet<string>): void {
-    for (const id of probes.keys()) {
+    for (const id of HOST_REGISTRY ? probeRows().map((r) => r.id) : probes.keys()) {
       if (!only || only.has(id)) void readActionFor(id, focusedWindowId(), 4);
     }
   }
@@ -1301,6 +1314,9 @@ export function App(props: AppProps) {
   /// has committed, and a watch that failed then was never attached again: the
   /// toolbar stayed empty for the whole session. So the watch is retried until
   /// it attaches, and the list is read once it has.
+  /// Linux: the first page view to subscribe reads the list; the others only
+  /// keep the feed alive when it closes.
+  let registryWatched = false;
   function watchRegistry(node: NdNodeRef<"webview">, attempt: number): void {
     void watchExtensions(node, onRegistryChange)
       .then((watched) => {
@@ -1309,10 +1325,12 @@ export function App(props: AppProps) {
         // by hand.
         if (watched.length === 0) console.error("ND_APP EXTWATCH attached to nothing");
         else if (TEST_HOOKS) console.error(`ND_APP EXTWATCH watching ${watched.length}`);
+        if (HOST_REGISTRY && registryWatched) return;
+        registryWatched = true;
         refreshExtensions();
       })
       .catch((e: unknown) => {
-        if (attempt < 20 && extRegistry === node) {
+        if (attempt < 20 && (HOST_REGISTRY ? [...views.values()].includes(node) : extRegistry === node)) {
           setTimeout(() => watchRegistry(node, attempt + 1), 250);
           return;
         }
@@ -1366,7 +1384,7 @@ export function App(props: AppProps) {
   }
 
   async function decideAction(windowId: string, row: ExtensionRow): Promise<void> {
-    await probeFor(row.id);
+    if (!HOST_REGISTRY) await probeFor(row.id);
     const read = await readActionFor(row.id, windowId, 6);
     if (checking !== row.id) return;
     checking = "";
@@ -1400,7 +1418,7 @@ export function App(props: AppProps) {
       : "no page on show";
     if (TEST_HOOKS) console.error(`ND_APP ACTION_TRIGGER id=${row.id} ${error ?? "ok"}`);
     if (error === null) {
-      if (probes.has(row.id)) void readActionFor(row.id, windowId, 2);
+      if (HOST_REGISTRY || probes.has(row.id)) void readActionFor(row.id, windowId, 2);
       return;
     }
     if (row.optionsUrl) openTab(windowId, row.optionsUrl);
@@ -1410,7 +1428,7 @@ export function App(props: AppProps) {
   /// `--load-extension`, and the Web Store needs the network. The app's own
   /// install API is the one route left.
   function installTestExtension(dir: string | undefined): void {
-    const node = extRegistry;
+    const node = registryView();
     if (!node || !dir) return;
     void installExtension(node, dir)
       .then(() => refreshExtensions())
@@ -1430,7 +1448,7 @@ export function App(props: AppProps) {
   }
 
   function uninstallExtension(id: string): void {
-    const node = extRegistry;
+    const node = registryView();
     if (!node) return;
     // Before the extension goes: once it is unloaded its pages navigate
     // away from its address and can no longer be told apart.
@@ -1769,6 +1787,11 @@ export function App(props: AppProps) {
   const probeRows = createMemo(() =>
     chromium() ? rows().filter((r) => r.enabled && (prefs.pinnedExtensions.includes(r.id) || r.id === checkingAction())) : [],
   );
+  // Linux has no probe view to read a new toolbar button's badge on mount.
+  createEffect(probeRows, (wanted) => {
+    if (!HOST_REGISTRY) return;
+    for (const r of wanted) void readActionFor(r.id, focusedWindowId(), 4);
+  });
 
   /// The registry view. It starts on about:blank and only becomes the
   /// registry once the page it is showing has said which engine drew it. A
@@ -1839,7 +1862,7 @@ export function App(props: AppProps) {
   /// go too. 2px, not 1: the engine holds a browser back while its view is
   /// 1px or less on a side, and only gives up waiting after 20 s.
   const hiddenViews = () => (
-    <>
+    <Show when={!HOST_REGISTRY}>
       <box
         testID="extensions-registry"
         orientation="horizontal"
@@ -1862,7 +1885,7 @@ export function App(props: AppProps) {
           </box>
         )}
       </For>
-    </>
+    </Show>
   );
 
   /// A tab's page. Created with no address and given it once the view
@@ -1876,7 +1899,10 @@ export function App(props: AppProps) {
     onSettled(() => {
       views.set(id, node);
       fixWebStore(node);
-      if (chromium()) hookStore(node);
+      if (chromium()) {
+        hookStore(node);
+        if (HOST_REGISTRY) watchRegistry(node, 0);
+      }
       // The menu can be pushed now that the view exists.
       syncContextMenus(id);
       armHider(node);
@@ -1911,8 +1937,11 @@ export function App(props: AppProps) {
         onNewWindow={(e) => openTabFromPage(id, e)}
         onBrowserCommand={(e) => onBrowserCommand(id, e.text)}
         onJavaScriptResult={onJavaScriptResult}
-        // triggerExtensionAction answers on the tab it clicked for.
+        // triggerExtensionAction answers on the tab it clicked for, and on
+        // Linux every registry command answers on a page view.
         onExtensionActions={onExtensionActions}
+        onExtensionsList={onExtensionsList}
+        onExtensionsChanged={onExtensionsChanged}
         onPermissionRequest={(e) => onPermissionRequest(id, e.data)}
         onFaviconChanged={(e) => onFavicon(p.tab.url, e.data as { dataUrl?: string; iconUrl?: string })}
         onSecurityChanged={(e) => patch(id, { security: securityOf(p.tab.url, e.data) })}
