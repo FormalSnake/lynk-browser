@@ -14,7 +14,7 @@ import type {
   SourceTreeAction,
   SourceTreeNode,
 } from "@nativedesktop/react";
-import { For, Show, createMemo, createSignal, onSettled } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onSettled } from "solid-js";
 
 import type { MoveTarget } from "./BrowserWindow.tsx";
 import { ADDRESS_MIN_WIDTH, CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
@@ -109,6 +109,38 @@ export function PrivateWindow(props: PrivateWindowProps) {
   const [dropIndex, setDropIndex] = createSignal<number | null>(null);
 
   const active = createMemo((): PrivateTab => tabs().find((t) => t.id === activeId()) ?? tabs()[0]!);
+
+  // Fullscreen as in the main window: a page's element fullscreen or F11 takes
+  // the window, with the chrome put away.
+  let windowRef: NdNodeRef<"window"> | undefined;
+  const [pageFullscreen, setPageFullscreen] = createSignal("");
+  const [browserFullscreen, setBrowserFullscreen] = createSignal(false);
+  const immersive = (): boolean => pageFullscreen() !== "" || browserFullscreen();
+  let windowFullscreen = false;
+  createEffect(immersive, (on) => {
+    if (on === windowFullscreen || !windowRef) return;
+    windowFullscreen = on;
+    sendCommand(windowRef, "setFullscreen", { fullscreen: on });
+  });
+  createEffect(
+    () => active().id,
+    (id) => {
+      const tab = pageFullscreen();
+      if (!tab || tab === id) return;
+      exitPageFullscreen(tab);
+      setPageFullscreen("");
+    },
+  );
+  function exitPageFullscreen(tab: string): void {
+    const view = views.get(tab);
+    if (view) sendCommand(view, "exitFullscreen");
+  }
+  function leaveFullscreen(): void {
+    const tab = pageFullscreen();
+    if (tab) exitPageFullscreen(tab);
+    setPageFullscreen("");
+    setBrowserFullscreen(false);
+  }
   const activePrompt = createMemo(() => prompts().find((p) => p.tabId === active().id) ?? null);
   /// A private tab is never pinned: nothing about this window outlives it, so
   /// there is nothing for a pin to keep.
@@ -301,11 +333,19 @@ export function PrivateWindow(props: PrivateWindowProps) {
         onForwardAvailable={(e) => patch(id, { canGoForward: e.checked })}
         onNewWindow={(e) => openFromPage(id, e)}
         onPermissionRequest={(e) => onPermissionRequest(id, e.data)}
+        onFullscreenChanged={(e) => {
+          if (e.checked) setPageFullscreen(id);
+          else if (pageFullscreen() === id) setPageFullscreen("");
+        }}
         onBrowserCommand={(e) => {
           // The page's own Chrome shortcuts, for the ones this window has an
           // answer to. A new private window is this one, which is already
           // open.
           if (e.text === "newTab") openTab();
+          if (e.text === "fullscreen") {
+            if (immersive()) leaveFullscreen();
+            else setBrowserFullscreen(true);
+          }
           if (e.text === "closeTab") closeTab(id);
           const view = views.get(id);
           if (e.text === "print" && view) void executeJavaScript(view, "window.print()").catch(() => {});
@@ -317,14 +357,23 @@ export function PrivateWindow(props: PrivateWindowProps) {
 
   return (
     <window
+      ref={windowRef}
       title="Private Browsing"
       testID="private-window"
       defaultWidth={WINDOW_WIDTH}
       defaultHeight={WINDOW_HEIGHT}
       onClosed={() => props.onClose()}
       onSizeChanged={(e) => setWidth((e.data as { width: number }).width)}
+      onFullscreenChanged={(e) => {
+        windowFullscreen = e.checked;
+        if (e.checked) {
+          if (Platform.backend === "gtk" && !immersive()) setBrowserFullscreen(true);
+          return;
+        }
+        if (immersive()) leaveFullscreen();
+      }}
     >
-      <splitview sidebarWidth={0.24} testID="private-split">
+      <splitview sidebarWidth={0.24} collapsed={immersive()} testID="private-split">
         {/* Compact drops this pane here for the same reason the main window
             does: the content pane stays the splitview's second child, so no
             webview moves and no page reloads. */}
@@ -372,190 +421,192 @@ export function PrivateWindow(props: PrivateWindowProps) {
         </Show>
 
         <toolbarview slot="content" testID="private-content-toolbar">
-          <headerbar
-            testID="private-chrome"
-            title=""
-            canGoBack={active().canGoBack}
-            canGoForward={active().canGoForward}
-            onBack={() => command("goBack")}
-            onForward={() => command("goForward")}
-          >
-            <button
-              slot="start"
-              testID="private-reload"
-              iconName="view-refresh-symbolic"
-              tooltip="Reload"
-              cssClasses={["flat"]}
-              onClick={() => command("reload")}
-            />
-
-            {/* The same compact row the main window draws: tabs in the toolbar
-                between reload and the address field, nothing below it. */}
-            <Show when={compact()}>
-              <CompactTabs
-                tabs={runTabs()}
-                activeId={active().id}
-                metrics={tabRunMetrics(width(), runTabs(), active().id, 0, Platform.backend === "gtk" ? "gtk" : "appkit", true)}
-                prefix="private-"
-                // A private window shows no favicons: the cache is on disk and
-                // this window writes nothing there.
-                iconFor={() => undefined}
-                labelFor={(t) => t.title || (t.url ? displayUrl(t.url) : "New Tab")}
-                hoverFor={tabHover}
-                onSelect={setActiveId}
-                onClose={closeTab}
-                dragPayload={(t) => tabPayload({ profile: "private", tabId: t.id, url: t.url })}
-                dropIndex={dropIndex()}
-                onDragOverIndex={setDropIndex}
-                onDropAt={onDropAt}
-                onDragStart={() => {}}
-                onDragEnd={() => setDropIndex(null)}
-              />
+          <Activity mode={immersive() ? "hidden" : "visible"}>
+            <headerbar
+              testID="private-chrome"
+              title=""
+              canGoBack={active().canGoBack}
+              canGoForward={active().canGoForward}
+              onBack={() => command("goBack")}
+              onForward={() => command("goForward")}
+            >
               <button
                 slot="start"
-                testID="private-header-new-tab"
-                iconName="list-add-symbolic"
-                tooltip="New Tab"
+                testID="private-reload"
+                iconName="view-refresh-symbolic"
+                tooltip="Reload"
                 cssClasses={["flat"]}
-                onClick={() => openTab()}
+                onClick={() => command("reload")}
               />
-            </Show>
 
-            {/* The private window's site-info button: it answers permission
-                requests and says what this window will not do, which is
-                remember any of them. */}
-            <box testID="private-site-info-anchor" orientation="horizontal">
-              <button
-                testID="private-site-info"
-                iconName="web-browser-symbolic"
-                tooltip="Site Information"
-                cssClasses={["flat"]}
-                onClick={() => setSiteInfoOpen(!siteInfoOpen())}
-              />
-              <popover
-                testID="private-site-info-popover"
-                open={siteInfoOpen()}
-                position="bottom"
-                onClosed={() => {
-                  setSiteInfoOpen(false);
-                  denyPromptsFor(active().id);
-                }}
-              >
-                <box
-                  testID="private-site-info-panel"
-                  orientation="vertical"
-                  spacing={Spacing.sm}
-                  style={{ padding: Spacing.sm, minWidth: FIND_BAR_WIDTH - 100 }}
+              {/* The same compact row the main window draws: tabs in the toolbar
+                  between reload and the address field, nothing below it. */}
+              <Show when={compact()}>
+                <CompactTabs
+                  tabs={runTabs()}
+                  activeId={active().id}
+                  metrics={tabRunMetrics(width(), runTabs(), active().id, 0, Platform.backend === "gtk" ? "gtk" : "appkit", true)}
+                  prefix="private-"
+                  // A private window shows no favicons: the cache is on disk and
+                  // this window writes nothing there.
+                  iconFor={() => undefined}
+                  labelFor={(t) => t.title || (t.url ? displayUrl(t.url) : "New Tab")}
+                  hoverFor={tabHover}
+                  onSelect={setActiveId}
+                  onClose={closeTab}
+                  dragPayload={(t) => tabPayload({ profile: "private", tabId: t.id, url: t.url })}
+                  dropIndex={dropIndex()}
+                  onDragOverIndex={setDropIndex}
+                  onDropAt={onDropAt}
+                  onDragStart={() => {}}
+                  onDragEnd={() => setDropIndex(null)}
+                />
+                <button
+                  slot="start"
+                  testID="private-header-new-tab"
+                  iconName="list-add-symbolic"
+                  tooltip="New Tab"
+                  cssClasses={["flat"]}
+                  onClick={() => openTab()}
+                />
+              </Show>
+
+              {/* The private window's site-info button: it answers permission
+                  requests and says what this window will not do, which is
+                  remember any of them. */}
+              <box testID="private-site-info-anchor" orientation="horizontal">
+                <button
+                  testID="private-site-info"
+                  iconName="web-browser-symbolic"
+                  tooltip="Site Information"
+                  cssClasses={["flat"]}
+                  onClick={() => setSiteInfoOpen(!siteInfoOpen())}
+                />
+                <popover
+                  testID="private-site-info-popover"
+                  open={siteInfoOpen()}
+                  position="bottom"
+                  onClosed={() => {
+                    setSiteInfoOpen(false);
+                    denyPromptsFor(active().id);
+                  }}
                 >
-                  <label
-                    testID="private-site-info-host"
-                    text={hostOf(active().url) || "New Tab"}
-                    cssClasses={["heading"]}
-                    style={{ halign: "start" }}
-                  />
-                  <Show
-                    when={activePrompt()}
-                    fallback={
-                      <label
-                        testID="private-site-permissions-note"
-                        text="Choices you make here are forgotten when this window closes."
-                        cssClasses={["dimmed"]}
-                        style={{ halign: "start" }}
-                      />
-                    }
+                  <box
+                    testID="private-site-info-panel"
+                    orientation="vertical"
+                    spacing={Spacing.sm}
+                    style={{ padding: Spacing.sm, minWidth: FIND_BAR_WIDTH - 100 }}
                   >
-                    {(prompt) => (
-                      <box orientation="vertical" spacing={Spacing.sm}>
+                    <label
+                      testID="private-site-info-host"
+                      text={hostOf(active().url) || "New Tab"}
+                      cssClasses={["heading"]}
+                      style={{ halign: "start" }}
+                    />
+                    <Show
+                      when={activePrompt()}
+                      fallback={
                         <label
-                          testID="private-permission-request"
-                          text={permissionSentence(hostOf(active().url) || prompt().origin, prompt().types)}
+                          testID="private-site-permissions-note"
+                          text="Choices you make here are forgotten when this window closes."
+                          cssClasses={["dimmed"]}
                           style={{ halign: "start" }}
                         />
-                        <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end" }}>
-                          <button
-                            testID="private-permission-block"
-                            label="Block"
-                            onClick={() => answerPrompt(prompt(), false)}
+                      }
+                    >
+                      {(prompt) => (
+                        <box orientation="vertical" spacing={Spacing.sm}>
+                          <label
+                            testID="private-permission-request"
+                            text={permissionSentence(hostOf(active().url) || prompt().origin, prompt().types)}
+                            style={{ halign: "start" }}
                           />
-                          <button
-                            testID="private-permission-allow"
-                            label="Allow"
-                            cssClasses={["suggested-action"]}
-                            onClick={() => answerPrompt(prompt(), true)}
-                          />
+                          <box orientation="horizontal" spacing={Spacing.sm} style={{ halign: "end" }}>
+                            <button
+                              testID="private-permission-block"
+                              label="Block"
+                              onClick={() => answerPrompt(prompt(), false)}
+                            />
+                            <button
+                              testID="private-permission-allow"
+                              label="Allow"
+                              cssClasses={["suggested-action"]}
+                              onClick={() => answerPrompt(prompt(), true)}
+                            />
+                          </box>
                         </box>
-                      </box>
-                    )}
-                  </Show>
-                </box>
-              </popover>
-            </box>
-            {/* Packed straight into the header bar, not boxed: the host
-                promotes a search entry there to the title widget with
-                hexpand, which is what gives it the row's whole free run. */}
-            <searchinput
-              ref={omnibox}
-              testID="private-omnibox"
-              text={displayUrl(active().url)}
-              placeholder="Search or enter address"
-              style={{ hexpand: true, minWidth: ADDRESS_MIN_WIDTH }}
-              onActivate={(e) => navigate(e.text)}
-            />
-            {/* The app's one primary menu button is packed into whichever
-                header bar the framework last registered, so a second window
-                gets none. This is the private window's own: without it
-                Settings, Find and Downloads have no route from here. Settings
-                and Downloads are one per app and open in the main window;
-                Find is this window's own. */}
-            <menubutton slot="end" testID="private-menu" iconName="open-menu-symbolic">
-              <menuitem testID="private-menu-new-tab" label="New Tab" onSelect={() => openTab()} />
-              <menuitem
-                testID="private-menu-address"
-                label="Open Address Bar"
-                onSelect={() => {
-                  if (omnibox) sendCommand(omnibox, "focus");
-                }}
+                      )}
+                    </Show>
+                  </box>
+                </popover>
+              </box>
+              {/* Packed straight into the header bar, not boxed: the host
+                  promotes a search entry there to the title widget with
+                  hexpand, which is what gives it the row's whole free run. */}
+              <searchinput
+                ref={omnibox}
+                testID="private-omnibox"
+                text={displayUrl(active().url)}
+                placeholder="Search or enter address"
+                style={{ hexpand: true, minWidth: ADDRESS_MIN_WIDTH }}
+                onActivate={(e) => navigate(e.text)}
               />
-              <menuitem testID="private-menu-find" label="Find in Page" onSelect={() => setFindOpen(true)} />
-              <menuitem role="separator" testID="private-menu-sep-move" />
-              <menuitem
-                testID="private-menu-move-left"
-                label="Move Tab Left"
-                enabled={tabs().indexOf(active()) > 0}
-                onSelect={() => moveTab(active().id, tabs().indexOf(active()) - 1)}
-              />
-              <menuitem
-                testID="private-menu-move-right"
-                label="Move Tab Right"
-                enabled={tabs().indexOf(active()) < tabs().length - 1}
-                onSelect={() => moveTab(active().id, tabs().indexOf(active()) + 1)}
-              />
-              <Show when={props.moveTargets.length > 0}>
-                <menu label="Move Tab to Window" testID="private-menu-move-to">
-                  <For each={props.moveTargets} keyed={(t) => t.id}>
-                    {(t) => (
-                      <menuitem
-                        testID={`private-menu-move-to-${t().id}`}
-                        label={t().label}
-                        enabled={active().url !== ""}
-                        onSelect={() => moveOut(t().id)}
-                      />
-                    )}
-                  </For>
-                </menu>
-              </Show>
-              <menuitem role="separator" testID="private-menu-sep" />
-              <menuitem testID="private-menu-downloads" label="Downloads" onSelect={() => props.onDownloads()} />
-              <menuitem testID="private-menu-settings" label="Settings" onSelect={() => props.onSettings()} />
-            </menubutton>
-          </headerbar>
+              {/* The app's one primary menu button is packed into whichever
+                  header bar the framework last registered, so a second window
+                  gets none. This is the private window's own: without it
+                  Settings, Find and Downloads have no route from here. Settings
+                  and Downloads are one per app and open in the main window;
+                  Find is this window's own. */}
+              <menubutton slot="end" testID="private-menu" iconName="open-menu-symbolic">
+                <menuitem testID="private-menu-new-tab" label="New Tab" onSelect={() => openTab()} />
+                <menuitem
+                  testID="private-menu-address"
+                  label="Open Address Bar"
+                  onSelect={() => {
+                    if (omnibox) sendCommand(omnibox, "focus");
+                  }}
+                />
+                <menuitem testID="private-menu-find" label="Find in Page" onSelect={() => setFindOpen(true)} />
+                <menuitem role="separator" testID="private-menu-sep-move" />
+                <menuitem
+                  testID="private-menu-move-left"
+                  label="Move Tab Left"
+                  enabled={tabs().indexOf(active()) > 0}
+                  onSelect={() => moveTab(active().id, tabs().indexOf(active()) - 1)}
+                />
+                <menuitem
+                  testID="private-menu-move-right"
+                  label="Move Tab Right"
+                  enabled={tabs().indexOf(active()) < tabs().length - 1}
+                  onSelect={() => moveTab(active().id, tabs().indexOf(active()) + 1)}
+                />
+                <Show when={props.moveTargets.length > 0}>
+                  <menu label="Move Tab to Window" testID="private-menu-move-to">
+                    <For each={props.moveTargets} keyed={(t) => t.id}>
+                      {(t) => (
+                        <menuitem
+                          testID={`private-menu-move-to-${t().id}`}
+                          label={t().label}
+                          enabled={active().url !== ""}
+                          onSelect={() => moveOut(t().id)}
+                        />
+                      )}
+                    </For>
+                  </menu>
+                </Show>
+                <menuitem role="separator" testID="private-menu-sep" />
+                <menuitem testID="private-menu-downloads" label="Downloads" onSelect={() => props.onDownloads()} />
+                <menuitem testID="private-menu-settings" label="Settings" onSelect={() => props.onSettings()} />
+              </menubutton>
+            </headerbar>
+          </Activity>
 
           <box testID="private-content" orientation="vertical" style={{ hexpand: true, vexpand: true }}>
             {/* The marker. A private window that looks like an ordinary one is
                 the failure mode this banner exists to prevent. GNOME HIG
                 *Banners*: one short title, no lengthy explanation, so it states
                 the fact and the status page below carries the detail. */}
-            <banner testID="private-banner" title="Private browsing. This window keeps no history." revealed />
+            <banner testID="private-banner" title="Private browsing. This window keeps no history." revealed={!immersive()} />
 
             {/* The find bar floats over the page here for the same reason it
                 does in the main window: see the comment on the main window's

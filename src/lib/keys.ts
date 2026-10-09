@@ -39,6 +39,7 @@ export const KEYS = {
   downloads: MAC ? "primary+shift+j" : "primary+j",
   bookmarks: MAC ? "primary+alt+b" : "primary+shift+o",
   "bookmark-page": "primary+shift+b",
+  fullscreen: MAC ? "primary+ctrl+f" : "F11",
 } as const;
 
 export type KeyId = keyof typeof KEYS;
