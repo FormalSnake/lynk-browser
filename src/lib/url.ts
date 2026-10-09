@@ -3,15 +3,17 @@ import { engineOf, settings } from "./settings.ts";
 /// The drives point searches at their own fixture: a search leg against a live
 /// engine can be answered with a consent or captcha interstitial, which stalls
 /// the run on network state the test does not control. Gated like every other
-/// drive hook.
-const TEST_SEARCH_PREFIX =
-  process.env.NB_TEST_HOOKS === "1" ? process.env.NB_TEST_SEARCH_PREFIX : undefined;
+/// drive hook. Read per call: a test sets it before its first import of this
+/// file, and another test file may have imported it first.
+function testSearchPrefix(): string | undefined {
+  return process.env.NB_TEST_HOOKS === "1" ? process.env.NB_TEST_SEARCH_PREFIX : undefined;
+}
 
 /// The prefix the CURRENT search engine builds addresses with. Read per call
 /// rather than captured at import, so choosing a different engine in Settings
 /// takes effect on the next thing typed rather than the next launch.
 export function searchPrefix(): string {
-  return TEST_SEARCH_PREFIX ?? engineOf(settings.get().searchEngine).prefix;
+  return testSearchPrefix() ?? engineOf(settings.get().searchEngine).prefix;
 }
 
 export function isSearch(url: string): boolean {
