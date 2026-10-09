@@ -391,7 +391,11 @@ export function BrowserWindow(props: BrowserWindowProps) {
     openSwitcher,
     closePalette,
     // A download starting while the Downloads panel is up is already in view.
+    // One starting under a permission prompt leaves the prompt up: putting it
+    // away denies it, and "download multiple files" is asked right after the
+    // first file starts.
     openDownloads: () => {
+      if (siteInfoOpen() && activePrompt()) return;
       if (panel() !== "downloads") openPanel("downloads");
     },
     openPanel: (next) => {
