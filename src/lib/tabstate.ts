@@ -1,6 +1,7 @@
 // Per-tab facts both the app root and each browser window read. They are keyed
 // by tab id and live at the root, so a tab moved to another window takes them
 // with it.
+import type { PopupBlocked } from "@nativedesktop/react";
 import { displayUrl } from "./url.ts";
 
 /// What the padlock says. `none` is not a verdict: it is the new-tab page and
@@ -44,9 +45,8 @@ export interface Runtime {
   reading: boolean;
   /// Requests the blocker stopped on the page now showing.
   blocked: number;
-  /// Where the pop-ups the engine blocked on the page now showing would have
-  /// gone, oldest first.
-  popups: string[];
+  /// The pop-ups the engine blocked on the page now showing, oldest first.
+  popups: PopupBlocked[];
 }
 
 export const IDLE: Runtime = {

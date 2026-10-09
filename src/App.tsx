@@ -3,6 +3,7 @@ import {
   Portal,
   acceptExtensionInstall,
   allowPopups,
+  openBlockedPopup as reopenBlockedPopup,
   executeJavaScript,
   installExtension,
   listExtensionActions,
@@ -467,15 +468,13 @@ export function App(props: AppProps) {
     ]);
   }
 
-  /// A pop-up the user picked from the blocked list. The engine refused it, so
-  /// it opens as a tab beside the page, with no handle back to it.
+  /// A pop-up the user picked from the blocked list. The page opens it again
+  /// as it asked, so it lands where it would have and keeps its opener.
   function openBlockedPopup(tabId: string, url: string): void {
-    patch(tabId, { popups: rt(tabId).popups.filter((u) => u !== url) });
-    const win = windowOfTab(session.get(), tabId);
-    if (!win) return;
-    const place = placeOpenedTab(win.tabs, tabId, openers, "foregroundTab");
-    const id = openTab(win.id, url, false, place.index);
-    if (id) openers.set(id, tabId);
+    const blocked = rt(tabId).popups.find((b) => b.url === url);
+    const node = view(tabId);
+    patch(tabId, { popups: rt(tabId).popups.filter((b) => b.url !== url) });
+    if (blocked && node) void reopenBlockedPopup(node, blocked).catch(() => {});
   }
 
   /// Chrome's "Always allow pop-ups and redirects" for the tab's site.
@@ -2028,7 +2027,7 @@ export function App(props: AppProps) {
         onPopupBlocked={(e) => {
           const blocked = e.data as PopupBlocked;
           if (TEST_HOOKS) console.error(`ND_APP POPUP_BLOCKED ${id} ${blocked.url}`);
-          patch(id, { popups: [...rt(id).popups.filter((u) => u !== blocked.url), blocked.url].slice(-BLOCKED_POPUPS_KEPT) });
+          patch(id, { popups: [...rt(id).popups.filter((b) => b.url !== blocked.url), blocked].slice(-BLOCKED_POPUPS_KEPT) });
         }}
         onTitleChanged={(e) => onTitled(id, e.text)}
         onLoadingChanged={(e) => onLoading(id, e.checked)}
