@@ -81,11 +81,13 @@ import { clearVisits, recentVisits, recordTitle, recordVisit, type Visit } from 
 import { trackStore } from "./lib/live.ts";
 import {
   forgetOrigin,
+  normalizeOrigin,
   rememberDecision,
   rememberedDecision,
   splitTypes,
   type PermissionDecision,
   type PermissionPrompt,
+  type PermissionResult,
 } from "./lib/permissions.ts";
 import {
   WINDOW_HEIGHT,
@@ -472,7 +474,7 @@ export function App(props: AppProps) {
 
   /// Everything a tab leaves behind at the root, for a tab that is gone.
   function forgetTab(id: string): void {
-    denyPromptsFor(id);
+    dismissPromptsFor(id);
     views.delete(id);
     placed.delete(id);
     sentMenus.delete(id);
@@ -573,7 +575,7 @@ export function App(props: AppProps) {
         .sort((a, b) => Number(!isLive(a.t.id)) - Number(!isLive(b.t.id)) || a.d - b.d);
       selectTab(others[0]!.t.id);
     }
-    denyPromptsFor(id);
+    dismissPromptsFor(id);
     views.delete(id);
     placed.delete(id);
     sentMenus.delete(id);
@@ -695,7 +697,7 @@ export function App(props: AppProps) {
     }
     // A page that navigated away is not waiting for its own answer any more,
     // and the id would otherwise stay in the queue for ever.
-    denyPromptsFor(id);
+    dismissPromptsFor(id);
     // A page that changes its address without loading a new document keeps
     // the reader up over an article it no longer shows.
     const before = committed.get(id);
@@ -1098,26 +1100,26 @@ export function App(props: AppProps) {
     setPrompts(next);
   }
 
-  function respond(tabId: string, id: string, allow: boolean): void {
+  function respond(tabId: string, id: string, result: PermissionResult): void {
     const node = view(tabId);
-    if (node) sendCommand(node, "respondPermission", { id, allow });
-    if (TEST_HOOKS) console.error(`ND_APP PERMISSION id=${id} allow=${allow}`);
+    if (node) sendCommand(node, "respondPermission", { id, result });
+    if (TEST_HOOKS) console.error(`ND_APP PERMISSION id=${id} result=${result}`);
   }
 
-  function answerPrompt(prompt: PermissionPrompt, allow: boolean): void {
-    respond(prompt.tabId, prompt.id, allow);
+  function answerPrompt(prompt: PermissionPrompt, result: PermissionResult): void {
+    respond(prompt.tabId, prompt.id, result);
     setQueue(pending.filter((q) => q.id !== prompt.id));
   }
 
   /// Everything that takes a prompt away without the user choosing: escape, a
-  /// click outside the popover, the tab navigating, the tab closing. Block is
-  /// the safe answer and nothing is remembered, which is what Chrome does with
-  /// a dismissed bubble. An id left unanswered would leave the page waiting
-  /// for ever.
-  function denyPromptsFor(tabId: string): void {
+  /// click outside the popover, the tab navigating, the tab closing. The page
+  /// hears a refusal and nothing is remembered, which is what Chrome does with
+  /// a dismissed bubble; a `deny` here would have Chromium record a block. An
+  /// id left unanswered would leave the page waiting for ever.
+  function dismissPromptsFor(tabId: string): void {
     const doomed = pending.filter((q) => q.tabId === tabId);
     if (doomed.length === 0) return;
-    for (const prompt of doomed) respond(tabId, prompt.id, false);
+    for (const prompt of doomed) respond(tabId, prompt.id, "dismiss");
     setQueue(pending.filter((q) => q.tabId !== tabId));
   }
 
@@ -1128,7 +1130,7 @@ export function App(props: AppProps) {
     const origin = request.origin ?? "";
     const decided = rememberedDecision(settings.get().sitePermissions, origin, types);
     if (decided) {
-      respond(tabId, request.id, decided === "allow");
+      respond(tabId, request.id, decided === "allow" ? "allow" : "deny");
       return;
     }
     setQueue([...pending, { id: request.id, tabId, origin, types }]);
@@ -1147,10 +1149,15 @@ export function App(props: AppProps) {
         sitePermissions: rememberDecision(s.sitePermissions, prompt.origin, prompt.types, decision),
       }));
     }
-    answerPrompt(prompt, decision === "allow");
+    answerPrompt(prompt, decision === "allow" ? "allow" : "deny");
   }
 
-  function resetSiteDecisions(origin: string): void {
+  /// Chromium holds the decisions that pages actually see, so a reset takes
+  /// them out of it as well as out of the list the site-info panel shows.
+  function resetSiteDecisions(tabId: string, origin: string): void {
+    const types = Object.keys(settings.get().sitePermissions[normalizeOrigin(origin)] ?? {});
+    const node = view(tabId);
+    if (node && types.length > 0) sendCommand(node, "resetPermissions", { origin, types });
     settings.update((s) => ({ ...s, sitePermissions: forgetOrigin(s.sitePermissions, origin) }));
   }
 
@@ -2029,7 +2036,7 @@ export function App(props: AppProps) {
     runFind,
     findCommand,
     decidePrompt,
-    denyPromptsFor,
+    dismissPromptsFor,
     resetSiteDecisions,
     refreshExtensions,
     pinExtension,
