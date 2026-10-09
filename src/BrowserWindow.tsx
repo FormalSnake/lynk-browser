@@ -91,6 +91,15 @@ function sameBlocking(a: Blocking, b: Blocking): boolean {
   return a.site === b.site && a.on === b.on && a.hidden === b.hidden && a.blocked === b.blocked;
 }
 
+/// What Chrome's sad tab prints after "Error code:". The engine passes
+/// Chromium's own string for it; the reason stands in when there is none.
+function crashErrorCode(crashed: { reason: string; error: string }): string {
+  if (crashed.error) return crashed.error;
+  if (crashed.reason === "oom") return "Out of Memory";
+  if (crashed.reason === "killed") return "SIGKILL";
+  return crashed.reason;
+}
+
 function capLabel(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
@@ -195,6 +204,7 @@ export interface BrowserContext {
   cycleTab(windowId: string, step: number): void;
   navigate(tabId: string, raw: string): void;
   retry(tabId: string): void;
+  reloadCrashed(tabId: string): void;
   command(tabId: string, name: "goBack" | "goForward" | "reload" | "stop" | "exitFullscreen"): void;
   toggleReader(tabId: string): void;
   toggleFloat(tabId: string): void;
@@ -2136,6 +2146,25 @@ export function BrowserWindow(props: BrowserWindowProps) {
                         label="Try Again"
                         cssClasses={["suggested-action", "pill"]}
                         onClick={() => ctx.retry(active().id)}
+                      />
+                    </statuspage>
+                  )}
+                </Show>
+
+                <Show when={activeRt().crashed}>
+                  {(crashed) => (
+                    <statuspage
+                      testID={`${p()}sad-tab`}
+                      iconName="computer-fail-symbolic"
+                      title="Aw, Snap!"
+                      description={`Something went wrong while displaying this webpage.\n\nError code: ${crashErrorCode(crashed())}`}
+                      style={{ hexpand: true, vexpand: true }}
+                    >
+                      <button
+                        testID={`${p()}sad-tab-reload`}
+                        label="Reload"
+                        cssClasses={["suggested-action", "pill"]}
+                        onClick={() => ctx.reloadCrashed(active().id)}
                       />
                     </statuspage>
                   )}

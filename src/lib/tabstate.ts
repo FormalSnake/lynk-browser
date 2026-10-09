@@ -34,6 +34,9 @@ export interface Runtime {
   canGoBack: boolean;
   canGoForward: boolean;
   error: { url: string; error: string } | null;
+  /// The page's renderer died (crash, out of memory, killed): the sad tab is
+  /// up in its place until a reload or a navigation.
+  crashed: { reason: string; error: string } | null;
   security: Security;
   /// Bumped by "Try again": it is the webview's key, so a retry remounts the
   /// engine widget rather than asking a failed view to reload itself.
@@ -55,6 +58,7 @@ export const IDLE: Runtime = {
   canGoBack: false,
   canGoForward: false,
   error: null,
+  crashed: null,
   security: "none",
   attempt: 0,
   zoomNotice: 0,
