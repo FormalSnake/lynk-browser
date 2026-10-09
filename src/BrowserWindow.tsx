@@ -1832,6 +1832,17 @@ export function BrowserWindow(props: BrowserWindowProps) {
               onClose={ctx.closeTab}
               menuFor={tabMenu}
               onMenu={(t, id) => runTabCommand(id, t)}
+              menu={[
+                { id: "new-tab", label: "New Tab", accelerator: KEYS["new-tab"] },
+                { separator: true },
+                { id: "toggle-sidebar", label: "Hide Sidebar", accelerator: KEYS["toggle-sidebar"] },
+                { id: "layout", label: "Use Compact Layout", accelerator: KEYS.layout },
+              ]}
+              onColumnMenu={(id) => {
+                if (id === "new-tab") ctx.openTab(winId, "");
+                else if (id === "toggle-sidebar") setSidebarHidden(true);
+                else if (id === "layout") ctx.setLayout("compact");
+              }}
               onNewTab={() => ctx.openTab(winId, "")}
               onOpenAddress={openAddress}
               onOpenSettings={() => ctx.openSettings()}

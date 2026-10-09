@@ -98,6 +98,9 @@ export interface SidebarProps {
   /// A tab's right-click menu, and the item picked from it.
   menuFor: (tab: SessionTab) => MenuEntry[];
   onMenu: (tab: SessionTab, id: string) => void;
+  /// The column's own right-click menu, for a press off any tab.
+  menu: MenuEntry[];
+  onColumnMenu: (id: string) => void;
   onNewTab: () => void;
   /// A click on the row already on show opens the command bar on its
   /// address, the one place the address is edited.
@@ -315,6 +318,8 @@ export function Sidebar(props: SidebarProps) {
       testID={`${p()}sidebar`}
       orientation="vertical"
       spacing={0}
+      contextMenu={props.menu}
+      onContextMenuSelected={(e) => props.onColumnMenu(e.text)}
       style={{
         vexpand: true,
         padding: gtk
