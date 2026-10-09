@@ -1,0 +1,29 @@
+---
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
+
+interface Props {
+  /** Modifiers then key, joined by "+": "mod+shift+R". `mod` is Cmd on macOS and Ctrl elsewhere. */
+  keys: string;
+  class?: string;
+}
+
+const { keys, class: className } = Astro.props;
+const parts = keys.split("+");
+const key = parts.pop()!;
+const has = (m: string) => parts.includes(m);
+
+const mac = [has("alt") && "⌥", has("shift") && "⇧", has("mod") && "⌘", key].filter(Boolean) as string[];
+const pc = [has("mod") && "Ctrl", has("alt") && "Alt", has("shift") && "Shift", key].filter(Boolean) as string[];
+const kbd = "h-6 min-w-6 rounded-md bg-white/[0.07] px-1.5 font-sans text-[0.8125rem] text-foreground shadow-[inset_0_-1px_0_oklch(1_0_0/0.08)]";
+---
+
+<span class:list={["mod-mac", className]}>
+  <KbdGroup aria-label={mac.join(" ")}>
+    {mac.map((k) => <Kbd className={kbd}>{k}</Kbd>)}
+  </KbdGroup>
+</span>
+<span class:list={["mod-pc", className]}>
+  <KbdGroup aria-label={pc.join(" ")}>
+    {pc.map((k) => <Kbd className={kbd}>{k}</Kbd>)}
+  </KbdGroup>
+</span>

@@ -1,0 +1,62 @@
+---
+import { Badge } from "@/components/ui/badge";
+
+const repo = "https://github.com/FormalSnake/lynk-browser";
+
+// `show` matches html[data-platform]; lines without it apply everywhere.
+const lines = [
+  { cmd: `git clone ${repo}` },
+  { cmd: "cd lynk-browser && bun install" },
+  { cmd: "bunx nd package mac --no-sign --no-notarize", show: "mac" },
+  { cmd: "bunx nd package linux", show: "linux windows" },
+];
+
+const notes = [
+  { platform: "macOS", body: "Builds an unsigned app in dist/mac." },
+  {
+    platform: "Linux",
+    body: "Builds an AppImage in dist/linux.",
+    link: { href: `${repo}#nixos`, label: "Read the NixOS setup" },
+  },
+  {
+    platform: "Windows",
+    badge: "In progress",
+    body: "Runs, but isn't packaged yet.",
+    link: { href: repo, label: "Follow the port on GitHub" },
+  },
+];
+---
+
+<div class="mx-auto max-w-[1400px] px-6 lg:grid lg:grid-cols-[12rem_1fr] lg:gap-x-12">
+  <div class="max-w-[60rem] lg:col-start-2">
+    <pre
+      class="overflow-x-auto rounded-2xl bg-card px-5 py-4 font-mono text-sm leading-[1.9] text-foreground/90 shadow-[0_0_0_1px_oklch(1_0_0/0.07),0_24px_60px_-28px_oklch(0_0_0/0.9)]"
+      data-reveal><code>{lines.map((l) => <span class="block before:mr-3 before:text-wake/70 before:content-['$']" data-show={l.show}>{l.cmd}</span>)}</code></pre>
+
+    <ul class="mt-12 grid gap-x-10 gap-y-10 sm:grid-cols-3">
+      {
+        notes.map((n, i) => (
+          <li data-reveal style={`--i:${i}`}>
+            <div class="flex items-center gap-2.5">
+              <h3 class="font-heading text-lg font-semibold tracking-[-0.02em]">{n.platform}</h3>
+              {n.badge && (
+                <Badge variant="secondary" className="font-mono text-[0.6875rem]">
+                  {n.badge}
+                </Badge>
+              )}
+            </div>
+            <p class="mt-2 text-[0.9375rem] leading-relaxed text-pretty text-muted-foreground">{n.body}</p>
+            {n.link && (
+              <a
+                href={n.link.href}
+                class="mt-3 inline-block text-[0.9375rem] font-medium text-wake underline decoration-wake/30 underline-offset-4 transition-colors duration-150 hover:decoration-wake"
+              >
+                {n.link.label}
+              </a>
+            )}
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</div>

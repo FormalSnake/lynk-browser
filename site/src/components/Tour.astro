@@ -1,0 +1,125 @@
+---
+import Chord from "@/components/Chord.astro";
+import { variants } from "@/lib/shots";
+
+const steps = [
+  {
+    view: "command-bar",
+    title: "One bar for everything",
+    body: "Search, open tabs, history and commands in one place.",
+    chords: [
+      { keys: "mod+T", does: "New tab" },
+      { keys: "mod+L", does: "This tab's address" },
+      { keys: "mod+K", does: "Switch tabs or run a command" },
+    ],
+    alt: "The command bar open over formalsnake.dev with ranked results for “formal”",
+  },
+  {
+    view: "compact",
+    title: "Two layouts",
+    body: "Tabs in a sidebar, or in one compact row.",
+    chords: [{ keys: "alt+mod+S", does: "Switch layout" }],
+    alt: "The compact layout, one row of tabs above formalsnake.dev/blog",
+  },
+  {
+    view: "reader",
+    title: "Reading mode",
+    body: "Any article as a clean column of text.",
+    chords: [{ keys: "shift+mod+R", does: "Toggle reading mode" }],
+    alt: "Reading mode on a formalsnake.dev blog post",
+  },
+];
+
+const withShots = (
+  await Promise.all(steps.map(async (s) => ({ ...s, images: await variants(s.view) })))
+).filter((s) => s.images.length > 0);
+---
+
+{
+  withShots.length > 0 && (
+    <section id="tour" class="mx-auto max-w-[1400px] px-6 pb-16" data-tour>
+      <div class="grid gap-x-16 lg:grid-cols-[minmax(18rem,26rem)_1fr]">
+        <ol class="lg:py-[18vh]">
+          {withShots.map((s, i) => (
+            <li class="flex flex-col justify-center py-12 lg:min-h-[64vh] lg:py-0" data-tour-step={i}>
+              <div class="transition-opacity duration-300 ease-out lg:opacity-40 lg:[[data-current]>&]:opacity-100">
+                <h3 class="font-heading text-[clamp(1.75rem,2.6vw,2.25rem)] leading-tight font-semibold tracking-[-0.03em]">
+                  {s.title}
+                </h3>
+                <p class="mt-4 max-w-[34rem] text-lg leading-relaxed text-pretty text-muted-foreground">{s.body}</p>
+                <dl class="mt-6 flex flex-col gap-3">
+                  {s.chords.map((c) => (
+                    <div class="flex items-center gap-4">
+                      <dt class="min-w-[5.5rem]">
+                        <Chord keys={c.keys} />
+                      </dt>
+                      <dd class="text-[0.9375rem] text-muted-foreground">{c.does}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+              <div class="mt-8 lg:hidden">
+                {s.images.map(({ shot, shows }) => (
+                  <img
+                    src={shot.src}
+                    srcset={shot.srcSet}
+                    sizes="94vw"
+                    width={shot.width}
+                    height={shot.height}
+                    alt={s.alt}
+                    data-show={shows}
+                    loading="lazy"
+                    decoding="async"
+                    class="h-auto w-full rounded-lg outline outline-1 -outline-offset-1 outline-white/10"
+                  />
+                ))}
+              </div>
+            </li>
+          ))}
+        </ol>
+
+        <div class="hidden lg:block">
+          <div class="sticky top-[max(6rem,calc(50vh-24rem))] grid grid-cols-[minmax(0,1fr)]">
+            {withShots.map((s, i) =>
+              s.images.map(({ shot, shows }) => (
+                <img
+                  src={shot.src}
+                  srcset={shot.srcSet}
+                  sizes="(min-width: 1400px) 900px, 60vw"
+                  width={shot.width}
+                  height={shot.height}
+                  alt={s.alt}
+                  data-show={shows}
+                  data-tour-shot={i}
+                  loading="lazy"
+                  decoding="async"
+                  class="col-start-1 row-start-1 h-auto w-full self-center rounded-xl opacity-0 shadow-[0_30px_90px_-30px_oklch(0.53_0.19_265/0.5),0_20px_40px_-16px_oklch(0_0_0/0.7)] outline outline-1 -outline-offset-1 outline-white/10 transition-[opacity,scale,filter] duration-[480ms] ease-(--ease-out) not-data-current:scale-[0.98] not-data-current:blur-[3px] data-current:opacity-100 motion-reduce:scale-100! motion-reduce:blur-none!"
+                />
+              )),
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+<script>
+  const tour = document.querySelector<HTMLElement>("[data-tour]");
+  if (tour) {
+    const steps = [...tour.querySelectorAll<HTMLElement>("[data-tour-step]")];
+    const shots = [...tour.querySelectorAll<HTMLElement>("[data-tour-shot]")];
+    const show = (index: string) => {
+      for (const s of steps) s.toggleAttribute("data-current", s.dataset.tourStep === index);
+      for (const s of shots) s.toggleAttribute("data-current", s.dataset.tourShot === index);
+    };
+    show("0");
+    const watch = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) if (e.isIntersecting) show((e.target as HTMLElement).dataset.tourStep!);
+      },
+      { rootMargin: "-45% 0px -45% 0px" },
+    );
+    steps.forEach((s) => watch.observe(s));
+  }
+</script>

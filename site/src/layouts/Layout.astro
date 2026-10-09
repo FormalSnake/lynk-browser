@@ -1,0 +1,61 @@
+---
+import { getImage } from "astro:assets";
+import "@/styles/global.css";
+import { capture } from "@/lib/shots";
+
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+const hero = capture("mac", "hero");
+const og = hero && (await getImage({ src: hero, width: 1200, format: "png" }));
+---
+
+<!doctype html>
+<html lang="en" class="dark" data-platform="mac">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#070b16" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    {og && <meta property="og:image" content={new URL(og.src, Astro.site).href} />}
+    {og && <meta name="twitter:card" content="summary_large_image" />}
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <title>{title}</title>
+    <script is:inline>
+      // Runs before paint so chords and captures never flash the wrong platform.
+      (() => {
+        const saved = localStorage.getItem("lynk-platform");
+        const ua = navigator.userAgent;
+        const guess = /Windows/.test(ua) ? "windows" : /Linux|X11|CrOS/.test(ua) && !/Android/.test(ua) ? "linux" : "mac";
+        document.documentElement.dataset.platform = saved || guess;
+      })();
+    </script>
+  </head>
+  <body class="min-h-dvh overflow-x-clip">
+    <a
+      href="#main"
+      class="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-primary-foreground"
+      >Skip to content</a
+    >
+    <slot />
+    <script>
+      const seen = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            entry.target.setAttribute("data-shown", "");
+            seen.unobserve(entry.target);
+          }
+        },
+        { rootMargin: "0px 0px -12% 0px" },
+      );
+      document.querySelectorAll("[data-reveal]").forEach((el) => seen.observe(el));
+    </script>
+  </body>
+</html>

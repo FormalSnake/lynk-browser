@@ -1,0 +1,63 @@
+---
+import { Showcase } from "@/components/Showcase";
+import { capture, optimise, platforms } from "@/lib/shots";
+
+const items = (
+  await Promise.all(
+    platforms.map(async (p) => {
+      const meta = capture(p.id, "hero");
+      return meta ? { ...p, shot: await optimise(meta) } : undefined;
+    }),
+  )
+).filter((i) => i !== undefined);
+---
+
+<section id="top" class="relative isolate overflow-x-clip pt-28 sm:pt-36">
+  <div
+    aria-hidden="true"
+    class="enter-brush pointer-events-none absolute top-[30rem] left-1/2 -z-10 h-[38rem] w-[120vw] max-w-[2000px] [--brush-transform:translateX(-50%)_rotate(-11deg)] [transform:var(--brush-transform)] rounded-[50%] bg-[radial-gradient(ellipse_at_38%_50%,oklch(0.53_0.19_265/0.75),oklch(0.45_0.17_265/0.35)_38%,transparent_68%)] blur-[70px]"
+  >
+  </div>
+
+  <div class="mx-auto max-w-3xl px-6 text-center">
+    <h1
+      class="enter font-heading text-[clamp(2.75rem,7vw,5.25rem)] leading-[1.02] font-[680] tracking-[-0.028em] text-balance"
+      style="--i:0"
+    >
+      A truly native browser.
+    </h1>
+    <p
+      class="enter mx-auto mt-6 max-w-[38rem] text-lg leading-relaxed text-pretty text-muted-foreground sm:text-xl"
+      style="--i:1"
+    >
+      For macOS, Linux and Windows, built on Chromium.
+    </p>
+    <div class="enter mt-9 flex flex-wrap items-center justify-center gap-3" style="--i:2">
+      <a
+        href="#install"
+        class="inline-flex h-12 items-center rounded-full bg-foreground px-6 text-[0.9375rem] font-semibold text-background shadow-[0_8px_30px_-6px_oklch(0.53_0.19_265/0.7)] transition-transform duration-150 ease-out active:scale-[0.96]"
+      >
+        Get Lynk
+      </a>
+      <a
+        href="https://github.com/FormalSnake/lynk-browser"
+        class="inline-flex h-12 items-center rounded-full px-6 text-[0.9375rem] font-medium text-foreground shadow-[0_0_0_1px_oklch(1_0_0/0.14)] transition-[transform,background-color] duration-150 ease-out hover:bg-white/5 active:scale-[0.96]"
+      >
+        Read the source
+      </a>
+    </div>
+  </div>
+
+  <div class="relative mx-auto mt-10 max-w-[1400px] px-3 sm:mt-12 sm:px-6">
+    <p
+      aria-hidden="true"
+      class="enter pointer-events-none mx-auto -mb-[0.24em] pb-[0.22em] text-center font-heading text-[clamp(7rem,26vw,22rem)] leading-[0.8] font-extrabold tracking-[-0.06em] select-none bg-[linear-gradient(180deg,oklch(0.97_0.006_266)_5%,oklch(0.72_0.02_266)_50%,oklch(0.5_0.04_266/0.55)_82%,oklch(0.45_0.05_266/0.3)_100%)] bg-clip-text text-transparent"
+      style="--i:3"
+    >
+      Lynk
+    </p>
+    <div class="enter relative" style="--i:5">
+      {items.length > 0 && <Showcase client:load items={items} />}
+    </div>
+  </div>
+</section>
