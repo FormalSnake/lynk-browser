@@ -7,6 +7,8 @@ import { Platform, Spacing } from "@nativedesktop/react";
 import type { JSX, MenuEntry } from "@nativedesktop/react";
 import { For, Show, createSignal } from "solid-js";
 
+import { AUDIO_ICON, AUDIO_TOOLTIP, type TabAudio } from "./lib/tabstate.ts";
+
 /// A tab is about 156pt when the row has space for it. TITLE_FLOOR is where a
 /// title is down to a few characters beside the favicon and the close button,
 /// which says less than the favicon alone, so a tab drops to its icon there.
@@ -203,6 +205,9 @@ export interface CompactTabsProps {
   addressTrailing?: JSX.Element;
   /// A tab put to sleep, whose chip is drawn dimmed until it wakes.
   asleep?: (id: string) => boolean;
+  /// A tab playing sound, or muted, shows a speaker; a click on it mutes.
+  audioFor?: (id: string) => TabAudio;
+  onToggleMuted?: (id: string) => void;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   /// A tab's right-click menu, and the item picked from it.
@@ -250,6 +255,7 @@ export function CompactTabs(props: CompactTabsProps) {
     // gets, unless it is the one on show and that is the address.
     const titled = (): boolean => address() || (!v.tab.pinned && (active() || props.metrics.titled));
     const closable = (): boolean => titled() && (active() || hovered() === v.tab.id);
+    const audio = (): TabAudio => props.audioFor?.(v.tab.id) ?? null;
     return (
       <>
         <Show when={props.dropIndex === props.tabs.indexOf(v.tab)}>
@@ -270,8 +276,10 @@ export function CompactTabs(props: CompactTabsProps) {
           <button
             testID={`${props.prefix}tab-item-${v.tab.id}`}
             label={titled() ? props.labelFor(v.tab) : ""}
-            iconData={props.iconFor(v.tab.url)}
-            iconName="web-browser-symbolic"
+            // A tab drawn as a single glyph shows the speaker in place of
+            // its favicon, as Chrome draws a narrow tab.
+            iconData={titled() || !audio() ? props.iconFor(v.tab.url) : undefined}
+            iconName={!titled() && audio() ? AUDIO_ICON[audio()!] : "web-browser-symbolic"}
             labelAlign="start"
             ellipsize
             tooltip={props.hoverFor(v.tab)}
@@ -285,6 +293,17 @@ export function CompactTabs(props: CompactTabsProps) {
             onDragStarted={(e) => props.onDragStart(e.text)}
             onDragEnded={() => props.onDragEnd()}
           />
+          <Show when={titled() && audio()}>
+            <button
+              testID={`${props.prefix}tab-audio-${v.tab.id}`}
+              iconName={AUDIO_ICON[audio()!]}
+              tooltip={AUDIO_TOOLTIP[audio()!]}
+              cssClasses={["flat"]}
+              size="small"
+              style={{ minWidth: CLOSE_SLOT_WIDTH, valign: "center" }}
+              onClick={() => props.onToggleMuted?.(v.tab.id)}
+            />
+          </Show>
           <Show when={address()}>{props.addressTrailing}</Show>
           <Show when={titled()}>
             <Show

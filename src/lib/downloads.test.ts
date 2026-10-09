@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { shortName, downloadName, downloadStatus, formatBytes, isDangerous, normalizeDownloads, uniquePath, type DownloadItem } from "./downloads.ts";
+import { shortName, downloadName, savedPageName, downloadStatus, formatBytes, isDangerous, normalizeDownloads, uniquePath, type DownloadItem } from "./downloads.ts";
 
 const base: DownloadItem = {
   id: "d1",
@@ -67,4 +67,12 @@ test("a long name is cut in the middle and keeps its extension", () => {
   expect(cut.endsWith(".pdf")).toBe(true);
   expect(cut).toContain("…");
   expect(shortName("quarterly-report-2026-for-the-board.txt")).toBe("quarterly-report-2026-for-the-board.txt");
+});
+
+test("a saved page is named after its title, other files keep their name", () => {
+  expect(savedPageName("Audit: page", "http://127.0.0.1/t.html", "t.html")).toBe("Audit_ page.html");
+  expect(savedPageName("Home", "https://example.com/", "download")).toBe("Home.html");
+  expect(savedPageName("", "https://example.com/a/index.php")).toBe("index.php");
+  expect(savedPageName("", "https://example.com/")).toBe("download.html");
+  expect(savedPageName("Report", "https://example.com/files/report.pdf")).toBe("report.pdf");
 });

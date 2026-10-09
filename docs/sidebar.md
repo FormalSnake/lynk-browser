@@ -93,7 +93,7 @@ slide. (`<progressbar cssClasses={["osd", "dimmed"]}>`.)
 
 ## Hiding and edge reveal
 
-- Cmd+S (View > Hide Sidebar) hides it; the page is then immersive on both
+- Shift+Cmd+B (View > Hide Sidebar) hides it; the page is then immersive on both
   backends, edge to edge with no frame, and the window controls go with the
   sidebar. The chord is instant.
 - GTK with trailing controls: the strip slides away with the sidebar and

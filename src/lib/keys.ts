@@ -5,7 +5,8 @@
 // ⌘Tab belongs to macOS's app
 // switcher and never reaches the app, so tabs step with ⇧⌘] and ⇧⌘[ there and
 // with Ctrl+Tab elsewhere. The floating video is ⌥⌘P, not ⇧⌘P,
-// which 1Password takes system-wide for Quick Access.
+// which 1Password takes system-wide for Quick Access. The sidebar takes
+// Chrome's bookmarks-bar chord, since ⌘S is Chrome's save page.
 const MAC = process.platform === "darwin";
 
 export const KEYS = {
@@ -24,7 +25,8 @@ export const KEYS = {
   "copy-address": "primary+shift+c",
   back: "primary+[",
   forward: "primary+]",
-  "toggle-sidebar": "primary+s",
+  "toggle-sidebar": "primary+shift+b",
+  "save-page": "primary+s",
   layout: "primary+alt+s",
   "zoom-in": "primary+plus",
   "zoom-out": "primary+minus",
@@ -38,7 +40,10 @@ export const KEYS = {
   history: MAC ? "primary+y" : "primary+h",
   downloads: MAC ? "primary+shift+j" : "primary+j",
   bookmarks: MAC ? "primary+alt+b" : "primary+shift+o",
-  "bookmark-page": "primary+shift+b",
+  "bookmark-page": "primary+d",
+  "view-source": MAC ? "primary+alt+u" : "primary+u",
+  devtools: MAC ? "primary+alt+i" : "primary+shift+i",
+  "clear-data": MAC ? "primary+shift+backspace" : "primary+shift+delete",
 } as const;
 
 export type KeyId = keyof typeof KEYS;

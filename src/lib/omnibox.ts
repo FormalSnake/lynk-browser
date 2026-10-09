@@ -71,6 +71,9 @@ export const COMMANDS: OmniCommand[] = [
   { id: "back", title: "Back", iconName: "go-previous-symbolic", keys: "back" },
   { id: "forward", title: "Forward", iconName: "go-next-symbolic", keys: "forward" },
   { id: "reload", title: "Reload", iconName: "view-refresh-symbolic", keys: "reload" },
+  { id: "save-page", title: "Save Page As…", iconName: "document-save-symbolic", keys: "save-page", aka: "download html" },
+  { id: "view-source", title: "View Page Source", iconName: "text-x-generic-symbolic", keys: "view-source", aka: "html code" },
+  { id: "devtools", title: "Developer Tools", iconName: "utilities-terminal-symbolic", keys: "devtools", aka: "inspect console devtools" },
   { id: "copy-address", title: "Copy Address", iconName: "edit-copy-symbolic", keys: "copy-address", aka: "url link" },
   { id: "find", title: "Find in Page", iconName: "edit-find-symbolic", keys: "find" },
   { id: "zoom-in", title: "Zoom In", iconName: "zoom-in-symbolic", keys: "zoom-in" },
@@ -87,6 +90,7 @@ export const COMMANDS: OmniCommand[] = [
   { id: "history", title: "History", iconName: "document-open-recent-symbolic", keys: "history" },
   { id: "bookmarks", title: "Bookmarks", iconName: "user-bookmarks-symbolic", keys: "bookmarks" },
   { id: "bookmark-page", title: "Bookmark This Page", iconName: "bookmark-new-symbolic", keys: "bookmark-page" },
+  { id: "clear-data", title: "Clear Browsing Data…", iconName: "edit-delete-symbolic", keys: "clear-data", aka: "cookies cache history delete" },
   { id: "extensions", title: "Extensions", iconName: "application-x-addon-symbolic" },
   { id: "extensions-page", title: "Manage Extensions", iconName: "application-x-addon-symbolic" },
   { id: "webstore", title: "Chrome Web Store", iconName: "web-browser-symbolic" },
@@ -106,6 +110,9 @@ const CHROMIUM_ONLY = new Set([
   "hide-element",
   "restore-hidden",
   "update-lists",
+  "save-page",
+  "devtools",
+  "clear-data",
 ]);
 
 /// A command's title for a tab that is or is not pinned: the pin command
@@ -123,6 +130,8 @@ const NAMED_KEYS: Record<string, string> = {
   tab: "Tab",
   bracketleft: "[",
   bracketright: "]",
+  delete: "Del",
+  backspace: "⌫",
 };
 
 /// "primary+shift+t" as the platform writes it: "⇧⌘T" on macOS, "Ctrl+Shift+T"

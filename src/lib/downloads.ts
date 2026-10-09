@@ -111,6 +111,23 @@ export function downloadName(url: string, suggested?: string): string {
   return basename(raw).replace(/^\.+/, "") || "download";
 }
 
+const PAGE_EXTENSIONS = new Set(["html", "htm", "xhtml", "shtml", "php", "asp", "aspx", "jsp", "cgi"]);
+
+/// Save Page As names a web page after its title, as Chrome does. A file that
+/// is not a page (a PDF, an image) keeps its own name.
+export function savedPageName(title: string, url: string, suggested?: string): string {
+  const own = downloadName(url, suggested);
+  const ext = extname(own).slice(1).toLowerCase();
+  if (ext && !PAGE_EXTENSIONS.has(ext)) return own;
+  const clean = title
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, "_")
+    .trim()
+    .replace(/^\.+/, "")
+    .slice(0, 200);
+  if (clean) return `${clean}.html`;
+  return ext ? own : `${own}.html`;
+}
+
 let seq = 0;
 export function newDownloadId(): string {
   return `d${Date.now().toString(36)}${(seq++).toString(36)}`;

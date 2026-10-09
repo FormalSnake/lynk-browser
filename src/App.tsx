@@ -13,6 +13,7 @@ import {
   onExtensionsChanged,
   onExtensionsList,
   onJavaScriptResult,
+  openExternal,
   openPath,
   pauseDownload,
   readExtensionAction,
@@ -46,6 +47,7 @@ import { For, Show, createEffect, createMemo, createSignal, createStore, onSettl
 
 import {
   BrowserWindow,
+  appLabel,
   TEST_HOOKS,
   type BrowserContext,
   type MoveTarget,
@@ -60,6 +62,7 @@ import {
   discardDangerous,
   downloadDir,
   downloadName,
+  savedPageName,
   downloads,
   ensureDir,
   fetchToFile,
@@ -80,7 +83,9 @@ import { FLOAT_SCRIPT, floatState } from "./lib/float.ts";
 import { clearVisits, recentVisits, recordTitle, recordVisit, type Visit } from "./lib/history.ts";
 import { trackStore } from "./lib/live.ts";
 import {
+  externalProtocolType,
   forgetOrigin,
+  originOf,
   rememberDecision,
   rememberedDecision,
   splitTypes,
@@ -467,7 +472,39 @@ export function App(props: AppProps) {
         if (node) void executeJavaScript(node, "window.print()").catch(() => {});
         return;
       }
+      case "savePage":
+        return savePage(fromTab);
+      case "viewSource":
+        return viewSource(fromTab);
+      case "clearBrowsingData":
+        return clearBrowsingData(windowId);
     }
+  }
+
+  /// Chrome opens the source in a new tab beside the page.
+  function viewSource(tabId: string): void {
+    const tab = tabOf(tabId);
+    const win = windowOfTab(session.get(), tabId);
+    if (!tab || !win || !/^(https?|file):/.test(tab.url)) return;
+    openTab(win.id, `view-source:${tab.url}`, false, win.tabs.findIndex((t) => t.id === tabId) + 1);
+  }
+
+  function clearBrowsingData(windowId: string): void {
+    if (chromium()) openTab(windowId, "chrome://settings/clearBrowserData");
+  }
+
+  function toggleMuted(tabId: string): void {
+    const node = view(tabId);
+    if (!node) return;
+    const muted = !rt(tabId).muted;
+    patch(tabId, { muted });
+    sendCommand(node, "setMuted", muted);
+  }
+
+  /// F12's toggle from anywhere in the window, not only from the page.
+  function toggleDevTools(tabId: string): void {
+    const node = view(tabId);
+    if (node) sendCommand(node, "openDevTools");
   }
 
   /// Everything a tab leaves behind at the root, for a tab that is gone.
@@ -581,7 +618,7 @@ export function App(props: AppProps) {
     setFinds((f) => void delete f[id]);
     setLive((l) => void delete l[id]);
     setAsleep((a) => void (a[id] = true));
-    patch(id, { loading: false, progress: 0, canGoBack: false, canGoForward: false, error: null });
+    patch(id, { loading: false, progress: 0, canGoBack: false, canGoForward: false, error: null, audible: false, muted: false });
     if (TEST_HOOKS) console.error(`ND_APP SLEEP tab=${id} scroll=${scrollMemory.get(id)?.join(",") ?? "top"}`);
   }
 
@@ -1150,6 +1187,35 @@ export function App(props: AppProps) {
     answerPrompt(prompt, decision === "allow");
   }
 
+  /// A link to another application's scheme (mailto:, zoommtg:, a web+
+  /// scheme no page has registered). Chrome asks before it launches anything,
+  /// and remembers the answer per site and scheme only when told to.
+  async function onExternalProtocol(tabId: string, data: unknown): Promise<void> {
+    const request = (data ?? {}) as { url?: string; scheme?: string; appName?: string };
+    const url = request.url ?? "";
+    const scheme = (request.scheme ?? "").toLowerCase();
+    if (!url || !scheme) return;
+    const win = windowOfTab(session.get(), tabId);
+    const controller = win ? controllers.get(win.id) : undefined;
+    if (!controller) return;
+    const type = externalProtocolType(scheme);
+    // An opaque origin (a file, a data: page) has nothing to remember by.
+    const found = originOf(tabOf(tabId)?.url ?? "");
+    const origin = found === "null" ? "" : found;
+    if (origin && rememberedDecision(settings.get().sitePermissions, origin, [type]) === "allow") {
+      void openExternal(url).catch(() => {});
+      return;
+    }
+    const site = hostOf(tabOf(tabId)?.url ?? "");
+    const answer = await controller.confirmOpenApp(appLabel(request.appName), site, origin !== "");
+    if (TEST_HOOKS) console.error(`ND_APP EXTERNAL ${scheme} answer=${answer}`);
+    if (answer === "cancel") return;
+    if (answer === "always") {
+      settings.update((s) => ({ ...s, sitePermissions: rememberDecision(s.sitePermissions, origin, [type], "allow") }));
+    }
+    void openExternal(url).catch(() => {});
+  }
+
   function resetSiteDecisions(origin: string): void {
     settings.update((s) => ({ ...s, sitePermissions: forgetOrigin(s.sitePermissions, origin) }));
   }
@@ -1557,12 +1623,28 @@ export function App(props: AppProps) {
     for (const id of ids) setTabUrl(id, committed.get(id) ?? "");
   }
 
+  /// Pages being saved with Save Page As, by URL, with the title Chrome names
+  /// the file after.
+  const savingAs = new Map<string, string>();
+
+  /// Chrome's Save Page As: the page's own address downloaded again with its
+  /// cookies, always through the save panel.
+  function savePage(tabId: string): void {
+    const tab = tabOf(tabId);
+    const node = view(tabId);
+    if (!tab || !node || !chromium() || !/^(https?|file):/.test(tab.url)) return;
+    savingAs.set(tab.url, tab.title);
+    engineStartDownload(node, tab.url);
+  }
+
   async function onDownloadRequested(node: NdNodeRef<"webview"> | null, req: DownloadRequest): Promise<void> {
     // One answer per download: a request can reach the app on more than one
     // view's handler, and a second answer would cancel the first.
     if (TEST_HOOKS) console.error(`ND_APP DL request ${req.id ?? "-"} ${req.url} known=${req.id ? engineDownloads.has(req.id) : false}`);
     if (req.id && engineDownloads.has(req.id)) return;
-    leaveDownloadTab(req.url, req.id);
+    const savingTitle = req.id ? savingAs.get(req.url) : undefined;
+    savingAs.delete(req.url);
+    if (savingTitle === undefined) leaveDownloadTab(req.url, req.id);
     if (!req.id) {
       void fetchDownload(req.url, req.suggestedFilename);
       return;
@@ -1572,7 +1654,7 @@ export function App(props: AppProps) {
     retrying.delete(req.url);
     const id = retryOf ?? newDownloadId();
     engineDownloads.set(engineId, id);
-    const name = downloadName(req.url, req.suggestedFilename);
+    const name = savingTitle === undefined ? downloadName(req.url, req.suggestedFilename) : savedPageName(savingTitle, req.url, req.suggestedFilename);
     const fresh: DownloadItem = {
       id,
       engineId,
@@ -1592,7 +1674,7 @@ export function App(props: AppProps) {
     const prefsNow = settings.get();
     const dir = ensureDir(downloadDir(prefsNow.downloadDir));
     let path = uniquePath(dir, name, reservedPaths(downloads.get().items));
-    if (prefsNow.askWhereToSave) {
+    if (prefsNow.askWhereToSave || savingTitle !== undefined) {
       const chosen = await dialog.saveFile({ defaultPath: path }).catch(() => null);
       if (!chosen) {
         const target = engineView() ?? node;
@@ -1914,10 +1996,15 @@ export function App(props: AppProps) {
         // triggerExtensionAction answers on the tab it clicked for.
         onExtensionActions={onExtensionActions}
         onPermissionRequest={(e) => onPermissionRequest(id, e.data)}
+        onExternalProtocol={(e) => void onExternalProtocol(id, e.data)}
         onFaviconChanged={(e) => onFavicon(p.tab.url, e.data as { dataUrl?: string; iconUrl?: string })}
         onSecurityChanged={(e) => patch(id, { security: securityOf(p.tab.url, e.data) })}
         onZoomChanged={(e) => onZoomChanged(id, e.data)}
         onPictureInPicture={(e) => onPictureInPicture(id, e.data)}
+        onAudioStateChanged={(e) => {
+          const audio = e.data as { playing?: boolean; muted?: boolean };
+          patch(id, { audible: audio.playing === true, muted: audio.muted === true });
+        }}
         onContentBlocked={(e) => {
           const count = (e.data as { count: number }).count;
           patch(id, { blocked: count });
@@ -2015,6 +2102,11 @@ export function App(props: AppProps) {
     command,
     toggleReader,
     toggleFloat,
+    savePage,
+    viewSource,
+    toggleDevTools,
+    clearBrowsingData,
+    toggleMuted,
     blockingFor,
     toggleBlocking: (tabId) => void toggleBlocking(tabId),
     toggleHiding,

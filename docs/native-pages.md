@@ -50,7 +50,7 @@ under a header bar on libadwaita, a sheet on AppKit), the search field holding
 the caret, Return opening the first match, Esc or the same chord putting it
 away. Chords are Chrome's own, in `src/lib/keys.ts` with the rest: History ⌘Y /
 Ctrl+H, Downloads ⇧⌘J / Ctrl+J, Bookmarks ⌥⌘B / Ctrl+Shift+O, Bookmark This
-Page ⇧⌘B / Ctrl+Shift+B. Each is also a command bar row.
+Page ⌘D / Ctrl+D. Each is also a command bar row.
 
 Routes: the Downloads menu item (⇧⌘J on macOS, Ctrl+J on Linux), the toolbar
 button, the command bar's Downloads command,
@@ -78,6 +78,7 @@ What is kept from Chromium's page, and where:
 | "Moved or deleted" | Checked against the disk whenever a row renders |
 | A tab that aimed at the download | Goes back to the page it was showing; a new tab with nothing to go back to stays as a new tab |
 | Private windows | Their downloads use the private view and land in the same list |
+| Save Page As (⌘S / Ctrl+S) | The page's address downloaded again with its cookies, always through the save panel, named after the page's title (HTML only: no "Webpage, Complete") |
 
 Not covered, and why:
 
@@ -86,9 +87,6 @@ Not covered, and why:
   goes; worth a leg with a real extension.
 - Chrome's Safe Browsing verdicts (dangerous URL, uncommon file). Stock CEF
   ships without Safe Browsing, so there are no verdicts to show.
-- "Save page as" (Cmd/Ctrl+S): Chromium's `IDC_SAVE_PAGE` is refused and
-  routed as `browserCommand: "savePage"` on `no-escape`; the app answer
-  (`startDownload` of the page URL with a save panel) belongs with that route.
 
 Gates: app `scripts/pages-drive.ts` (real engine: each panel opened by its
 chord, searched and an entry opened; a real download shown by its whole name;

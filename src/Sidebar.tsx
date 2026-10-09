@@ -10,6 +10,7 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 
 import type { SessionTab } from "./lib/session.ts";
 import type { PinStyle } from "./lib/settings.ts";
+import { AUDIO_ICON, AUDIO_TOOLTIP, type TabAudio } from "./lib/tabstate.ts";
 
 /// One tab row: a 16 pt favicon and a line of body text with air around it.
 export const TAB_ROW_HEIGHT = 28;
@@ -84,6 +85,9 @@ export interface SidebarProps {
   pinStyle: PinStyle;
   /// A tab put to sleep, whose row or tile is drawn dimmed until it wakes.
   asleep: (id: string) => boolean;
+  /// A tab playing sound, or muted, shows a speaker; a click on it mutes.
+  audioFor: (id: string) => TabAudio;
+  onToggleMuted: (id: string) => void;
   /// The small glyphs at the foot: the padlock with its site-info popover,
   /// the page zoom while it is not 100%, the extension actions, downloads.
   siteInfo: JSX.Element;
@@ -190,6 +194,7 @@ export function Sidebar(props: SidebarProps) {
       label: createMemo(() => props.labelFor(tab())),
       hover: createMemo(() => props.hoverFor(tab())),
       icon: createMemo(() => props.iconFor(tab().url)),
+      audio: createMemo(() => props.audioFor(tab().id)),
       // Rebuilt on every switch (whether a tab can sleep depends on which is
       // on show), so it only notifies when an entry actually changed.
       menu: createMemo(() => props.menuFor(tab()), { equals: sameMenu }),
@@ -198,8 +203,9 @@ export function Sidebar(props: SidebarProps) {
   }
 
   function Pin(v: { tab: SessionTab; slot: number }) {
-    const { live, asleep, label, hover, icon: favicon, menu, payload } = shows(() => v.tab);
-    const icon = (): string | undefined => (props.pinStyle === "icons" ? favicon() : undefined);
+    const { live, asleep, label, hover, icon: favicon, audio, menu, payload } = shows(() => v.tab);
+    // A pinned tab has room for one glyph, and sound takes it, as in Chrome.
+    const icon = (): string | undefined => (props.pinStyle === "icons" && !audio() ? favicon() : undefined);
     return (
       <box
         testID={`${p()}tab-slot-${v.tab.id}`}
@@ -219,7 +225,8 @@ export function Sidebar(props: SidebarProps) {
         <button
           testID={`${p()}tab-${v.tab.id}`}
           iconData={icon()}
-          label={icon() ? undefined : monogram(label())}
+          iconName={audio() ? AUDIO_ICON[audio()!] : undefined}
+          label={icon() || audio() ? undefined : monogram(label())}
           tooltip={hover()}
           cssClasses={live() ? ["flat"] : ["flat", "dimmed"]}
           // Adwaita's side padding would make a column wider than a
@@ -250,7 +257,7 @@ export function Sidebar(props: SidebarProps) {
   }
 
   function Row(v: { tab: SessionTab }) {
-    const { live, asleep, label, hover, icon, menu, payload } = shows(() => v.tab);
+    const { live, asleep, label, hover, icon, audio, menu, payload } = shows(() => v.tab);
     const pointed = createMemo(() => hovered() === v.tab.id);
     return (
       <>
@@ -284,6 +291,17 @@ export function Sidebar(props: SidebarProps) {
             onDragStarted={(e) => props.onDragStart(e.text)}
             onDragEnded={() => props.onDragEnd()}
           />
+          <Show when={audio()}>
+            <button
+              testID={`${p()}tab-audio-${v.tab.id}`}
+              iconName={AUDIO_ICON[audio()!]}
+              tooltip={AUDIO_TOOLTIP[audio()!]}
+              cssClasses={["flat"]}
+              size="small"
+              style={{ minWidth: TRAIL_WIDTH, valign: "center" }}
+              onClick={() => props.onToggleMuted(v.tab.id)}
+            />
+          </Show>
           <Show
             when={live() && props.loading && !pointed()}
             fallback={
