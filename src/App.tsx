@@ -2039,8 +2039,10 @@ export function App(props: AppProps) {
           if (closing.delete(id)) closeTab(id);
         }}
         onRenderProcessGone={(e) => {
-          const gone = e.data as { reason?: string; error?: string };
-          patch(id, { loading: false, progress: 0, crashed: { reason: gone.reason ?? "crashed", error: gone.error ?? "" } });
+          // `error` is Chromium's own text for the sad tab's error code (a
+          // name where the exit code has one, else the number).
+          const gone = e.data as { reason?: string; errorCode?: number; error?: string };
+          patch(id, { loading: false, progress: 0, crashed: { error: gone.error || String(gone.errorCode ?? "") } });
           if (TEST_HOOKS) console.error(`ND_APP SADTAB ${id} reason=${gone.reason}`);
         }}
         onNewWindow={(e) => openTabFromPage(id, e)}
