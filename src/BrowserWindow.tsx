@@ -216,8 +216,8 @@ export interface BrowserContext {
   findCommand(tabId: string, name: "findStart" | "findNext" | "findPrevious" | "findStop", arg?: unknown): void;
 
   decidePrompt(prompt: PermissionPrompt, decision: PermissionDecision): void;
-  denyPromptsFor(tabId: string): void;
-  resetSiteDecisions(origin: string): void;
+  dismissPromptsFor(tabId: string): void;
+  resetSiteDecisions(tabId: string, origin: string): void;
 
   refreshExtensions(): void;
   pinExtension(id: string): void;
@@ -1056,7 +1056,6 @@ export function BrowserWindow(props: BrowserWindowProps) {
                     <label
                       testID={`${p()}site-permission-${row().type}`}
                       text={`${permissionName(row().type)}: ${row().decision === "allow" ? "Allowed" : "Blocked"}`}
-                      ellipsize
                       style={{ halign: "start", hexpand: true }}
                     />
                   </box>
@@ -1066,7 +1065,7 @@ export function BrowserWindow(props: BrowserWindowProps) {
                 testID={`${p()}site-permissions-reset`}
                 label="Reset Permissions"
                 cssClasses={["flat"]}
-                onClick={() => ctx.resetSiteDecisions(activeOrigin())}
+                onClick={() => ctx.resetSiteDecisions(active().id, activeOrigin())}
               />
             </box>
           }
@@ -1116,9 +1115,9 @@ export function BrowserWindow(props: BrowserWindowProps) {
 
   function closeSiteInfo(): void {
     setSiteInfoOpen(false);
-    // Escape and a click outside are a dismissal, and a dismissed request is
-    // denied rather than left pending.
-    ctx.denyPromptsFor(active().id);
+    // Escape and a click outside are a dismissal, answered as one rather than
+    // left pending.
+    ctx.dismissPromptsFor(active().id);
   }
 
   /// The padlock. In the sidebar it is a button in the foot, so the popover

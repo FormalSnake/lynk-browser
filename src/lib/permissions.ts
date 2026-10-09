@@ -13,6 +13,10 @@ export interface PermissionPrompt {
 
 export type PermissionDecision = "allow" | "block";
 
+/// What `respondPermission` sends. `dismiss` refuses without recording a
+/// decision, for a prompt the user waved away.
+export type PermissionResult = "allow" | "deny" | "dismiss";
+
 /// Decisions the user has made, by origin and then by permission type. Chrome
 /// remembers a click on Allow or Block; a dismissal remembers nothing, which is
 /// why only the two buttons write here.

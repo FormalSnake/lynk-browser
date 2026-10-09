@@ -1443,7 +1443,7 @@ try {
   await waitRows(app, (r) => r[r.length - 1] === "notif:granted", "the page to hear that it was allowed");
   await Bun.sleep(700);
   if (permStore().notifications !== "allow") fail(`the store holds ${JSON.stringify(permStore())} after Allow`);
-  if (!lastAnswer().includes("allow=true")) fail(`the app last sent ${JSON.stringify(lastAnswer())}`);
+  if (!lastAnswer().includes("result=allow")) fail(`the app last sent ${JSON.stringify(lastAnswer())}`);
 
   // Remembered: the same origin asks again and is answered with no prompt.
   // Which memory answered is not asserted, and cannot be: an explicit answer
@@ -1492,8 +1492,8 @@ try {
   await step("close the tab under the prompt", () => app.click("menu-close-tab"));
   await waitRows(app, (r) => r.length === permTabs + 1, "the closed tab to go");
   const denied = lastAnswer();
-  if (denied === beforeClose || !denied.includes("allow=false")) {
-    fail(`closing the tab should have denied the request, the app last sent ${JSON.stringify(denied)}`);
+  if (denied === beforeClose || !denied.includes("result=dismiss")) {
+    fail(`closing the tab should have dismissed the request, the app last sent ${JSON.stringify(denied)}`);
   }
   if (await app.find("permission-request")) fail("the prompt outlived the tab that asked");
   await step("close the first permission tab", () => app.click("menu-close-tab"));

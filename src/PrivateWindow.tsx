@@ -19,7 +19,7 @@ import { For, Show, createEffect, createMemo, createSignal, onSettled } from "so
 import type { MoveTarget } from "./BrowserWindow.tsx";
 import { ADDRESS_MIN_WIDTH, CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
 import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
-import { permissionSentence, splitTypes, type PermissionPrompt } from "./lib/permissions.ts";
+import { permissionSentence, splitTypes, type PermissionPrompt, type PermissionResult } from "./lib/permissions.ts";
 import { placeOpenedTab } from "./lib/session.ts";
 import { settings } from "./lib/settings.ts";
 import { trackStore } from "./lib/live.ts";
@@ -224,7 +224,7 @@ export function PrivateWindow(props: PrivateWindowProps) {
   }
 
   function closeTab(id: string): void {
-    denyPromptsFor(id);
+    dismissPromptsFor(id);
     views.delete(id);
     // The last tab takes the window with it, the way a normal window's does.
     const list = tabs();
@@ -258,7 +258,7 @@ export function PrivateWindow(props: PrivateWindowProps) {
   }
 
   /// An id left unanswered leaves the page waiting for ever, so every way a
-  /// prompt can leave this queue answers it first. Block is the safe answer.
+  /// prompt can leave this queue answers it first, as a dismissal.
   /// A plain array with the signal mirroring it, for the reason the main
   /// window's copy explains: answering closes the popover, and the close
   /// handler must not answer the same id a second time.
@@ -267,20 +267,20 @@ export function PrivateWindow(props: PrivateWindowProps) {
     setPrompts(queue);
   }
 
-  function respond(tabId: string, id: string, allow: boolean): void {
+  function respond(tabId: string, id: string, result: PermissionResult): void {
     const node = views.get(tabId);
-    if (node) sendCommand(node, "respondPermission", { id, allow });
+    if (node) sendCommand(node, "respondPermission", { id, result });
   }
 
-  function denyPromptsFor(tabId: string): void {
+  function dismissPromptsFor(tabId: string): void {
     const doomed = pending.filter((p) => p.tabId === tabId);
     if (doomed.length === 0) return;
-    for (const prompt of doomed) respond(tabId, prompt.id, false);
+    for (const prompt of doomed) respond(tabId, prompt.id, "dismiss");
     setQueue(pending.filter((p) => p.tabId !== tabId));
   }
 
-  function answerPrompt(prompt: PermissionPrompt, allow: boolean): void {
-    respond(prompt.tabId, prompt.id, allow);
+  function answerPrompt(prompt: PermissionPrompt, result: PermissionResult): void {
+    respond(prompt.tabId, prompt.id, result);
     setQueue(pending.filter((p) => p.id !== prompt.id));
     setSiteInfoOpen(false);
   }
@@ -539,13 +539,13 @@ export function PrivateWindow(props: PrivateWindowProps) {
                             <button
                               testID="private-permission-block"
                               label="Block"
-                              onClick={() => answerPrompt(prompt(), false)}
+                              onClick={() => answerPrompt(prompt(), "deny")}
                             />
                             <button
                               testID="private-permission-allow"
                               label="Allow"
                               cssClasses={["suggested-action"]}
-                              onClick={() => answerPrompt(prompt(), true)}
+                              onClick={() => answerPrompt(prompt(), "allow")}
                             />
                           </box>
                         </box>
