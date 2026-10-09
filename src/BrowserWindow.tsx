@@ -90,15 +90,6 @@ function sameBlocking(a: Blocking, b: Blocking): boolean {
   return a.site === b.site && a.on === b.on && a.hidden === b.hidden && a.blocked === b.blocked;
 }
 
-/// What Chrome's sad tab prints after "Error code:". The engine passes
-/// Chromium's own string for it; the reason stands in when there is none.
-function crashErrorCode(crashed: { reason: string; error: string }): string {
-  if (crashed.error) return crashed.error;
-  if (crashed.reason === "oom") return "Out of Memory";
-  if (crashed.reason === "killed") return "SIGKILL";
-  return crashed.reason;
-}
-
 function capLabel(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
@@ -2068,7 +2059,11 @@ export function BrowserWindow(props: BrowserWindowProps) {
                       testID={`${p()}sad-tab`}
                       iconName="computer-fail-symbolic"
                       title="Aw, Snap!"
-                      description={`Something went wrong while displaying this webpage.\n\nError code: ${crashErrorCode(crashed())}`}
+                      description={
+                        crashed().error
+                          ? `Something went wrong while displaying this webpage.\n\nError code: ${crashed().error}`
+                          : "Something went wrong while displaying this webpage."
+                      }
                       style={{ hexpand: true, vexpand: true }}
                     >
                       <button
