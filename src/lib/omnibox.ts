@@ -288,10 +288,15 @@ function typedRow(query: string, engineName: string, openHint: string): { url: s
 
 function tabRows(tabs: OmniTab[], lowered: string, cap: number, favicon: (url: string) => string | undefined): OmniRow[] {
   const rows: OmniRow[] = [];
+  // A page open twice, as a pinned tile and a tab, is one place to go back to:
+  // the most recently shown of the two takes the row.
+  const listed = new Set<string>();
   for (const t of tabs) {
     if (rows.length >= cap) break;
+    if (t.url && listed.has(t.url)) continue;
     const label = t.title || displayUrl(t.url) || "New Tab";
     if (lowered && !`${label} ${t.url}`.toLowerCase().includes(lowered)) continue;
+    if (t.url) listed.add(t.url);
     const shownUrl = displayUrl(t.url);
     rows.push({
       id: `tab:${t.id}`,

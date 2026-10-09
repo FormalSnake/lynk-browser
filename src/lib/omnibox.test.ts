@@ -46,6 +46,20 @@ test("the completed address leads, then the typed row, tabs, history, commands",
   expect(rows[3]!.hint).toBe("Open");
 });
 
+test("a page open as a pinned tile and as a tab is listed once, as the one shown last", () => {
+  const url = "https://github.com/FormalSnake";
+  const tabs = [
+    { id: "row", title: "FormalSnake (FormalSnake) · GitHub", url },
+    { id: "pin", title: "FormalSnake (FormalSnake) · GitHub", url },
+    { id: "a", title: "New Tab", url: "" },
+    { id: "b", title: "New Tab", url: "" },
+  ];
+  for (const mode of ["address", "switcher"] as const) {
+    const ids = omniRows({ ...base, mode, tabs }).filter((r) => r.id.startsWith("tab:")).map((r) => r.id);
+    expect(ids).toEqual(["tab:row", "tab:a", "tab:b"]);
+  }
+});
+
 test("completion comes from history only, never from an open tab", () => {
   const rows = omniRows({ ...base, query: "exa", tabs: [{ id: "t1", title: "Ex", url: "https://example.com/" }] });
   expect(rows.some((r) => r.completion)).toBe(false);
