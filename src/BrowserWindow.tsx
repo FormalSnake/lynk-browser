@@ -130,6 +130,10 @@ export interface WindowController {
   openSiteInfo(): void;
   /// Arc's Cmd+S, for the sidebar layout.
   toggleSidebar(): void;
+  /// F11, or Chrome's own fullscreen command from the page.
+  toggleFullscreen(): void;
+  /// A page entered or left element fullscreen.
+  setPageFullscreen(tabId: string, on: boolean): void;
   /// Test-only: what the pointer at the leading edge does, for a backend with
   /// no pointer synthesis.
   revealSidebar(show: boolean): void;
@@ -190,7 +194,7 @@ export interface BrowserContext {
   cycleTab(windowId: string, step: number): void;
   navigate(tabId: string, raw: string): void;
   retry(tabId: string): void;
-  command(tabId: string, name: "goBack" | "goForward" | "reload" | "stop"): void;
+  command(tabId: string, name: "goBack" | "goForward" | "reload" | "stop" | "exitFullscreen"): void;
   toggleReader(tabId: string): void;
   toggleFloat(tabId: string): void;
   /// The built-in blocker on a tab's site.
@@ -314,6 +318,13 @@ export function BrowserWindow(props: BrowserWindowProps) {
   /// (a tiling compositor) there is no frame to draw: the page runs to the
   /// window's edges.
   const [leadingControls, setLeadingControls] = createSignal(false);
+  /// The tab whose page holds element fullscreen, "" for none. As in Chrome it
+  /// takes the whole window, and Esc in the page gives it back.
+  const [pageFullscreen, setPageFullscreen] = createSignal("");
+  /// F11: the window fullscreen with the chrome put away, as Chrome does on
+  /// Linux.
+  const [browserFullscreen, setBrowserFullscreen] = createSignal(false);
+  const immersive = (): boolean => pageFullscreen() !== "" || browserFullscreen();
 
   let toast: NdNodeRef<"toastoverlay"> | undefined;
   let split: NdNodeRef<"splitview"> | undefined;
@@ -344,6 +355,31 @@ export function BrowserWindow(props: BrowserWindowProps) {
     return () => ctx.registerSlot(winId, null);
   });
 
+  function leaveFullscreen(): void {
+    const tab = pageFullscreen();
+    if (tab) ctx.command(tab, "exitFullscreen");
+    setPageFullscreen("");
+    setBrowserFullscreen(false);
+  }
+
+  let windowFullscreen = false;
+  createEffect(immersive, (on) => {
+    if (on === windowFullscreen || !windowRef) return;
+    windowFullscreen = on;
+    sendCommand(windowRef, "setFullscreen", { fullscreen: on });
+  });
+
+  // Chrome leaves a page's fullscreen when its tab stops being the one shown.
+  createEffect(
+    () => active().id,
+    (id) => {
+      const tab = pageFullscreen();
+      if (!tab || tab === id) return;
+      ctx.command(tab, "exitFullscreen");
+      setPageFullscreen("");
+    },
+  );
+
   ctx.registerController(winId, {
     openPalette,
     openAddress,
@@ -363,6 +399,14 @@ export function BrowserWindow(props: BrowserWindowProps) {
       setPanel((cur) => (cur === next ? null : next));
     },
     toggleSidebar: () => void setSidebarHidden((h) => !h),
+    toggleFullscreen: () => {
+      if (immersive()) leaveFullscreen();
+      else setBrowserFullscreen(true);
+    },
+    setPageFullscreen: (tabId, on) => {
+      if (on) setPageFullscreen(tabId);
+      else if (pageFullscreen() === tabId) setPageFullscreen("");
+    },
     revealSidebar: (show) => {
       if (split) sendCommand(split, show ? "revealSidebar" : "concealSidebar");
     },
@@ -1468,6 +1512,16 @@ export function BrowserWindow(props: BrowserWindowProps) {
         const { width, height } = e.data as { width: number; height: number };
         ctx.onWindowSize(winId, width, height);
       }}
+      onFullscreenChanged={(e) => {
+        windowFullscreen = e.checked;
+        // The window manager's own fullscreen key is F11 by another name. On
+        // macOS the green button keeps the chrome, as Chrome does there.
+        if (e.checked) {
+          if (gtk && !immersive()) setBrowserFullscreen(true);
+          return;
+        }
+        if (immersive()) leaveFullscreen();
+      }}
     >
       <Show when={props.first}>
         <menubar defaults testID="menubar">
@@ -1546,6 +1600,14 @@ export function BrowserWindow(props: BrowserWindowProps) {
               accelerator={KEYS.reload}
               onSelect={() => ctx.command(menuActive().id, "reload")}
             />
+            <Show when={gtk}>
+              <menuitem
+                testID="menu-fullscreen"
+                label={immersive() && menuWin().id === winId ? "Exit Full Screen" : "Full Screen"}
+                accelerator={KEYS.fullscreen}
+                onSelect={() => menuTarget()?.toggleFullscreen()}
+              />
+            </Show>
             <Show when={!compact()}>
               <menuitem
                 testID="menu-toggle-sidebar"
@@ -1791,13 +1853,13 @@ export function BrowserWindow(props: BrowserWindowProps) {
         <splitview
           ref={split}
           sidebarWidth={0.24}
-          collapsed={!compact() && sidebarHidden()}
-          edgeReveal={!compact()}
+          collapsed={immersive() || (!compact() && sidebarHidden())}
+          edgeReveal={!compact() && !immersive()}
           // AppKit's glass sidebar reflects the page beside it, so the page
           // runs to the window's edges there; libadwaita keeps
           // it in an inset card on the sidebar's colour, unless the desktop
           // draws no window controls at all.
-          contentStyle={compact() || !gtk || (!leadingControls() && !trailingControls()) ? "plain" : "card"}
+          contentStyle={immersive() || compact() || !gtk || (!leadingControls() && !trailingControls()) ? "plain" : "card"}
           testID={`${p()}split`}
           onRevealChanged={(e) => setRevealed(e.checked)}
         >
@@ -1878,7 +1940,7 @@ export function BrowserWindow(props: BrowserWindowProps) {
             ref={contentBars}
             slot="content"
             testID={`${p()}content-toolbar`}
-            topBarsAutoHide={!compact() && gtk && sidebarHidden() && trailingControls()}
+            topBarsAutoHide={!immersive() && !compact() && gtk && sidebarHidden() && trailingControls()}
           >
             {/* Window controls the desktop puts on the TRAILING side
                 (GNOME's default) do not belong in a leading sidebar: they get
@@ -1890,7 +1952,7 @@ export function BrowserWindow(props: BrowserWindowProps) {
                 keeps its full inset and a change of the setting is still
                 heard. macOS has all three in the sidebar. */}
             <Show when={!compact() && gtk}>
-              <Activity mode={trailingControls() ? "visible" : "hidden"}>
+              <Activity mode={trailingControls() && !immersive() ? "visible" : "hidden"}>
                 <box slot="top" testID={`${p()}controls-strip`} orientation="horizontal" windowHandle style={{ padding: INSET }}>
                   <box orientation="horizontal" style={{ hexpand: true }} />
                   <windowcontrols
@@ -1903,95 +1965,97 @@ export function BrowserWindow(props: BrowserWindowProps) {
               </Activity>
             </Show>
             <Show when={compact()}>
-              <headerbar
-                testID={`${p()}chrome`}
-                title=""
-                canGoBack={activeRt().canGoBack}
-                canGoForward={activeRt().canGoForward}
-                onBack={() => ctx.command(active().id, "goBack")}
-                onForward={() => ctx.command(active().id, "goForward")}
-              >
-                {/* One icon for both directions: Adwaita's sidebar-hide glyph has
-                    no SF Symbol behind it, so the state rides the tooltip. In
-                    compact it joins the trailing controls, so the row starts
-                    where the reference's does: back, forward, reload, tabs. */}
-                <button
-                  slot="start"
-                  testID={`${p()}reload`}
-                  iconName={activeRt().loading ? "process-stop-symbolic" : "view-refresh-symbolic"}
-                  tooltip={activeRt().loading ? "Stop" : "Reload"}
-                  cssClasses={["flat"]}
-                  onClick={() => ctx.command(active().id, activeRt().loading ? "stop" : "reload")}
-                />
-
-                {/* Compact puts the tabs in the row itself, after reload, and
-                    nothing below it. The active tab is the address. */}
-                <CompactTabs
-                  tabs={tabs()}
-                  activeId={active().id}
-                  metrics={tabMetrics()}
-                  prefix={p()}
-                  iconFor={ctx.iconFor}
-                  labelFor={tabLabel}
-                  hoverFor={tabHover}
-                  onOpenAddress={openAddress}
-                  addressLeading={siteInfoControl("bottom")}
-                  addressTrailing={
-                    <ZoomFootControl
-                      open={zoomPopover.open()}
-                      factor={zoomFactor()}
-                      prefix={p()}
-                      position="bottom"
-                      onToggle={zoomPopover.toggle}
-                      onStep={(direction) => ctx.setZoom(active().id, stepZoom(zoomFactor(), direction))}
-                      onReset={() => ctx.setZoom(active().id, 1)}
-                      onClosed={zoomPopover.close}
-                    />
-                  }
-                  asleep={ctx.asleep}
-                  onSelect={selectTab}
-                  onClose={ctx.closeTab}
-                  menuFor={(t) => tabMenu(tabs().find((x) => x.id === t.id)!)}
-                  onMenu={(t, id) => runTabCommand(id, tabs().find((x) => x.id === t.id)!)}
-                  dragPayload={(t) => tabPayload({ profile: "default", tabId: t.id, url: t.url })}
-                  dropIndex={dropIndex()}
-                  onDragOverIndex={(index) => ctx.setDropHint(winId, index)}
-                  onDropAt={(payload, index) => ctx.onTabDropped(winId, payload, index)}
-                  onDragStart={ctx.onDragStart}
-                  onDragEnd={ctx.onDragEnd}
-                />
-                <button
-                  slot="start"
-                  testID={`${p()}header-new-tab`}
-                  // A bare plus, not the boxed tab glyph: in one row of tabs
-                  // the boxed one reads as a sixth tab.
-                  iconName="list-add-symbolic"
-                  tooltip="New Tab"
-                  cssClasses={["flat"]}
-                  onClick={() => ctx.openTab(winId, "")}
-                />
-
-                {/* A narrow row gives this one up first: the View menu and the
-                    chord switch layouts too. */}
-                <Show when={props.win.width >= LAYOUT_BUTTON_WIDTH}>
+              <Activity mode={immersive() ? "hidden" : "visible"}>
+                <headerbar
+                  testID={`${p()}chrome`}
+                  title=""
+                  canGoBack={activeRt().canGoBack}
+                  canGoForward={activeRt().canGoForward}
+                  onBack={() => ctx.command(active().id, "goBack")}
+                  onForward={() => ctx.command(active().id, "goForward")}
+                >
+                  {/* One icon for both directions: Adwaita's sidebar-hide glyph has
+                      no SF Symbol behind it, so the state rides the tooltip. In
+                      compact it joins the trailing controls, so the row starts
+                      where the reference's does: back, forward, reload, tabs. */}
                   <button
-                    slot="end"
-                    testID={`${p()}layout-toggle`}
-                    iconName="sidebar-show-symbolic"
-                    tooltip="Use Sidebar Layout"
+                    slot="start"
+                    testID={`${p()}reload`}
+                    iconName={activeRt().loading ? "process-stop-symbolic" : "view-refresh-symbolic"}
+                    tooltip={activeRt().loading ? "Stop" : "Reload"}
                     cssClasses={["flat"]}
-                    onClick={() => ctx.setLayout("sidebar")}
+                    onClick={() => ctx.command(active().id, activeRt().loading ? "stop" : "reload")}
                   />
-                </Show>
 
-                {extensionControls("end")}
+                  {/* Compact puts the tabs in the row itself, after reload, and
+                      nothing below it. The active tab is the address. */}
+                  <CompactTabs
+                    tabs={tabs()}
+                    activeId={active().id}
+                    metrics={tabMetrics()}
+                    prefix={p()}
+                    iconFor={ctx.iconFor}
+                    labelFor={tabLabel}
+                    hoverFor={tabHover}
+                    onOpenAddress={openAddress}
+                    addressLeading={siteInfoControl("bottom")}
+                    addressTrailing={
+                      <ZoomFootControl
+                        open={zoomPopover.open()}
+                        factor={zoomFactor()}
+                        prefix={p()}
+                        position="bottom"
+                        onToggle={zoomPopover.toggle}
+                        onStep={(direction) => ctx.setZoom(active().id, stepZoom(zoomFactor(), direction))}
+                        onReset={() => ctx.setZoom(active().id, 1)}
+                        onClosed={zoomPopover.close}
+                      />
+                    }
+                    asleep={ctx.asleep}
+                    onSelect={selectTab}
+                    onClose={ctx.closeTab}
+                    menuFor={(t) => tabMenu(tabs().find((x) => x.id === t.id)!)}
+                    onMenu={(t, id) => runTabCommand(id, tabs().find((x) => x.id === t.id)!)}
+                    dragPayload={(t) => tabPayload({ profile: "default", tabId: t.id, url: t.url })}
+                    dropIndex={dropIndex()}
+                    onDragOverIndex={(index) => ctx.setDropHint(winId, index)}
+                    onDropAt={(payload, index) => ctx.onTabDropped(winId, payload, index)}
+                    onDragStart={ctx.onDragStart}
+                    onDragEnd={ctx.onDragEnd}
+                  />
+                  <button
+                    slot="start"
+                    testID={`${p()}header-new-tab`}
+                    // A bare plus, not the boxed tab glyph: in one row of tabs
+                    // the boxed one reads as a sixth tab.
+                    iconName="list-add-symbolic"
+                    tooltip="New Tab"
+                    cssClasses={["flat"]}
+                    onClick={() => ctx.openTab(winId, "")}
+                  />
 
-                {downloadsControl("end")}
+                  {/* A narrow row gives this one up first: the View menu and the
+                      chord switch layouts too. */}
+                  <Show when={props.win.width >= LAYOUT_BUTTON_WIDTH}>
+                    <button
+                      slot="end"
+                      testID={`${p()}layout-toggle`}
+                      iconName="sidebar-show-symbolic"
+                      tooltip="Use Sidebar Layout"
+                      cssClasses={["flat"]}
+                      onClick={() => ctx.setLayout("sidebar")}
+                    />
+                  </Show>
 
-                {/* Last in the row, where the first window's menu bar puts its
-                    own button. */}
-                {windowMenu("end")}
-              </headerbar>
+                  {extensionControls("end")}
+
+                  {downloadsControl("end")}
+
+                  {/* Last in the row, where the first window's menu bar puts its
+                      own button. */}
+                  {windowMenu("end")}
+                </headerbar>
+              </Activity>
             </Show>
 
             <box testID={`${p()}content`} orientation="vertical" spacing={0} style={{ hexpand: true, vexpand: true }}>

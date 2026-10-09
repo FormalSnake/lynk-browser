@@ -461,6 +461,8 @@ export function App(props: AppProps) {
         return findCommand(fromTab, "findPrevious");
       case "focusAddress":
         return controller?.openAddress();
+      case "fullscreen":
+        return controller?.toggleFullscreen();
       case "print": {
         // The page's own print, which opens the system print panel.
         const node = view(fromTab);
@@ -788,7 +790,7 @@ export function App(props: AppProps) {
     bumpZoomNotice(tabId);
   }
 
-  function command(tabId: string, name: "goBack" | "goForward" | "reload" | "stop"): void {
+  function command(tabId: string, name: "goBack" | "goForward" | "reload" | "stop" | "exitFullscreen"): void {
     const node = view(tabId);
     if (node) sendCommand(node, name);
   }
@@ -1918,6 +1920,10 @@ export function App(props: AppProps) {
         onSecurityChanged={(e) => patch(id, { security: securityOf(p.tab.url, e.data) })}
         onZoomChanged={(e) => onZoomChanged(id, e.data)}
         onPictureInPicture={(e) => onPictureInPicture(id, e.data)}
+        onFullscreenChanged={(e) => {
+          const win = windowOfTab(session.get(), id);
+          if (win) controllers.get(win.id)?.setPageFullscreen(id, e.checked);
+        }}
         onContentBlocked={(e) => {
           const count = (e.data as { count: number }).count;
           patch(id, { blocked: count });
