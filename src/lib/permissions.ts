@@ -72,8 +72,17 @@ function fallback(type: string): { verb: string; noun: string } {
   return { verb: "use", noun: words };
 }
 
+const EXTERNAL_PREFIX = "externalProtocol:";
+
+/// A site allowed to open another application's links (mailto:, zoommtg:)
+/// without asking is kept beside its permissions, one type per scheme.
+export function externalProtocolType(scheme: string): string {
+  return `${EXTERNAL_PREFIX}${scheme}`;
+}
+
 /// The permission's own name, for a row listing what a site has been given.
 export function permissionName(type: string): string {
+  if (type.startsWith(EXTERNAL_PREFIX)) return `Open ${type.slice(EXTERNAL_PREFIX.length)} links`;
   const noun = (PHRASES[type] ?? fallback(type)).noun.replace(/^(your|you|its|the|a|an) /, "");
   return noun.charAt(0).toUpperCase() + noun.slice(1);
 }

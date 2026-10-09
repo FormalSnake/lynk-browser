@@ -50,6 +50,9 @@ export interface Runtime {
   blocked: number;
   /// The pop-ups the engine blocked on the page now showing, oldest first.
   popups: PopupBlocked[];
+  /// Chrome's audible state: sound came out in the last moment or so.
+  audible: boolean;
+  muted: boolean;
 }
 
 export const IDLE: Runtime = {
@@ -65,6 +68,26 @@ export const IDLE: Runtime = {
   reading: false,
   blocked: 0,
   popups: [],
+  audible: false,
+  muted: false,
+};
+
+/// What a tab's speaker shows: sound playing, sound muted, or no speaker.
+export type TabAudio = "playing" | "muted" | null;
+
+export function tabAudio(rt: { audible: boolean; muted: boolean }): TabAudio {
+  if (rt.muted) return "muted";
+  return rt.audible ? "playing" : null;
+}
+
+export const AUDIO_ICON: Record<"playing" | "muted", string> = {
+  playing: "audio-volume-high-symbolic",
+  muted: "audio-volume-muted-symbolic",
+};
+
+export const AUDIO_TOOLTIP: Record<"playing" | "muted", string> = {
+  playing: "Mute tab",
+  muted: "Unmute tab",
 };
 
 export interface FindState {

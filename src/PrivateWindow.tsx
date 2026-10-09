@@ -15,6 +15,8 @@ import {
   allowPopups,
   executeJavaScript,
   newWindowRequest,
+  onAlertResult,
+  openExternal,
   openBlockedPopup,
   sendCommand,
 } from "@nativedesktop/react";
@@ -27,7 +29,7 @@ import type {
 } from "@nativedesktop/react";
 import { For, Show, createEffect, createMemo, createSignal, onSettled } from "solid-js";
 
-import type { MoveTarget } from "./BrowserWindow.tsx";
+import { appLabel, askOpenApp, type MoveTarget } from "./BrowserWindow.tsx";
 import { ADDRESS_MIN_WIDTH, CompactTabs, tabRunMetrics } from "./CompactTabs.tsx";
 import { PopupBlockedControl } from "./PopupBlocked.tsx";
 import { FIND_BAR_WIDTH } from "./lib/metrics.ts";
@@ -36,7 +38,7 @@ import { placeOpenedTab } from "./lib/session.ts";
 import { settings } from "./lib/settings.ts";
 import { trackStore } from "./lib/live.ts";
 import { parseTabPayload, tabPayload } from "./lib/tabdrag.ts";
-import { tabHover } from "./lib/tabstate.ts";
+import { tabAudio, tabHover } from "./lib/tabstate.ts";
 import { displayUrl, hostOf, toUrl, fieldAddress } from "./lib/url.ts";
 import { fixWebStore } from "./lib/webstore.ts";
 
@@ -60,10 +62,12 @@ interface PrivateTab {
   loading: boolean;
   /// Pop-ups the engine blocked on the page now showing.
   popups: PopupBlocked[];
+  audible: boolean;
+  muted: boolean;
 }
 
 function blankTab(id: string): PrivateTab {
-  return { id, url: "", title: "", canGoBack: false, canGoForward: false, loading: false, popups: [] };
+  return { id, url: "", title: "", canGoBack: false, canGoForward: false, loading: false, popups: [], audible: false, muted: false };
 }
 
 /// How the rest of the app hands this window a tab from a normal window. The
@@ -122,6 +126,7 @@ export function PrivateWindow(props: PrivateWindowProps) {
   /// The header's address field, so the menu's Open Address Bar can put the
   /// caret in it. Grab-focus selects the contents on both backends.
   let omnibox: NdNodeRef<"searchinput"> | undefined;
+  let windowRef: NdNodeRef<"window"> | undefined;
 
   const [width, setWidth] = createSignal(WINDOW_WIDTH);
   /// Where a tab dragged over the row would land. There is no drag-leave
@@ -132,7 +137,6 @@ export function PrivateWindow(props: PrivateWindowProps) {
 
   // Fullscreen as in the main window: a page's element fullscreen or F11 takes
   // the window, with the chrome put away.
-  let windowRef: NdNodeRef<"window"> | undefined;
   const [pageFullscreen, setPageFullscreen] = createSignal("");
   const [browserFullscreen, setBrowserFullscreen] = createSignal(false);
   const immersive = (): boolean => pageFullscreen() !== "" || browserFullscreen();
@@ -173,6 +177,14 @@ export function PrivateWindow(props: PrivateWindowProps) {
       if (!now || (Object.keys(part) as (keyof PrivateTab)[]).every((k) => Object.is(now[k], part[k]))) return list;
       return list.map((t) => (t.id === id ? { ...t, ...part } : t));
     });
+  }
+
+  function toggleMuted(id: string): void {
+    const view = views.get(id);
+    const tab = tabs().find((t) => t.id === id);
+    if (!view || !tab) return;
+    patch(id, { muted: !tab.muted });
+    sendCommand(view, "setMuted", !tab.muted);
   }
 
   function openTab(url = "", index?: number, background = false): string {
@@ -387,6 +399,10 @@ export function PrivateWindow(props: PrivateWindowProps) {
         onLoadingChanged={(e) => patch(id, { loading: e.checked })}
         onBackAvailable={(e) => patch(id, { canGoBack: e.checked })}
         onForwardAvailable={(e) => patch(id, { canGoForward: e.checked })}
+        onAudioStateChanged={(e) => {
+          const audio = e.data as { playing?: boolean; muted?: boolean };
+          patch(id, { audible: audio.playing === true, muted: audio.muted === true });
+        }}
         onNewWindow={(e) => openFromPage(id, e)}
         onPermissionRequest={(e) => onPermissionRequest(id, e.data)}
         onFullscreenChanged={(e) => {
@@ -395,6 +411,15 @@ export function PrivateWindow(props: PrivateWindowProps) {
         }}
         onCloseApproved={() => {
           if (closing.delete(id)) closeTab(id);
+        }}
+        onExternalProtocol={(e) => {
+          // Asked every time: nothing a page is allowed here is written down.
+          const request = e.data as { url?: string; appName?: string };
+          const url = request.url;
+          if (!url || !windowRef) return;
+          void askOpenApp(windowRef, appLabel(request.appName), hostOf(v.tab.url), false).then((answer) => {
+            if (answer === "open") void openExternal(url).catch(() => {});
+          });
         }}
         onBrowserCommand={(e) => {
           // The page's own Chrome shortcuts, for the ones this window has an
@@ -417,6 +442,9 @@ export function PrivateWindow(props: PrivateWindowProps) {
   return (
     <window
       ref={windowRef}
+      onAlertResult={(e) => {
+        if (windowRef) onAlertResult(windowRef, e);
+      }}
       title="Private Browsing"
       testID="private-window"
       defaultWidth={WINDOW_WIDTH}
@@ -511,6 +539,11 @@ export function PrivateWindow(props: PrivateWindowProps) {
                   iconFor={() => undefined}
                   labelFor={(t) => t.title || (t.url ? displayUrl(t.url) : "New Tab")}
                   hoverFor={tabHover}
+                  audioFor={(id) => {
+                    const t = tabs().find((x) => x.id === id);
+                    return t ? tabAudio(t) : null;
+                  }}
+                  onToggleMuted={toggleMuted}
                   onSelect={setActiveId}
                   onClose={requestCloseTab}
                   dragPayload={(t) => tabPayload({ profile: "private", tabId: t.id, url: t.url })}

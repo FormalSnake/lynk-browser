@@ -67,6 +67,7 @@ import {
   SECURITY_TOOLTIP,
   findFailed,
   findSummary,
+  tabAudio,
   tabHover,
   tabLabel,
   type FindState,
@@ -79,6 +80,31 @@ import { displayUrl, hostOf, toUrl, fieldAddress } from "./lib/url.ts";
 const DOWNLOADS_SHOWN = 6;
 
 export const TEST_HOOKS = process.env.NB_TEST_HOOKS === "1";
+
+/// The desktop's application for a scheme, or what Chrome names on Linux when
+/// it knows none: the launcher it hands the link to.
+export function appLabel(appName: string | undefined): string {
+  return appName || "xdg-open";
+}
+
+/// Chrome's "Open …?" for a link to another application, in the window's own
+/// dialog. "always" is offered only when `canRemember`.
+export function askOpenApp(node: NdNodeRef<"window">, app: string, site: string, canRemember: boolean): Promise<"open" | "always" | "cancel"> {
+  const open = { id: "open", label: `Open ${app}`, style: "suggested" as const };
+  const always = canRemember ? [{ id: "always", label: "Always Allow" }] : [];
+  const cancel = { id: "cancel", label: "Cancel" };
+  return showAlert(node, {
+    title: `Open ${app}?`,
+    body: `${site || "This page"} wants to open this application.`,
+    // The first button is the leftmost on GTK and the rightmost on AppKit,
+    // and each platform puts the action on the right.
+    buttons: Platform.backend === "gtk" ? [cancel, ...always, open] : [open, ...always, cancel],
+    defaultId: "open",
+    closeId: "cancel",
+  })
+    .then((answer): "open" | "always" | "cancel" => (answer.buttonId === "open" ? "open" : answer.buttonId === "always" ? "always" : "cancel"))
+    .catch(() => "cancel" as const);
+}
 
 /// Characters of the address the sidebar's address button shows.
 const SIDEBAR_ADDRESS_CHARS = 40;
@@ -129,7 +155,7 @@ export interface WindowController {
   /// Bookmark This Page, or let the page go when it is already kept.
   bookmarkPage(): void;
   openSiteInfo(): void;
-  /// Arc's Cmd+S, for the sidebar layout.
+  /// Shows or hides the sidebar, for the sidebar layout.
   toggleSidebar(): void;
   /// F11, or Chrome's own fullscreen command from the page.
   toggleFullscreen(): void;
@@ -145,6 +171,9 @@ export interface WindowController {
   /// Asks, in this window's own dialog, whether to add a Web Store
   /// extension. `lines` are what it can do, in Chrome's words.
   confirmInstall(name: string, lines: string[]): Promise<boolean>;
+  /// Chrome's "Open …?" for a link to another application. "always" only
+  /// when `canRemember`: a page with no site has nothing to remember it by.
+  confirmOpenApp(app: string, site: string, canRemember: boolean): Promise<"open" | "always" | "cancel">;
 }
 
 /// A window a tab can be sent to. "private" is the private window.
@@ -199,6 +228,12 @@ export interface BrowserContext {
   command(tabId: string, name: "goBack" | "goForward" | "reload" | "stop" | "exitFullscreen"): void;
   toggleReader(tabId: string): void;
   toggleFloat(tabId: string): void;
+  savePage(tabId: string): void;
+  viewSource(tabId: string): void;
+  toggleDevTools(tabId: string): void;
+  clearBrowsingData(windowId: string): void;
+  /// The speaker on a tab playing sound.
+  toggleMuted(tabId: string): void;
   /// The built-in blocker on a tab's site.
   blockingFor(tabId: string): { site: string; on: boolean; hidden: number; blocked: number };
   toggleBlocking(tabId: string): void;
@@ -456,6 +491,7 @@ export function BrowserWindow(props: BrowserWindowProps) {
         .then((answer) => answer.buttonId === "add")
         .catch(() => false);
     },
+    confirmOpenApp: (app, site, canRemember) => (windowRef ? askOpenApp(windowRef, app, site, canRemember) : Promise.resolve("cancel")),
   });
 
   /// The one way into the command bar. Each open starts from `seed`: the
@@ -575,6 +611,18 @@ export function BrowserWindow(props: BrowserWindowProps) {
       case "reload":
         ctx.command(tab.id, "reload");
         return true;
+      case "save-page":
+        ctx.savePage(tab.id);
+        return true;
+      case "view-source":
+        ctx.viewSource(tab.id);
+        return true;
+      case "devtools":
+        ctx.toggleDevTools(tab.id);
+        return true;
+      case "mute-tab":
+        ctx.toggleMuted(tab.id);
+        return true;
     }
     return false;
   }
@@ -584,8 +632,9 @@ export function BrowserWindow(props: BrowserWindowProps) {
   function tabMenu(tab: SessionTab): MenuEntry[] {
     const item = (id: string, enabled = true): MenuEntry => ({ id, label: commandTitle(id, tab.pinned), enabled });
     const gap: MenuEntry = { separator: true };
+    const mute: MenuEntry = { id: "mute-tab", label: ctx.rt(tab.id).muted ? "Unmute Tab" : "Mute Tab", enabled: !!tab.url && !ctx.asleep(tab.id) };
     if (tab.pinned) {
-      return [item("reset-pinned", !!tab.pinnedUrl && tab.pinnedUrl !== tab.url), item("pin-tab"), item("sleep-tab", ctx.canSleep(tab.id)), gap, item("close-tab")];
+      return [item("reset-pinned", !!tab.pinnedUrl && tab.pinnedUrl !== tab.url), item("pin-tab"), mute, item("sleep-tab", ctx.canSleep(tab.id)), gap, item("close-tab")];
     }
     return [
       item("reload", !!tab.url),
@@ -593,6 +642,7 @@ export function BrowserWindow(props: BrowserWindowProps) {
       item("copy-address", !!tab.url),
       gap,
       item("pin-tab"),
+      mute,
       item("move-new-window", tabs().length > 1),
       item("sleep-tab", ctx.canSleep(tab.id)),
       gap,
@@ -657,6 +707,8 @@ export function BrowserWindow(props: BrowserWindowProps) {
         return ctx.updateLists();
       case "settings":
         return ctx.openSettings();
+      case "clear-data":
+        return ctx.clearBrowsingData(winId);
       case "zoom-in":
         return ctx.zoomStep(tab.id, 1);
       case "zoom-out":
@@ -1587,6 +1639,13 @@ export function BrowserWindow(props: BrowserWindowProps) {
               accelerator={KEYS["reopen-tab"]}
               onSelect={() => ctx.reopenTab(menuWin().id)}
             />
+            <menuitem
+              testID="menu-save-page"
+              label="Save Page As…"
+              accelerator={KEYS["save-page"]}
+              enabled={chromium() && /^(https?|file):/.test(menuActive().url)}
+              onSelect={() => ctx.savePage(menuActive().id)}
+            />
             <menuitem role="separator" testID="menu-file-sep" />
             <menuitem testID="menu-settings" label="Settings" accelerator={KEYS.settings} onSelect={() => ctx.openSettings()} />
           </menu>
@@ -1714,6 +1773,21 @@ export function BrowserWindow(props: BrowserWindowProps) {
               label="Reset Zoom"
               accelerator={KEYS["zoom-reset"]}
               onSelect={() => ctx.zoomStep(menuActive().id, 0)}
+            />
+            <menuitem role="separator" testID="menu-view-sep-developer" />
+            <menuitem
+              testID="menu-view-source"
+              label="View Page Source"
+              accelerator={KEYS["view-source"]}
+              enabled={/^(https?|file):/.test(menuActive().url)}
+              onSelect={() => ctx.viewSource(menuActive().id)}
+            />
+            <menuitem
+              testID="menu-devtools"
+              label="Developer Tools"
+              accelerator={KEYS.devtools}
+              enabled={chromium() && !!menuActive().url}
+              onSelect={() => ctx.toggleDevTools(menuActive().id)}
             />
           </menu>
           <menu label="Tabs" testID="menu-tabs">
@@ -1848,6 +1922,13 @@ export function BrowserWindow(props: BrowserWindowProps) {
               accelerator={KEYS.history}
               onSelect={() => menuTarget()?.togglePanel("history")}
             />
+            <menuitem
+              testID="menu-clear-data"
+              label="Clear Browsing Data…"
+              accelerator={KEYS["clear-data"]}
+              enabled={chromium()}
+              onSelect={() => ctx.clearBrowsingData(menuWin().id)}
+            />
             <menuitem role="separator" testID="menu-history-sep" />
             <For
               each={ctx.history}
@@ -1898,6 +1979,8 @@ export function BrowserWindow(props: BrowserWindowProps) {
               iconFor={ctx.iconFor}
               pinStyle={prefs.pinStyle}
               asleep={ctx.asleep}
+              audioFor={(id) => tabAudio(ctx.rt(id))}
+              onToggleMuted={ctx.toggleMuted}
               siteInfo={siteInfoControl("top")}
               zoom={
                 <>
@@ -2024,6 +2107,8 @@ export function BrowserWindow(props: BrowserWindowProps) {
                     iconFor={ctx.iconFor}
                     labelFor={tabLabel}
                     hoverFor={tabHover}
+                    audioFor={(id) => tabAudio(ctx.rt(id))}
+                    onToggleMuted={ctx.toggleMuted}
                     onOpenAddress={openAddress}
                     addressLeading={siteInfoControl("bottom")}
                     addressTrailing={

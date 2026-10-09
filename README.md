@@ -107,7 +107,8 @@ inside it. Dev and packaged runs share both.
 | `Cmd+W` / `Shift+Cmd+T` | close tab / reopen it |
 | `Cmd+1` to `Cmd+8` | tab by its place; `Cmd+9` is the last tab once there are nine |
 | `Shift+Cmd+[` / `Shift+Cmd+]` | previous / next tab (`Ctrl+Shift+Tab` / `Ctrl+Tab` on Linux) |
-| `Cmd+S` | show or hide the sidebar |
+| `Shift+Cmd+B` | show or hide the sidebar |
+| `Cmd+S` | save the page |
 | `Alt+Cmd+S` | switch layout |
 | `Cmd+F`, `Cmd+G`, `Shift+Cmd+G` | find, next, previous; `Esc` closes |
 | `Cmd+[` / `Cmd+]` / `Cmd+R` | back / forward / reload |
@@ -117,7 +118,10 @@ inside it. Dev and packaged runs share both.
 | `Shift+Cmd+H` | hide an element on this site |
 | `Cmd+Y` | history (`Ctrl+H` on Linux) |
 | `Shift+Cmd+J` | downloads (`Ctrl+J` on Linux) |
-| `Alt+Cmd+B` / `Shift+Cmd+B` | bookmarks (`Ctrl+Shift+O` on Linux) / bookmark this page |
+| `Alt+Cmd+B` / `Cmd+D` | bookmarks (`Ctrl+Shift+O` on Linux) / bookmark this page |
+| `Alt+Cmd+U` | page source (`Ctrl+U` on Linux) |
+| `Alt+Cmd+I` | developer tools (`Ctrl+Shift+I` on Linux) |
+| `Shift+Cmd+Backspace` | clear browsing data (`Ctrl+Shift+Delete` on Linux) |
 | `Cmd+N` / `Shift+Cmd+N` | new window / private window |
 | `Cmd+,` | settings |
 
