@@ -21,6 +21,7 @@ export const KEYS = {
   "find-next": "primary+g",
   "find-previous": "primary+shift+g",
   reload: "primary+r",
+  "copy-address": "primary+shift+c",
   back: "primary+[",
   forward: "primary+]",
   "toggle-sidebar": "primary+s",

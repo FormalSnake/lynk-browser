@@ -71,7 +71,7 @@ export const COMMANDS: OmniCommand[] = [
   { id: "back", title: "Back", iconName: "go-previous-symbolic", keys: "back" },
   { id: "forward", title: "Forward", iconName: "go-next-symbolic", keys: "forward" },
   { id: "reload", title: "Reload", iconName: "view-refresh-symbolic", keys: "reload" },
-  { id: "copy-address", title: "Copy Address", iconName: "edit-copy-symbolic", aka: "url link" },
+  { id: "copy-address", title: "Copy Address", iconName: "edit-copy-symbolic", keys: "copy-address", aka: "url link" },
   { id: "find", title: "Find in Page", iconName: "edit-find-symbolic", keys: "find" },
   { id: "zoom-in", title: "Zoom In", iconName: "zoom-in-symbolic", keys: "zoom-in" },
   { id: "zoom-out", title: "Zoom Out", iconName: "zoom-out-symbolic", keys: "zoom-out" },

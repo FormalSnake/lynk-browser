@@ -1514,6 +1514,13 @@ export function BrowserWindow(props: BrowserWindowProps) {
           </menu>
           <menu label="Edit" testID="menu-edit">
             <menuitem
+              testID="menu-copy-address"
+              label="Copy Address"
+              accelerator={KEYS["copy-address"]}
+              enabled={!!menuActive().url}
+              onSelect={() => runTabCommand("copy-address", menuActive())}
+            />
+            <menuitem
               testID="menu-find"
               label="Find in Page"
               accelerator={KEYS.find}
