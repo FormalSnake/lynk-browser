@@ -44,6 +44,9 @@ export interface Runtime {
   reading: boolean;
   /// Requests the blocker stopped on the page now showing.
   blocked: number;
+  /// Where the pop-ups the engine blocked on the page now showing would have
+  /// gone, oldest first.
+  popups: string[];
 }
 
 export const IDLE: Runtime = {
@@ -57,6 +60,7 @@ export const IDLE: Runtime = {
   zoomNotice: 0,
   reading: false,
   blocked: 0,
+  popups: [],
 };
 
 export interface FindState {

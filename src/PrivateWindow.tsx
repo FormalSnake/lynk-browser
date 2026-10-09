@@ -11,6 +11,7 @@
 import { Activity, Platform, Spacing, executeJavaScript, newWindowRequest, sendCommand } from "@nativedesktop/react";
 import type {
   NdNodeRef,
+  NewWindowRequest,
   SourceTreeAction,
   SourceTreeNode,
 } from "@nativedesktop/react";
@@ -82,6 +83,9 @@ export interface PrivateWindowProps {
   onMoveOut: (url: string, windowId: string, index: number) => void;
   /// A normal window's tab dropped here: the root closes it where it was.
   onAdopt: (tabId: string) => void;
+  /// A sized window.open from a private page: the root draws the pop-up
+  /// window, and what it opens comes back here.
+  onPopupWindow: (popup: string, url: string, features: NewWindowRequest["features"], onNewWindow: (e: { text: string }) => void) => void;
   bridge: { current: PrivateBridge | null };
 }
 
@@ -140,9 +144,17 @@ export function PrivateWindow(props: PrivateWindowProps) {
     const request = newWindowRequest(e);
     const target = request.url.trim();
     if (!target || target === "about:blank") return;
+    if (request.disposition === "popup" && request.popup) {
+      props.onPopupWindow(request.popup, target, request.features, (next) => openFromPage("", next));
+      return;
+    }
     const place = placeOpenedTab(tabs(), fromTab, openers, request.disposition);
-    openers.set(openTab(target, place.index, !place.foreground), fromTab);
+    const id = openTab(target, place.index, !place.foreground);
+    openers.set(id, fromTab);
+    if (request.popup) pendingPopups.set(id, request.popup);
   }
+  /// Tabs whose view takes over a browser window.open already made.
+  const pendingPopups = new Map<string, string>();
 
   props.bridge.current = { open: (url, index) => openTab(url, index), close: (tabId) => closeTab(tabId) };
 
@@ -280,6 +292,10 @@ export function PrivateWindow(props: PrivateWindowProps) {
   function Page(v: { tab: PrivateTab }) {
     const id = v.tab.id;
     let node!: NdNodeRef<"webview">;
+    // Given no address until it has reported its own, as in the main window.
+    const popup = pendingPopups.get(id);
+    pendingPopups.delete(id);
+    const [adopting, setAdopting] = createSignal(popup !== undefined);
     onSettled(() => {
       views.set(id, node);
       fixWebStore(node);
@@ -290,11 +306,17 @@ export function PrivateWindow(props: PrivateWindowProps) {
     return (
       <webview
         ref={node}
-        url={v.tab.url}
+        url={adopting() ? "" : v.tab.url}
+        popup={popup}
+        adoptPopups
         profile={PRIVATE_PROFILE}
         testID={`private-page-${id}`}
         style={{ hexpand: true, vexpand: true }}
-        onNavigate={(e) => patch(id, { url: e.text })}
+        onNavigate={(e) => {
+          patch(id, { url: e.text });
+          setAdopting(false);
+        }}
+        onWindowClosed={() => closeTab(id)}
         onTitleChanged={(e) => patch(id, { title: e.text })}
         onLoadingChanged={(e) => patch(id, { loading: e.checked })}
         onBackAvailable={(e) => patch(id, { canGoBack: e.checked })}
