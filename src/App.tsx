@@ -581,7 +581,7 @@ export function App(props: AppProps) {
     setFinds((f) => void delete f[id]);
     setLive((l) => void delete l[id]);
     setAsleep((a) => void (a[id] = true));
-    patch(id, { loading: false, progress: 0, canGoBack: false, canGoForward: false, error: null });
+    patch(id, { loading: false, progress: 0, canGoBack: false, canGoForward: false, error: null, crashed: null });
     if (TEST_HOOKS) console.error(`ND_APP SLEEP tab=${id} scroll=${scrollMemory.get(id)?.join(",") ?? "top"}`);
   }
 
@@ -650,7 +650,7 @@ export function App(props: AppProps) {
     if (page === "newtab") return setTabUrl(id, "");
     if (page) return openNativePage(page);
     if (!reachable(target)) return;
-    patch(id, { error: null });
+    patch(id, { error: null, crashed: null });
     // Entering the address you are already on reloads, like every browser. The
     // url prop alone cannot express that: it is unchanged, so nothing commits.
     if (tabOf(id)?.url === target) {
@@ -1908,6 +1908,11 @@ export function App(props: AppProps) {
         onBackAvailable={(e) => patch(id, { canGoBack: e.checked })}
         onForwardAvailable={(e) => patch(id, { canGoForward: e.checked })}
         onLoadFailed={(e) => patch(id, { error: e.data as { url: string; error: string } })}
+        onRenderProcessGone={(e) => {
+          const gone = e.data as { reason?: string; error?: string };
+          patch(id, { loading: false, progress: 0, crashed: { reason: gone.reason ?? "crashed", error: gone.error ?? "" } });
+          if (TEST_HOOKS) console.error(`ND_APP SADTAB ${id} reason=${gone.reason}`);
+        }}
         onNewWindow={(e) => openTabFromPage(id, e)}
         onBrowserCommand={(e) => onBrowserCommand(id, e.text)}
         onJavaScriptResult={onJavaScriptResult}
@@ -2012,6 +2017,13 @@ export function App(props: AppProps) {
     cycleTab,
     navigate,
     retry: (tabId) => patch(tabId, { error: null, attempt: rt(tabId).attempt + 1 }),
+    // A reload in the same view, as Chrome's sad tab does: it starts a new
+    // renderer and keeps the tab's history.
+    reloadCrashed: (tabId) => {
+      patch(tabId, { crashed: null });
+      const node = view(tabId);
+      if (node) sendCommand(node, "reload");
+    },
     command,
     toggleReader,
     toggleFloat,
@@ -2095,7 +2107,9 @@ export function App(props: AppProps) {
           {(t) => {
             const id = t().id;
             // A memo, so a switch re-runs the two pages it changes, not all.
-            const shown = createMemo(() => windows().some((w) => w.activeId === id) && rt(id).error === null);
+            const shown = createMemo(
+              () => windows().some((w) => w.activeId === id) && rt(id).error === null && rt(id).crashed === null,
+            );
             return (
               <Activity mode={shown() ? "visible" : "hidden"}>
                 {/* `attempt` is the view's identity: Try Again and an address
