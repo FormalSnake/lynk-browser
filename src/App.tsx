@@ -2,6 +2,7 @@ import {
   Activity,
   Portal,
   acceptExtensionInstall,
+  allowPopups,
   executeJavaScript,
   installExtension,
   listExtensionActions,
@@ -41,6 +42,8 @@ import type {
   ExtensionActionState,
   InstalledExtension,
   NdNodeRef,
+  NewWindowRequest,
+  PopupBlocked,
 } from "@nativedesktop/react";
 import { For, Show, createEffect, createMemo, createSignal, createStore, onSettled } from "solid-js";
 
@@ -54,6 +57,14 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { type DownloadActions } from "./Downloads.tsx";
+import {
+  POPUP_DEFAULT_HEIGHT,
+  POPUP_DEFAULT_WIDTH,
+  POPUP_MIN_HEIGHT,
+  POPUP_MIN_WIDTH,
+  PopupWindow,
+  type PopupWindowState,
+} from "./PopupWindow.tsx";
 import {
   addDownload,
   clearDownloads,
@@ -137,6 +148,10 @@ import {
 } from "./lib/adblock.ts";
 import { HIDER_CHANNEL, HIDER_SOURCE, HIDER_WORLD, type HiderMessage } from "./lib/hider.ts";
 import { PrivateWindow, type PrivateBridge } from "./PrivateWindow.tsx";
+
+/// How many blocked pop-ups a tab lists. A page that keeps trying gets its
+/// latest ones shown, not an endless menu.
+const BLOCKED_POPUPS_KEPT = 8;
 
 /// A window with no tabs left is closed, not kept around empty.
 function withoutEmptyWindows(s: SessionState): SessionState {
@@ -225,6 +240,10 @@ export function App(props: AppProps) {
   /// "view id>slot id": a remounted view or a rebuilt window both change it,
   /// and either means the view has to be moved again.
   const views = new Map<string, NdNodeRef<"webview">>();
+  /// Tabs whose view is to take over a browser window.open already made, by
+  /// the engine's popup id. Read once, when the view is built.
+  const pendingPopups = new Map<string, string>();
+  const [popupWindows, setPopupWindows] = createSignal<PopupWindowState[]>([]);
   const slots = new Map<string, NdNodeRef<"box">>();
   const placed = new Map<string, string>();
   /// The zoom factor each view was last set to or reported at.
@@ -398,9 +417,15 @@ export function App(props: AppProps) {
     const request = newWindowRequest(e);
     const target = request.url.trim();
     if (!target || target === "about:blank") return;
-    if (TEST_HOOKS) console.error(`ND_APP NEW_WINDOW from=${fromTab} how=${request.disposition ?? "-"} gesture=${request.userGesture ?? "-"} extension=${request.fromExtension ?? false} ${target}`);
+    if (TEST_HOOKS) console.error(`ND_APP NEW_WINDOW from=${fromTab} how=${request.disposition ?? "-"} gesture=${request.userGesture ?? "-"} extension=${request.fromExtension ?? false} popup=${request.popup ?? "-"} ${target}`);
+    // A sized window.open is a small window of its own in Chrome, with the
+    // page that opened it still holding it.
+    if (request.disposition === "popup" && request.popup) {
+      openPopupWindow(request.popup, target, request.features, (next) => openTabFromPage("", next));
+      return;
+    }
     if (request.disposition === "window") {
-      newWindow(target);
+      adoptInto(newWindow(target), request.popup);
       return;
     }
     const win = windowOfTab(session.get(), fromTab) ?? session.get().windows.find((w) => w.id === focusedWindowId());
@@ -410,6 +435,56 @@ export function App(props: AppProps) {
     const place = placeOpenedTab(win.tabs, opener, openers, request.disposition);
     const id = openTab(win.id, target, !place.foreground, place.index);
     if (id && opener) openers.set(id, opener);
+    adoptInto(id, request.popup);
+  }
+
+  /// The browser window.open already made, waiting for the tab's view to take
+  /// it. Its view is built now, shown or not: the engine closes a popup nobody
+  /// mounts within a few seconds.
+  function adoptInto(tabId: string, popup: string | undefined): void {
+    if (!tabId || !popup) return;
+    pendingPopups.set(tabId, popup);
+    setLive((l) => void (l[tabId] = true));
+  }
+
+  function openPopupWindow(
+    popup: string,
+    url: string,
+    features: NewWindowRequest["features"],
+    onNewWindow: (e: { text: string }) => void,
+  ): void {
+    const key = `popup-${popup}`;
+    setPopupWindows((list) => [
+      ...list,
+      {
+        key,
+        popup,
+        url,
+        onNewWindow,
+        width: Math.max(POPUP_MIN_WIDTH, Math.round(features?.width ?? POPUP_DEFAULT_WIDTH)),
+        height: Math.max(POPUP_MIN_HEIGHT, Math.round(features?.height ?? POPUP_DEFAULT_HEIGHT)),
+      },
+    ]);
+  }
+
+  /// A pop-up the user picked from the blocked list. The engine refused it, so
+  /// it opens as a tab beside the page, with no handle back to it.
+  function openBlockedPopup(tabId: string, url: string): void {
+    patch(tabId, { popups: rt(tabId).popups.filter((u) => u !== url) });
+    const win = windowOfTab(session.get(), tabId);
+    if (!win) return;
+    const place = placeOpenedTab(win.tabs, tabId, openers, "foregroundTab");
+    const id = openTab(win.id, url, false, place.index);
+    if (id) openers.set(id, tabId);
+  }
+
+  /// Chrome's "Always allow pop-ups and redirects" for the tab's site.
+  function allowSitePopups(tabId: string): void {
+    const node = view(tabId);
+    const url = tabOf(tabId)?.url ?? "";
+    if (!node || !url) return;
+    allowPopups(node, url);
+    patch(tabId, { popups: [] });
   }
 
   /// Where a native page's routes land: its panel in the focused window, the
@@ -430,7 +505,7 @@ export function App(props: AppProps) {
     const controller = controllers.get(windowId);
     switch (name) {
       case "newWindow":
-        return newWindow();
+        return void newWindow();
       case "newPrivateWindow":
         return void setPrivateOpen(true);
       case "newTab":
@@ -726,6 +801,8 @@ export function App(props: AppProps) {
       const node = view(id);
       if (node) void executeJavaScript(node, leaveReaderScript()).catch(() => {});
     }
+    // The blocked list belongs to the page that tried, as Chrome's does.
+    if (before !== url && rt(id).popups.length > 0) patch(id, { popups: [] });
     committed.set(id, url);
     setTabUrl(id, url);
     applyZoom(id, url);
@@ -977,11 +1054,14 @@ export function App(props: AppProps) {
 
   // ------------------------------------------------------------- windows ---
 
-  function newWindow(url = ""): void {
+  /// Returns the new window's tab.
+  function newWindow(url = ""): string {
     let created = "";
+    let tabId = "";
     session.update((s) => {
       created = `w${s.nextWindowId}`;
-      const tab = { ...blankTab(`t${s.nextTabId}`), url };
+      tabId = `t${s.nextTabId}`;
+      const tab = { ...blankTab(tabId), url };
       return {
         ...s,
         nextWindowId: s.nextWindowId + 1,
@@ -990,6 +1070,7 @@ export function App(props: AppProps) {
       };
     });
     setFocusedId(created);
+    return tabId;
   }
 
   /// The one path every tab move takes: a drop, a menu item and a keyboard
@@ -1902,6 +1983,13 @@ export function App(props: AppProps) {
     const id = p.tab.id;
     let node!: NdNodeRef<"webview">;
     const [armed, setArmed] = createSignal(false);
+    // A view taking over a popup's browser is already on its page, and is
+    // given no address until it has reported where that page went: the tab's
+    // is still the one window.open asked for, and handing it over would load
+    // it a second time past any redirect.
+    const popup = pendingPopups.get(id);
+    pendingPopups.delete(id);
+    const [adopting, setAdopting] = createSignal(popup !== undefined);
     onSettled(() => {
       views.set(id, node);
       fixWebStore(node);
@@ -1927,10 +2015,21 @@ export function App(props: AppProps) {
     return (
       <webview
         ref={node}
-        url={armed() || createAtUrl(p.tab.url) ? p.tab.url : ""}
+        url={adopting() ? "" : armed() || createAtUrl(p.tab.url) ? p.tab.url : ""}
+        popup={popup}
+        adoptPopups
         testID={`page-${id}`}
         style={{ hexpand: true, vexpand: true }}
-        onNavigate={(e) => onNavigated(id, e.text)}
+        onNavigate={(e) => {
+          onNavigated(id, e.text);
+          setAdopting(false);
+        }}
+        onWindowClosed={() => closeTab(id)}
+        onPopupBlocked={(e) => {
+          const blocked = e.data as PopupBlocked;
+          if (TEST_HOOKS) console.error(`ND_APP POPUP_BLOCKED ${id} ${blocked.url}`);
+          patch(id, { popups: [...rt(id).popups.filter((u) => u !== blocked.url), blocked.url].slice(-BLOCKED_POPUPS_KEPT) });
+        }}
         onTitleChanged={(e) => onTitled(id, e.text)}
         onLoadingChanged={(e) => onLoading(id, e.checked)}
         onLoadProgress={(e) => patch(id, { progress: e.value })}
@@ -2067,6 +2166,8 @@ export function App(props: AppProps) {
     decidePrompt,
     dismissPromptsFor,
     resetSiteDecisions,
+    openBlockedPopup,
+    allowSitePopups,
     refreshExtensions,
     pinExtension,
     clickAction,
@@ -2148,6 +2249,14 @@ export function App(props: AppProps) {
       <For each={windows()} keyed={(w) => w.id}>
         {(w, i) => <BrowserWindow win={w()} first={i() === 0} ctx={ctx} />}
       </For>
+      <For each={popupWindows()} keyed={(w) => w.key}>
+        {(w) => (
+          <PopupWindow
+            state={w()}
+            onClose={() => setPopupWindows((list) => list.filter((x) => x.key !== w().key))}
+          />
+        )}
+      </For>
 
       <Show when={settingsOpen()}>
         <SettingsWindow onClose={() => setSettingsOpen(false)} />
@@ -2161,6 +2270,7 @@ export function App(props: AppProps) {
           moveTargets={moveTargets("private").filter((t) => t.id !== "private")}
           onMoveOut={(url, windowId, index) => openTab(windowId, url, false, index)}
           onAdopt={closeTab}
+          onPopupWindow={openPopupWindow}
           bridge={privateBridge}
         />
       </Show>

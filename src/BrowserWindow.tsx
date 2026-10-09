@@ -32,6 +32,7 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onSet
 import { INSET, Sidebar } from "./Sidebar.tsx";
 import { CompactTabs, LAYOUT_BUTTON_WIDTH, tabRunMetrics } from "./CompactTabs.tsx";
 import { ZoomFootControl, createZoomPopover } from "./ZoomControl.tsx";
+import { PopupBlockedControl } from "./PopupBlocked.tsx";
 import { stepZoom, zoomPercent } from "./lib/zoom.ts";
 import { DownloadRow, type DownloadActions } from "./Downloads.tsx";
 import { addBookmark, bookmarks, isBookmarked, removeBookmark } from "./lib/bookmarks.ts";
@@ -218,6 +219,10 @@ export interface BrowserContext {
   decidePrompt(prompt: PermissionPrompt, decision: PermissionDecision): void;
   dismissPromptsFor(tabId: string): void;
   resetSiteDecisions(tabId: string, origin: string): void;
+  /// A pop-up the engine blocked, opened as a tab after all.
+  openBlockedPopup(tabId: string, url: string): void;
+  /// Always allow pop-ups from the tab's site.
+  allowSitePopups(tabId: string): void;
 
   refreshExtensions(): void;
   pinExtension(id: string): void;
@@ -1151,6 +1156,21 @@ export function BrowserWindow(props: BrowserWindowProps) {
     );
   }
 
+  /// Chrome's blocked pop-up icon in the address bar, for the page on show.
+  function popupsControl(position: "top" | "bottom") {
+    return (
+      <PopupBlockedControl
+        prefix={p()}
+        position={position}
+        scope={`${active().id}:${position}`}
+        urls={activeRt().popups}
+        site={hostOf(active().url)}
+        onOpen={(url) => ctx.openBlockedPopup(active().id, url)}
+        onAllow={() => ctx.allowSitePopups(active().id)}
+      />
+    );
+  }
+
   function windowMenu(slot?: "end") {
     return (
       // The menu bar lives in the first window. Every other window carries
@@ -1875,16 +1895,19 @@ export function BrowserWindow(props: BrowserWindowProps) {
               asleep={ctx.asleep}
               siteInfo={siteInfoControl("top")}
               zoom={
-                <ZoomFootControl
-                  open={zoomPopover.open() && !sidebarHidden()}
-                  position="top"
-                  factor={zoomFactor()}
-                  prefix={p()}
-                  onToggle={zoomPopover.toggle}
-                  onStep={(direction) => ctx.setZoom(active().id, stepZoom(zoomFactor(), direction))}
-                  onReset={() => ctx.setZoom(active().id, 1)}
-                  onClosed={zoomPopover.close}
-                />
+                <>
+                  {popupsControl("top")}
+                  <ZoomFootControl
+                    open={zoomPopover.open() && !sidebarHidden()}
+                    position="top"
+                    factor={zoomFactor()}
+                    prefix={p()}
+                    onToggle={zoomPopover.toggle}
+                    onStep={(direction) => ctx.setZoom(active().id, stepZoom(zoomFactor(), direction))}
+                    onReset={() => ctx.setZoom(active().id, 1)}
+                    onClosed={zoomPopover.close}
+                  />
+                </>
               }
               extensions={extensionControls()}
               downloads={downloadsControl()}
@@ -1999,16 +2022,19 @@ export function BrowserWindow(props: BrowserWindowProps) {
                     onOpenAddress={openAddress}
                     addressLeading={siteInfoControl("bottom")}
                     addressTrailing={
-                      <ZoomFootControl
-                        open={zoomPopover.open()}
-                        factor={zoomFactor()}
-                        prefix={p()}
-                        position="bottom"
-                        onToggle={zoomPopover.toggle}
-                        onStep={(direction) => ctx.setZoom(active().id, stepZoom(zoomFactor(), direction))}
-                        onReset={() => ctx.setZoom(active().id, 1)}
-                        onClosed={zoomPopover.close}
-                      />
+                      <>
+                        {popupsControl("bottom")}
+                        <ZoomFootControl
+                          open={zoomPopover.open()}
+                          factor={zoomFactor()}
+                          prefix={p()}
+                          position="bottom"
+                          onToggle={zoomPopover.toggle}
+                          onStep={(direction) => ctx.setZoom(active().id, stepZoom(zoomFactor(), direction))}
+                          onReset={() => ctx.setZoom(active().id, 1)}
+                          onClosed={zoomPopover.close}
+                        />
+                      </>
                     }
                     asleep={ctx.asleep}
                     onSelect={selectTab}
