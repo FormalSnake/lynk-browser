@@ -32,6 +32,8 @@
 //   5  a tab dragged within the list (and between the sections)
 //   6  a click on the row on show opens the command bar on its address
 //   7  compact and back: no controls row or card in compact, both back after
+//   7f the foot in one order (settings first, extensions last) while the zoom
+//      indicator and a pinned extension action come and go in either order
 //
 // GTK only, ND_SIDEBAR_CONTROLS=start|end|none names where the rig's
 // gtk-decoration-layout puts the window buttons, and leg 1 asserts they are
@@ -54,7 +56,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { launchApp, type JsonNode } from "@nativedesktop/test";
 
-import { NDSHOT, fail, ndshotWindows, paletteDriver, step, walk } from "./drive-lib.ts";
+import { NDSHOT, assertFootOrder, fail, ndshotWindows, paletteDriver, step, walk } from "./drive-lib.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const PATIENCE = Number(process.env.ND_DRIVE_TIMEOUT_MS ?? 30_000);
@@ -217,6 +219,7 @@ const launchOptions = {
     XDG_DATA_HOME: join(store, "data"),
     ND_CEF_CACHE: process.env.ND_CEF_CACHE || join(store, "cef"),
     ND_REVEAL_TRACE: "1",
+    NB_TEST_EXT_ACTION: resolve(ROOT, "fixtures/nd-action-ext"),
   },
   readyTimeoutMs: PATIENCE * 2,
   rpcTimeoutMs: PATIENCE,
@@ -537,11 +540,12 @@ async function geometryLeg(width: number): Promise<void> {
   // globe, never GTK's missing-image glyph.
   if (missingIcons.size) fail(`${line}: icons missing from the theme: ${[...missingIcons].join(", ")}`);
 
-  // The foot: settings leading on macOS, downloads leading and the New Tab
+  // The foot: one order on every backend, settings leading, the New Tab
   // plus trailing on GTK, all on one centre line.
+  assertFootOrder(await app.mustFind("bottom-bar"), line);
   const bar = await rect("bottom-bar");
-  const lead = await rect(appkit ? "sidebar-settings" : "downloads-button");
-  if (!near(lead.x, bar.x, 1)) fail(`${line}: ${appkit ? "settings" : "downloads"} is not at the foot's leading edge`);
+  const lead = await rect("sidebar-settings");
+  if (!near(lead.x, bar.x, 1)) fail(`${line}: settings is not at the foot's leading edge`);
   for (const id of ["sidebar-settings", "downloads-button"]) {
     const r = await rect(id);
     if (!near(mid(r).y, mid(lead).y)) fail(`${line}: ${id} is off the foot's centre line`);
@@ -549,7 +553,7 @@ async function geometryLeg(width: number): Promise<void> {
   if (!appkit) {
     const plus = await rect("new-tab");
     if (!near(plus.x + plus.w, bar.x + bar.w, 1)) fail(`${line}: the New Tab plus is not at the foot's trailing edge (${JSON.stringify({ plus, bar })})`);
-    if (!near(mid(plus).y, mid(lead).y)) fail(`${line}: the New Tab plus is off the downloads button's centre line`);
+    if (!near(mid(plus).y, mid(lead).y)) fail(`${line}: the New Tab plus is off the settings button's centre line`);
   }
 
   const shot = await capture(`sidebar-${width}`);
@@ -735,6 +739,78 @@ async function selectionLeg(): Promise<void> {
 /// others moves them aside while it is held; Escape, and a release where
 /// nothing takes a drop, put them back; a drop on a tile commits the order. A plain
 /// click still selects. The frames of the held drag go in a strip.
+/// The foot's glyphs that come and go (the zoom indicator, a pinned
+/// extension action) each take their own place in the foot, whatever order
+/// they come and go in, never the end of the row.
+async function footOrderLeg(): Promise<void> {
+  const seen: string[] = [];
+  const check = async (what: string): Promise<void> => {
+    await settle("bottom-bar");
+    const ids = assertFootOrder(await app.mustFind("bottom-bar"), `foot order, ${what}`);
+    const bar = await app.mustFind("bottom-bar");
+    const squeezed = bar.children.filter((c) => c.testID?.startsWith("ext-pin-") && (c.geometry?.w ?? 0) < 16).length;
+    seen.push(`${what}: ${ids.map((id) => id || "|").join(" ")}${squeezed ? ` (${squeezed} pin squeezed out)` : ""}`);
+  };
+  const panel = async (open: boolean): Promise<void> => {
+    if (((await maybeRect("extensions-panel")) !== null) !== open) await app.click("extensions-button");
+    await waitFor(`the extensions panel to ${open ? "show" : "go"}`, () => maybeRect("extensions-panel"), (r) => (r !== null) === open);
+  };
+  const pinToggle = async (id: string): Promise<void> => {
+    await panel(true);
+    await app.click(`ext-pin-toggle-${id}`);
+    await panel(false);
+  };
+  const zoomGone = () => waitFor("the zoom indicator to go", () => app.find("zoom-anchor"), (n) => n === null);
+
+  await app.setWindowSize(1280, 800);
+  await check("start");
+  await app.click("menu-zoom-in");
+  await laidOut("zoom-anchor");
+  await check("zoomed");
+
+  await panel(true);
+  await app.click("extensions-install-action-test");
+  const ext = await waitFor(
+    "the action fixture's row",
+    async () => {
+      let id = "";
+      walk((await app.tree()).root, (n) => {
+        if (!id && n.testID?.startsWith("ext-row-") && (n.text ?? "").startsWith("ND Action Extension")) id = n.testID.slice("ext-row-".length);
+      });
+      return id;
+    },
+    (id) => id !== "",
+  );
+  await pinToggle(ext);
+  await laidOut(`ext-pin-${ext}`);
+  await check("zoomed, pinned");
+
+  await app.click("menu-zoom-reset");
+  await zoomGone();
+  await check("pinned");
+  await app.click("menu-zoom-in");
+  await laidOut("zoom-anchor");
+  await check("pinned, zoomed again");
+
+  await pinToggle(ext);
+  await waitFor("the pin to go", () => app.find(`ext-pin-${ext}`), (n) => n === null);
+  await check("zoomed, unpinned");
+  await pinToggle(ext);
+  await laidOut(`ext-pin-${ext}`);
+  await check("zoomed, pinned again");
+
+  // Left pinned and zoomed for the captures.
+  for (const width of [1280, 720]) {
+    await app.setWindowSize(width, 800);
+    await check(`pinned at ${width}`);
+    await capture(`foot-${width}`);
+  }
+  await app.click("menu-zoom-reset");
+  await zoomGone();
+  await app.setWindowSize(1280, 800);
+  console.log(`  NB_SIDEBAR_FOOT_ORDER_OK ${seen.join("; ")}`);
+}
+
 async function reorderLeg(): Promise<void> {
   await app.setWindowSize(1280, 800);
   await waitFor("the window at 1280", windowRect, (r) => r.w === 1280);
@@ -1582,6 +1658,9 @@ print(worst if worst is not None else -1)`,
     if (low.length) fail(`${low.join("\n")}\nmeasured: ${results.join(" ")}`);
     console.log(`  NB_SIDEBAR_POPOVER_CONTRAST_OK ${results.join(" ")}`);
   }
+
+  // ---- 7f: the foot's order through its glyphs that come and go --------------
+  await footOrderLeg();
 
   // ---- 7b: right-click on each sidebar surface -------------------------------
   // With the real cursor. Whatever menu comes up is captured on its own (a

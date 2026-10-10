@@ -316,3 +316,52 @@ export async function waitRows(
   }
   return fail(`timed out waiting for ${what}; ${testId} rows were ${JSON.stringify(last)}`);
 }
+
+/// The sidebar foot's glyphs, in the one order every backend draws them. An
+/// unnamed child is the spacer before GTK's New Tab plus.
+const FOOT_ORDER = [
+  "sidebar-settings",
+  "site-info-anchor",
+  "popups-anchor",
+  "zoom-anchor",
+  "downloads-anchor",
+  "window-menu",
+  "ext-pin-",
+  "extensions-anchor",
+  "",
+  "new-tab",
+];
+
+/// Fails unless the foot's children run in FOOT_ORDER, both in the tree and
+/// left to right on screen, with no testID twice, and every glyph drawn at
+/// full size. A pinned extension action is the one glyph a full foot may
+/// squeeze out (AppKit gives it no width when the sidebar is narrow); the
+/// puzzle beside it still lists it. Answers the children's ids.
+export function assertFootOrder(bar: JsonNode, line: string, prefix = ""): string[] {
+  const ids = bar.children.map((c) => (c.testID ?? "").slice(prefix.length));
+  const rank = (id: string): number => {
+    const i = FOOT_ORDER.findIndex((want) => (want.endsWith("-") ? id.startsWith(want) : id === want));
+    if (i < 0) fail(`${line}: the foot holds an unknown child ${JSON.stringify(id)} (${ids.join(", ")})`);
+    return i;
+  };
+  const named = ids.filter((id) => id);
+  if (new Set(named).size !== named.length) fail(`${line}: the foot holds a glyph twice (${ids.join(", ")})`);
+  if (ids[0] !== "sidebar-settings") fail(`${line}: settings does not lead the foot (${ids.join(", ")})`);
+  for (let i = 1; i < ids.length; i++) {
+    if (rank(ids[i]!) < rank(ids[i - 1]!)) fail(`${line}: the foot is out of order (${ids.join(", ")})`);
+  }
+  for (const c of bar.children) {
+    const id = (c.testID ?? "").slice(prefix.length);
+    if (!id || id.startsWith("ext-pin-")) continue;
+    const g = c.geometry;
+    if (!g || g.w < 16 || g.h < 16) fail(`${line}: ${id} is not drawn at full size (${JSON.stringify(g)}; ${ids.join(", ")})`);
+  }
+  let right = -Infinity;
+  for (const c of bar.children) {
+    const g = c.geometry;
+    if (!g || g.w <= 0) continue;
+    if (g.x < right - 1) fail(`${line}: ${c.testID ?? "the spacer"} is drawn left of its predecessor (${ids.join(", ")})`);
+    right = g.x + g.w;
+  }
+  return ids;
+}

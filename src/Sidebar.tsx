@@ -89,13 +89,13 @@ export interface SidebarProps {
   audioFor: (id: string) => TabAudio;
   onToggleMuted: (id: string) => void;
   /// The small glyphs at the foot: the padlock with its site-info popover,
-  /// the page zoom while it is not 100%, the extension actions, downloads.
+  /// the page zoom while it is not 100%, downloads, then the extension actions.
   siteInfo: JSX.Element;
   zoom: JSX.Element;
-  extensions: JSX.Element;
   downloads: JSX.Element;
   /// A secondary window's own menu, in the foot.
   windowMenu: JSX.Element;
+  extensions: JSX.Element;
 
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
@@ -425,10 +425,10 @@ export function Sidebar(props: SidebarProps) {
         </scrollview>
       </box>
 
-      {/* The foot: small glyphs, settings first on macOS; on GTK downloads
-          lead and the New Tab plus closes the row. */}
+      {/* The foot: one order on every backend, settings first and the
+          extensions (pinned actions, then the puzzle) last. On GTK the New
+          Tab plus closes the row past the spacer. */}
       <box testID={`${p()}bottom-bar`} orientation="horizontal" spacing={2}>
-        {gtk ? props.downloads : null}
         <button
           testID={`${p()}sidebar-settings`}
           iconName="emblem-system-symbolic"
@@ -439,9 +439,9 @@ export function Sidebar(props: SidebarProps) {
         />
         {props.siteInfo}
         {props.zoom}
-        {props.extensions}
-        {gtk ? null : props.downloads}
+        {props.downloads}
         {props.windowMenu}
+        {props.extensions}
         <box orientation="horizontal" style={{ hexpand: true }} />
         <Show when={gtk}>
           <button
