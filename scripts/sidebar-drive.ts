@@ -255,6 +255,13 @@ async function maybeRect(id: string): Promise<Rect | null> {
   return g && g.w > 0 && g.h > 0 && node?.visible !== false ? g : null;
 }
 
+/// A node mounted a moment ago, once GTK has allocated it: the load bar
+/// mounts when its load starts and reads as hidden, with no size, until the
+/// next frame lays it out.
+async function laidOut(id: string): Promise<Rect> {
+  return (await waitFor(`${id} to be laid out`, () => maybeRect(id), (r) => r !== null))!;
+}
+
 async function settle(id: string): Promise<Rect> {
   let last = "";
   const deadline = Date.now() + PATIENCE;
@@ -1148,7 +1155,9 @@ try {
   if (!(darwin && !appkit)) await loadBarLeg();
 
   async function loadBarLeg(): Promise<void> {
-  const rowIdle = await rect("tab-slot-t6");
+  // The grid leg unpinned three tiles just before, and the list moves up
+  // as the grid gives back its second row.
+  const rowIdle = await settle("tab-slot-t6");
   await step("start a slow load", async () => {
     await openPalette(app);
     slowOpen = false;
@@ -1158,7 +1167,7 @@ try {
   // Mounted since the first load, so presence says nothing: a load is on show
   // once the bar's value is below the end.
   await waitFor("the load to start", async () => (await app.find("progress"))?.value, (v) => v !== undefined && Number(v) < 1);
-  const bar = await rect("progress");
+  const bar = await laidOut("progress");
   const card = await rect("content");
   if (!near(bar.y, card.y, 1) || bar.x < card.x - 1 || bar.x + bar.w > card.x + card.w + 1) {
     fail(`the load bar is not on the card's top edge (${JSON.stringify({ bar, card })})`);
@@ -1303,7 +1312,7 @@ try {
     await typeQuery(app, `${base}/slow-compact`);
     await app.setValue("palette", true);
     await waitFor("compact's load to start", async () => (await app.find("progress"))?.value, (v) => v !== undefined && Number(v) < 1);
-    const bar = await rect("progress");
+    const bar = await laidOut("progress");
     const page = await rect("content");
     if (!near(bar!.y, page.y, 1) || bar!.x < page.x - 1 || bar!.x + bar!.w > page.x + page.w + 1) {
       fail(`compact's load bar is not on the page's top edge (${JSON.stringify({ bar, page })})`);
