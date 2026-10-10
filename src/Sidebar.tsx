@@ -426,7 +426,7 @@ export function Sidebar(props: SidebarProps) {
       </box>
 
       {/* The foot: one order on every backend, settings first and the
-          extensions (pinned actions, then the puzzle) last. On GTK the New
+          extensions (the puzzle, then the pinned actions) last. On GTK the New
           Tab plus closes the row past the spacer. */}
       <box testID={`${p()}bottom-bar`} orientation="horizontal" spacing={2}>
         <button

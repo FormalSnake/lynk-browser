@@ -326,8 +326,8 @@ const FOOT_ORDER = [
   "zoom-anchor",
   "downloads-anchor",
   "window-menu",
-  "ext-pin-",
   "extensions-anchor",
+  "ext-pin-",
   "",
   "new-tab",
 ];
@@ -336,7 +336,7 @@ const FOOT_ORDER = [
 /// left to right on screen, with no testID twice, and every glyph drawn at
 /// full size. A pinned extension action is the one glyph a full foot may
 /// squeeze out (AppKit gives it no width when the sidebar is narrow); the
-/// puzzle beside it still lists it. Answers the children's ids.
+/// puzzle before it still lists it. Answers the children's ids.
 export function assertFootOrder(bar: JsonNode, line: string, prefix = ""): string[] {
   const ids = bar.children.map((c) => (c.testID ?? "").slice(prefix.length));
   const rank = (id: string): number => {

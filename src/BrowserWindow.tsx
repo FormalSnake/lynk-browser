@@ -606,7 +606,14 @@ export function BrowserWindow(props: BrowserWindowProps) {
         ctx.moveTabTo(tab.id, "new");
         return true;
       case "copy-address":
-        if (tab.url) void clipboard.writeText(tab.url).catch(() => {});
+        if (tab.url) {
+          void clipboard
+            .writeText(tab.url)
+            .then(() => {
+              if (toast) void showToast(toast, { title: "Link copied" });
+            })
+            .catch(() => {});
+        }
         return true;
       case "reload":
         ctx.command(tab.id, "reload");
@@ -1259,51 +1266,12 @@ export function BrowserWindow(props: BrowserWindowProps) {
 
   function extensionControls(slot?: "end") {
     return (
-      // Chrome's extensions area: the pinned actions, then the puzzle piece
-      // that lists everything installed. Each pinned action is boxed with its
+      // The extensions area: the puzzle piece that lists everything
+      // installed, then the pinned actions, so a newly pinned one lands at the
+      // very end of the row. Each pinned action is boxed with its
       // own popover so the popup opens under the button that was clicked; an
       // unpinned one opens under the puzzle.
       <Show when={chromium()}>
-        <For each={ctx.pinnedActions} keyed={(r) => r.id}>
-          {(row) => {
-            const live = () => actionState(row().id);
-            return (
-              <box slot={slot} testID={`${p()}ext-pin-${row().id}`} orientation="horizontal">
-                {/* The badge floats over the icon's top corner, where Chrome
-                    draws it, rather than widening the button. */}
-                <overlay testID={`${p()}ext-action-stack-${row().id}`}>
-                  <button
-                    testID={`${p()}ext-action-${row().id}`}
-                    iconData={row().iconData || undefined}
-                    iconName="application-x-addon-symbolic"
-                    tooltip={popupTooltip(row())}
-                    cssClasses={["flat"]}
-                    enabled={row().enabled && ctx.checkingAction !== row().id}
-                    onClick={() => openExtensionPopup(row())}
-                  />
-                  <Show when={live()?.badgeText}>
-                    <badge
-                      testID={`${p()}ext-badge-${row().id}`}
-                      label={live()!.badgeText}
-                      variant={badgeVariant(live()!.badgeColor)}
-                      style={{ halign: "end", valign: "start" }}
-                    />
-                  </Show>
-                </overlay>
-                <popover
-                  testID={`${p()}ext-popup-${row().id}`}
-                  open={popupId() === row().id}
-                  position={slot ? "bottom" : "top"}
-                  onClosed={closeExtensionPopup}
-                >
-                  <Show when={popupId() === row().id} fallback={<box orientation="horizontal" />}>
-                    {extensionPopup(row)}
-                  </Show>
-                </popover>
-              </box>
-            );
-          }}
-        </For>
         <box slot={slot} testID={`${p()}extensions-anchor`} orientation="horizontal">
           <button
             testID={`${p()}extensions-button`}
@@ -1431,6 +1399,46 @@ export function BrowserWindow(props: BrowserWindowProps) {
             </Show>
           </popover>
         </box>
+        <For each={ctx.pinnedActions} keyed={(r) => r.id}>
+          {(row) => {
+            const live = () => actionState(row().id);
+            return (
+              <box slot={slot} testID={`${p()}ext-pin-${row().id}`} orientation="horizontal">
+                {/* The badge floats over the icon's top corner, where Chrome
+                    draws it, rather than widening the button. */}
+                <overlay testID={`${p()}ext-action-stack-${row().id}`}>
+                  <button
+                    testID={`${p()}ext-action-${row().id}`}
+                    iconData={row().iconData || undefined}
+                    iconName="application-x-addon-symbolic"
+                    tooltip={popupTooltip(row())}
+                    cssClasses={["flat"]}
+                    enabled={row().enabled && ctx.checkingAction !== row().id}
+                    onClick={() => openExtensionPopup(row())}
+                  />
+                  <Show when={live()?.badgeText}>
+                    <badge
+                      testID={`${p()}ext-badge-${row().id}`}
+                      label={live()!.badgeText}
+                      variant={badgeVariant(live()!.badgeColor)}
+                      style={{ halign: "end", valign: "start" }}
+                    />
+                  </Show>
+                </overlay>
+                <popover
+                  testID={`${p()}ext-popup-${row().id}`}
+                  open={popupId() === row().id}
+                  position={slot ? "bottom" : "top"}
+                  onClosed={closeExtensionPopup}
+                >
+                  <Show when={popupId() === row().id} fallback={<box orientation="horizontal" />}>
+                    {extensionPopup(row)}
+                  </Show>
+                </popover>
+              </box>
+            );
+          }}
+        </For>
       </Show>
     );
   }
