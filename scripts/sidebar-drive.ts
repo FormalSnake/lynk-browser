@@ -328,12 +328,12 @@ async function capture(name: string): Promise<Shot | null> {
       await Bun.sleep(1500);
       sh("grim", path);
     } else sh("import", "-window", "root", path);
-    const origin = linuxWindowOrigin();
+    const origin = await linuxWindowOrigin();
     ox = origin.x;
     oy = origin.y;
     scale = origin.scale;
   }
-  console.log(`  capture ${path}`);
+  console.log(`  capture ${path}${ox || oy ? ` (window at ${ox},${oy})` : ""}`);
   const pixel = (x: number, y: number): number[] => {
     const px = Math.round(ox + x * scale);
     const py = Math.round(oy + y * scale);
@@ -366,12 +366,21 @@ print(json.dumps(out))`,
 /// The app window's top-left on the screen capture, in device pixels. The
 /// window's own content origin: xwininfo reports the X window GTK draws in,
 /// shadow margins included, which GTK's own geometry already accounts for.
-function linuxWindowOrigin(): { x: number; y: number; scale: number } {
+async function linuxWindowOrigin(): Promise<{ x: number; y: number; scale: number }> {
   const id = sh("xdotool", "search", "--onlyvisible", "--pid", String(app.pid)).trim().split("\n")[0]!;
   const info = sh("xwininfo", "-id", id);
-  const x = Number(/Absolute upper-left X:\s+(-?\d+)/.exec(info)?.[1] ?? 0);
-  const y = Number(/Absolute upper-left Y:\s+(-?\d+)/.exec(info)?.[1] ?? 0);
-  return { x, y, scale: Number(process.env.ND_ACCEPT_SCALE ?? 1) };
+  const field = (name: string): number => Number(new RegExp(`${name}:\\s+(-?\\d+)`).exec(info)?.[1] ?? 0);
+  const scale = Number(process.env.ND_ACCEPT_SCALE ?? 1);
+  // A GTK window draws its own shadow inside the X window, so the window's
+  // point 0,0 sits that far in. GTK names the margin in _GTK_FRAME_EXTENTS
+  // (left, right, top, bottom) only where the window manager supports it;
+  // openbox does not, and the margin is then what the X window has over the
+  // window's own size, split evenly.
+  const extents = /_GTK_FRAME_EXTENTS\(CARDINAL\) = (\d+), (\d+), (\d+), (\d+)/.exec(sh("xprop", "-id", id, "_GTK_FRAME_EXTENTS"));
+  const win = await windowRect();
+  const left = extents ? Number(extents[1]) : Math.max(0, (field("Width") - win.w * scale) / 2);
+  const top = extents ? Number(extents[3]) : Math.max(0, (field("Height") - win.h * scale) / 2);
+  return { x: field("Absolute upper-left X") + left, y: field("Absolute upper-left Y") + top, scale };
 }
 
 function isPageBlue(rgb: number[]): boolean {
@@ -414,7 +423,7 @@ async function pointer(action: "move" | "click", x: number, y: number): Promise<
     else await app.cursor.click({ x, y });
     return;
   }
-  const w = linuxWindowOrigin();
+  const w = await linuxWindowOrigin();
   const px = Math.round(w.x + x * w.scale);
   const py = Math.round(w.y + y * w.scale);
   // XWayland drives XTEST motion against its own pointer, which exists only
@@ -433,7 +442,7 @@ async function pointer(action: "move" | "click", x: number, y: number): Promise<
 
 async function drag(from: { x: number; y: number }, to: { x: number; y: number }): Promise<void> {
   if (appkit) return app.cursor.drag(from, to, { steps: 24 });
-  const w = linuxWindowOrigin();
+  const w = await linuxWindowOrigin();
   const at = (p: { x: number; y: number }) => [String(Math.round(w.x + p.x * w.scale)), String(Math.round(w.y + p.y * w.scale))];
   sh("xdotool", "mousemove", ...at(from));
   await Bun.sleep(200);
@@ -490,7 +499,8 @@ async function geometryLeg(width: number): Promise<void> {
   if (!leading && !near(firstTile.y, sidebar.y + 8, 1)) fail(`${line}: the pinned tiles start at ${firstTile.y}, not at the sidebar's top inset`);
   if (!appkit && gtkControls === "none") {
     // No buttons at all (a tiling compositor's ":" layout): nothing is kept
-    // for them. No strip, and the card starts at the sidebar's own top inset.
+    // for them. No strip, and no card either: with no frame to draw the page
+    // runs from the sidebar's trailing edge to the window's (1407a5f).
     const strip = await maybeRect("controls-strip");
     if (strip) fail(`${line}: an empty layout still draws a controls strip (${JSON.stringify(strip)})`);
     for (const id of ["controls-start", "controls-end"]) {
@@ -498,7 +508,8 @@ async function geometryLeg(width: number): Promise<void> {
       if (r && r.w > 1) fail(`${line}: ${id} takes ${r.w}px with no buttons to show`);
     }
     const card = await rect("content");
-    if (!near(card.y, sidebar.y + 8, 1)) fail(`${line}: the card starts at ${card.y}, the sidebar's top inset is ${sidebar.y + 8}`);
+    if (!near(card.y, sidebar.y, 1)) fail(`${line}: the page starts at ${card.y}, not at the window's top (${sidebar.y})`);
+    if (!near(card.x, sidebar.x + sidebar.w, 1)) fail(`${line}: the page starts at ${card.x}, not at the sidebar's trailing edge (${sidebar.x + sidebar.w})`);
   } else if (row) {
     const slot = await rect("controls-start");
     if (!near(mid(slot).y, mid(row).y)) fail(`${line}: window controls off the row's centre (${JSON.stringify({ slot, row })})`);
@@ -1159,11 +1170,14 @@ async function cardLeg(tag: string, leading: number | null, margin?: number): Pr
   // moved and cut its window; a capture before that shows the old size.
   if (!darwin) await Bun.sleep(1200);
   const win = await windowRect();
-  const M = margin ?? (appkit ? 0 : 8);
+  // GTK with no window controls anywhere draws no card: the page is square
+  // and runs to the window's edges beside the sidebar.
+  const plain = !appkit && gtkControls === "none";
+  const M = margin ?? (appkit || plain ? 0 : 8);
   const line = `${tag} card=${JSON.stringify(card)} window=${win.w}x${win.h}`;
   if (!near(win.w - (card.x + card.w), M)) fail(`the card's trailing margin is not ${M}: ${line}`);
   if (!near(win.h - (card.y + card.h), M)) fail(`the card's bottom margin is not ${M}: ${line}`);
-  if ((appkit || margin === 0) && !near(card.y, 0)) fail(`the page does not reach the window's top: ${line}`);
+  if ((appkit || plain || margin === 0) && !near(card.y, 0)) fail(`the page does not reach the window's top: ${line}`);
   if (leading !== null && !near(card.x, leading)) fail(`the card's leading edge is not at ${leading}: ${line}`);
   let shot = await capture(`card-${tag}`);
   // The GTK host on macOS has no web engine to draw a page with.
@@ -1203,6 +1217,10 @@ print(sum(1 for y in range(12, 37, 4) for x in range(${Math.round(card.x + card.
   if min(im.getpixel((int(x * s), int(y * s)))[:2]) > 170))`,
       ).trim();
       if (light !== "0") fail(`${light} light pixels are drawn over the page's top edge: ${line}`);
+    } else if (plain) {
+      // No card at all: the page is square and fills the window's corner,
+      // which the rig's X server draws square too.
+      if (!isPageBlue(corner)) fail(`the page does not reach the window's corner (${corner}): ${line}`);
     } else if (isPageBlue(corner)) fail(`the page's square corner shows past the card's curve (${corner}): ${line}`);
   }
   console.log(`  NB_SIDEBAR_CARD_OK ${line}`);
