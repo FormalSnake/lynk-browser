@@ -10,6 +10,10 @@
 //
 //   ND_HOST_BINARY=<nd-hello> bun scripts/security-drive.ts
 //
+// macOS, through scripts/mac-drive.sh for the bundled host: the interstitial
+// is clicked with the real cursor (`app.cursor`), so hold the mac gate lock,
+// and captures go through ndshot.
+//
 // Marker: NB_SECURITY_OK. Captures land in NB_SECURITY_SHOTS
 // (screenshots/security by default).
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -17,13 +21,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { launchApp, type JsonNode } from "@nativedesktop/test";
 
-import { fail, paletteDriver, step, walk } from "./drive-lib.ts";
+import { NDSHOT, fail, ndshotWindows, paletteDriver, step, walk } from "./drive-lib.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const PATIENCE = Number(process.env.ND_DRIVE_TIMEOUT_MS ?? 45_000);
 const SHOTS = process.env.NB_SECURITY_SHOTS ?? resolve(ROOT, "screenshots/security");
 mkdirSync(SHOTS, { recursive: true });
-if (process.platform !== "linux" || !process.env.DISPLAY) fail("this drive reads an X screen back");
+const MAC = process.platform === "darwin";
+if (!MAC && !process.env.DISPLAY) fail("this drive reads an X screen back");
 
 type Security = "secure" | "insecure" | "mixed" | "invalid";
 /// `bypass` loads through Chrome's certificate interstitial first.
@@ -100,11 +105,17 @@ async function windowOrigin(): Promise<{ x: number; y: number }> {
 /// Chrome's certificate interstitial takes "thisisunsafe" typed into the page
 /// as the user's go-ahead.
 async function bypassInterstitial(): Promise<void> {
-  const o = await windowOrigin();
   const win = (await app.windows()).windows[0]!.geometry!;
   const sidebar = (await app.find("sidebar"))?.geometry ?? { x: 0, w: 280 };
   // The page's middle, past the sidebar.
   const at = { x: sidebar.x + sidebar.w + (win.w - sidebar.w) / 2, y: win.h / 2 };
+  if (MAC) {
+    await app.cursor.click(at);
+    await Bun.sleep(500);
+    await app.keyboard.type("thisisunsafe");
+    return;
+  }
+  const o = await windowOrigin();
   sh("xdotool", "mousemove", String(Math.round(o.x + at.x)), String(Math.round(o.y + at.y)), "click", "1");
   await Bun.sleep(500);
   sh("xdotool", "type", "--delay", "60", "thisisunsafe");
@@ -137,14 +148,23 @@ try {
     const node = (await lock()) ?? fail(`${c.name}: no site information mark in the foot`);
     got = node.testID!.replace(/^security-/, "");
     const full = `${SHOTS}/${c.name}-screen.png`;
-    sh("import", "-window", "root", "-silent", full);
-    const o = await windowOrigin();
     const g = node.geometry!;
     const sidebar = (await app.find("sidebar"))?.geometry ?? { x: 0, w: 280 };
+    let crop: { x: number; y: number; w: number; h: number };
+    if (MAC) {
+      // The window alone, in its backing pixels.
+      const shot = ndshotWindows(app.pid)[0] ?? fail(`${c.name}: ndshot sees no window of the app`);
+      sh(NDSHOT, "capture", "--out", full, "--window-id", String(shot.windowID));
+      const k = Number(sh("magick", "identify", "-format", "%w", full)) / shot.width;
+      crop = { x: Math.round(sidebar.x * k), y: Math.round((g.y - 12) * k), w: Math.round(sidebar.w * k), h: Math.round((g.h + 24) * k) };
+    } else {
+      sh("import", "-window", "root", "-silent", full);
+      const o = await windowOrigin();
+      crop = { x: Math.round(o.x + sidebar.x), y: Math.round(o.y + g.y - 12), w: Math.round(sidebar.w), h: Math.round(g.h + 24) };
+    }
     // The foot's row, the sidebar's width across.
-    const crop = { x: Math.round(o.x + sidebar.x), y: Math.round(o.y + g.y - 12), w: Math.round(sidebar.w), h: Math.round(g.h + 24) };
     const foot = `${SHOTS}/${c.name}-foot.png`;
-    sh("convert", full, "-crop", `${crop.w}x${crop.h}+${crop.x}+${crop.y}`, "+repage", "-scale", "300%", foot);
+    sh("magick", full, "-crop", `${crop.w}x${crop.h}+${crop.x}+${crop.y}`, "+repage", "-scale", "300%", foot);
     const line = `${c.name}: ${got} (want ${c.want}) ${c.url}`;
     results.push(line);
     console.log(`  ${got === c.want ? "ok  " : "FAIL"} ${line}  ${foot}`);
