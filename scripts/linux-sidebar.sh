@@ -35,9 +35,10 @@ if [ "$RIG" = hypr ]; then
   rig=hypr
   eval "$(sed -n '/^hypr_rig() {/,/^run_rig() {/p' "$FW/scripts/headless-app-chrome.sh" | sed '$d')"
   ND_ACCEPT_HYPR_MONITOR="${ND_ACCEPT_HYPR_MONITOR:-1920x1200@60,0x0,1}" hypr_rig || exit 1
-  # The rig's config names options this Hyprland no longer has, and the
-  # banner reporting them sits over the window's top edge in every capture.
-  sed -i -e '/vfr = /d' -e '/blur {/d' -e '/shadow {/d' "$WORK/hypr/hypr.conf"
+  # The rig turns blur and shadows off; drop both blocks whole, braces and
+  # all, so they come back as Hyprland ships them. A config error puts a
+  # banner over the window's top edge in every capture, so one fails the run.
+  sed -i -e '/^  blur {/,/^  }/d' -e '/^  shadow {/,/^  }/d' "$WORK/hypr/hypr.conf"
   # Blur stays on as Hyprland ships it, except behind the browser's popups: an
   # XWayland popup is a window to Hyprland, blurred across its whole surface,
   # and a popover's transparent shadow and arrow margin read as a frosted box.
@@ -46,6 +47,8 @@ if [ "$RIG" = hypr ]; then
   echo 'windowrule = no_blur on, match:class ^(nd-hello)$, match:title ^(nd-hello)$, match:xwayland true, match:float true' >>"$WORK/hypr/hypr.conf"
   hyprctl reload >/dev/null
   sleep 1
+  errors="$(hyprctl configerrors | grep -v '^\s*$' || true)"
+  [ -z "$errors" ] || { echo "the Hyprland config has errors: $errors"; exit 1; }
   # A reload forgets the rig's runtime monitor rule.
   hyprctl keyword monitor "$(hyprctl -j monitors | jq -r '.[0].name'),${ND_ACCEPT_HYPR_MONITOR:-1920x1200@60,0x0,1}" >/dev/null
   sleep 1
