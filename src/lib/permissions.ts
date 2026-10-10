@@ -104,6 +104,8 @@ export function permissionSentence(host: string, types: string[]): string {
     else groups.push({ verb: phrase.verb, nouns: [phrase.noun] });
   }
   const clauses = groups.map((g) => `${g.verb} ${joinClauses(g.nouns)}`);
+  // The framework sends no type for a request Chromium names nothing for.
+  if (clauses.length === 0) return `${host || "This page"} wants to use a feature that needs your permission.`;
   return `${host || "This page"} wants to ${joinClauses(clauses)}.`;
 }
 
