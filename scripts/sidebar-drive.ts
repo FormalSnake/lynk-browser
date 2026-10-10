@@ -23,6 +23,8 @@
 //      height for the width
 //   1b AppKit: every pinned tile a Liquid Glass pill, the one on show raised,
 //      captured at both widths beside the owner's reference
+//   1c GTK: the tab on show set apart in its pixels as a row, a favicon tile
+//      and a letter tile, at both widths
 //   4  hide the sidebar, then the edge reveal over an unchanged card; on
 //      AppKit the traffic lights are gone while it is hidden and ride with
 //      the peeking panel, held to the tiles' leading edge on every frame
@@ -128,7 +130,7 @@ const base = `http://127.0.0.1:${server.port}`;
 /// keyed by origin, and every other fixture page shares the first.
 const iconServer = serve(0);
 const iconBase = `http://127.0.0.1:${iconServer.port}`;
-mkdirSync(join(store, "favicons"), { recursive: true });
+for (const look of ["light", "dark"]) mkdirSync(join(store, "favicons", look), { recursive: true });
 const ICON = sh(
   "python3",
   "-c",
@@ -136,7 +138,7 @@ const ICON = sh(
 from PIL import Image
 b=io.BytesIO(); Image.new("RGB",(32,32),(255,140,0)).save(b,"PNG"); print(base64.b64encode(b.getvalue()).decode())`,
 ).trim();
-writeFileSync(join(store, "favicons", encodeURIComponent(iconBase)), `data:image/png;base64,${ICON}`);
+for (const look of ["light", "dark"]) writeFileSync(join(store, "favicons", look, encodeURIComponent(iconBase)), `data:image/png;base64,${ICON}`);
 
 /// The page a tab restores to. Linux CEF never requests a restored tab's
 /// http address (main has the same gap), so there the pages are data URLs,
@@ -297,7 +299,9 @@ async function captureScreen(name: string): Promise<string | null> {
   return path;
 }
 
-async function capture(name: string): Promise<{ path: string; pixel: (x: number, y: number) => number[] } | null> {
+type Shot = { path: string; pixel: (x: number, y: number) => number[]; ox: number; oy: number; scale: number };
+
+async function capture(name: string): Promise<Shot | null> {
   const path = `${SHOTS}/${appkit ? "mac" : "gtk"}-${name}.png`;
   let ox = 0;
   let oy = 0;
@@ -326,7 +330,27 @@ async function capture(name: string): Promise<{ path: string; pixel: (x: number,
     const out = sh("python3", "-c", `from PIL import Image;print(*Image.open(${JSON.stringify(path)}).convert("RGB").getpixel((${px},${py})))`);
     return out.trim().split(" ").map(Number);
   };
-  return { path, pixel };
+  return { path, pixel, ox, oy, scale };
+}
+
+/// The median luminance inside each rect, 4 px in from its edges, on a
+/// capture: the fill a tile or row is drawn on, whatever small mark sits in it.
+function medianLuminance(shot: Shot, rects: Rect[]): number[] {
+  return JSON.parse(
+    sh(
+      "python3",
+      "-c",
+      `from PIL import Image
+import json
+im = Image.open(${JSON.stringify(shot.path)}).convert("L"); ox, oy, s = ${shot.ox}, ${shot.oy}, ${shot.scale}
+out = []
+for r in ${JSON.stringify(rects)}:
+    px = [im.getpixel((int(ox + x * s), int(oy + y * s))) for y in range(int(r["y"]) + 4, int(r["y"] + r["h"]) - 4) for x in range(int(r["x"]) + 4, int(r["x"] + r["w"]) - 4)]
+    px.sort()
+    out.append(px[len(px) // 2])
+print(json.dumps(out))`,
+    ),
+  ) as number[];
 }
 
 /// The app window's top-left on the screen capture, in device pixels. The
@@ -650,6 +674,54 @@ async function gridLeg(): Promise<void> {
   for (const id of ["t9", "t8", "t7"]) await setPinned(id, false);
   await app.click(`menu-tab-${[...(await pinnedOrder()), ...(await todayOrder())].indexOf("t6")}`);
   console.log(`  NB_SIDEBAR_GRID_OK ${report.join(" ")}`);
+}
+
+/// GTK: the tab on show reads at a glance as a row, as a tile with a favicon
+/// and as a tile with a letter, in its pixels: its fill stands apart from
+/// every tab of its kind at rest. GTK has no glass to raise a tile with.
+async function selectionLeg(): Promise<void> {
+  if (!darwin) {
+    // Linux restores tabs as data URLs, which no favicon is cached for, so
+    // the first tile goes to the one site that has one.
+    await app.click("tab-t1");
+    await waitFor("t1 on show", () => app.find("tab-live-t1"), (n) => n !== null);
+    await app.click("tab-t1");
+    await app.waitFor({ testId: "palette", state: "visible" }, { timeoutMs: PATIENCE });
+    await typeQuery(app, `${iconBase}/mail`);
+    await app.setValue("palette", true);
+    await waitFor("the command bar to close", async () => (await app.find("palette"))?.visible ?? false, (v) => !v);
+    await waitFor("the site to load", async () => (await app.find("progress"))?.value ?? 1, (v) => Number(v) >= 1);
+  }
+  const iconShown = () => waitFor("the first tile's favicon", async () => (await app.mustFind("tab-t1")).text ?? "", (t) => t === "");
+  const tiles = ["t1", "t2", "t3", "t4"];
+  const rows = ["t5", "t6"];
+  const report: string[] = [];
+  for (const width of [1280, 720]) {
+    await app.setWindowSize(width, 800);
+    await settle("sidebar");
+    for (const [id, kind] of [["t6", "row"], ["t1", "icon-tile"], ["t2", "letter-tile"]] as const) {
+      // A click on the tab already on show opens the command bar instead.
+      if (!(await app.find(`tab-live-${id}`)) && !(await app.find(`tab-close-${id}`))) await app.click(`tab-${id}`);
+      await waitFor(`${id} on show`, async () => (await app.find(`tab-live-${id}`)) ?? (await app.find(`tab-close-${id}`)), (n) => n !== null);
+      await iconShown();
+      await Bun.sleep(400);
+      const shot = await capture(`active-${kind}-${look}-${width}`);
+      if (!shot) continue;
+      const group = kind === "row" ? rows : tiles;
+      const lums = medianLuminance(shot, await Promise.all(group.map((t) => rect(`tab-slot-${t}`))));
+      const live = lums[group.indexOf(id)]!;
+      const gap = Math.min(...lums.filter((_, i) => group[i] !== id).map((l) => Math.abs(l - live)));
+      if (gap < 12) fail(`width=${width}: the ${kind} on show is not set apart from the rest (median luminance ${lums.join(",")}, ${id} on show)`);
+      report.push(`${kind}@${width}=${gap}`);
+    }
+  }
+  await app.click("tab-t6");
+  await waitFor("t6 on show", () => app.find("tab-close-t6"), (n) => n !== null);
+  // The width the grid leg left the window at, which the load bar leg after
+  // this one was written against.
+  await app.setWindowSize(1100, 800);
+  await settle("sidebar");
+  console.log(`  NB_SIDEBAR_SELECTION_OK ${look}: luminance gap of the tab on show to the nearest at rest ${report.join(" ")}`);
 }
 
 /// AppKit, with the real cursor: a pinned tile pressed and dragged over the
@@ -1067,6 +1139,7 @@ try {
   }
   await gridLeg();
   if (appkit) await glassLeg();
+  else await selectionLeg();
 
   // ---- 3: the load bar ----------------------------------------------------
   // The address is edited in the command bar, so the drive types into the
