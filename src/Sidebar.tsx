@@ -208,8 +208,12 @@ export function Sidebar(props: SidebarProps) {
         // the tile's centre.
         spacing={0}
         // AppKit: each tile its own glass pill, the one on show raised and
-        // brighter. GTK keeps the flat tile.
-        cssClasses={[...(gtk ? ["view"] : live() ? ["view", "glass", "raised"] : ["view", "glass"]), ...(asleep() ? ["dimmed"] : [])]}
+        // brighter. GTK has no glass, so a tile reads as a row does: the one
+        // on show is the filled tile, the rest only answer the pointer.
+        cssClasses={[
+          ...(gtk ? (live() ? ["view"] : ["activatable"]) : live() ? ["view", "glass", "raised"] : ["view", "glass"]),
+          ...(asleep() ? ["dimmed"] : []),
+        ]}
         dropTarget
         onDragOver={() => {
           if (dragging() && (reorder()?.to ?? -1) !== v.slot) setReorder({ id: dragging(), to: v.slot });

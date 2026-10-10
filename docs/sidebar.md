@@ -66,7 +66,9 @@ are set to each platform's own type and colours.
    tile is its own Liquid Glass pill (`cssClasses={["view", "glass"]}`), and
    the tab on show is the raised, brighter pill (`"raised"` too), as in the
    owner's Arc reference (`~/Developer/nativebrowser-ref/arc-glass-pinned.png`).
-   GTK keeps the flat tile.
+   GTK has no glass, so a tile marks the tab on show as a row does: it is
+   the one filled tile (`"view"`), and the rest have no fill until the
+   pointer is over them (`"activatable"`).
 3. **Tabs**: one flat row each, 28 tall with 2 between them, a 16 pt favicon
    and a title in body text that truncates with an ellipsis. The row on show
    is the one filled row, its title in full ink; the rest are in the secondary
