@@ -633,7 +633,9 @@ async function gridCheck(line: string): Promise<{ columns: number; w: number; h:
     if (!near(end.x + end.w, right, 1)) fail(`${line}: the last column ends at ${end.x + end.w}, the rows at ${right}`);
   }
   const ratio = first.h / first.w;
-  if (Math.abs(ratio - ARC_RATIO) / ARC_RATIO > 0.02) fail(`${line}: a tile is ${first.w}x${first.h} (${ratio.toFixed(3)}), Arc's is ${ARC_RATIO.toFixed(3)}`);
+  // Within the pixel the host rounds the height to: at a 51 wide tile that
+  // pixel is 2.6% of the height.
+  if (Math.abs(first.h - first.w * ARC_RATIO) > 1) fail(`${line}: a tile is ${first.w}x${first.h} (${ratio.toFixed(3)}), Arc's is ${ARC_RATIO.toFixed(3)}`);
   return { columns, w: first.w, h: first.h };
 }
 

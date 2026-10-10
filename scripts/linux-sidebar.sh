@@ -7,6 +7,11 @@
 #
 #   ND_FRAMEWORK_DIR=<checkout> ND_ACCEPT_DISPLAY=:93 bash scripts/linux-sidebar.sh
 #
+# NB_SIDEBAR_GTK_CSS=<dir> copies that dir's *.css (a desktop's
+# ~/.config/gtk-4.0, symlinks followed) into the rig profile, so the drive runs
+# under that user theme instead of stock Adwaita. The real dir is never used:
+# the profile is the run's own.
+#
 # Marker: NB_LINUX_SIDEBAR_OK.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -74,6 +79,7 @@ for layout in end start none; do
   esac
   printf '[Settings]\ngtk-font-name = Adwaita Sans 11\ngtk-icon-theme-name = Adwaita\ngtk-decoration-layout = %s\n' "$deco" \
     >"$WORK/$layout/gtk-4.0/settings.ini"
+  if [ -n "${NB_SIDEBAR_GTK_CSS:-}" ]; then cp -L "$NB_SIDEBAR_GTK_CSS"/*.css "$WORK/$layout/gtk-4.0/"; fi
   # Under Hyprland the runtime dir is the compositor's, where its sockets are.
   [ "$RIG" = hypr ] || export XDG_RUNTIME_DIR="$WORK/$layout/xdg"
   [ "$RIG" = hypr ] || export ND_SIDEBAR_X11=1
