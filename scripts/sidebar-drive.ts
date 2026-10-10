@@ -1515,7 +1515,11 @@ lo, hi = box.getextrema(); print(hi - lo)`).trim(),
       ["extensions-button", "extensions-panel", "extensions-popover"],
       ["downloads-button", "downloads-panel", "downloads-popover"],
     ] as const;
-    const hasExtensions = (await app.find("extensions-button")) !== null;
+    // Every host but that one runs Chromium and must say so: a first render
+    // that read the engine before the host announced it drew no extensions
+    // button at all, for the life of the window.
+    const hasExtensions = !(darwin && !appkit);
+    if (hasExtensions && !(await app.find("extensions-button"))) fail(`width=${width}: no extensions button on a Chromium host`);
     for (const [button, panel, popover] of pairs.filter(([b]) => hasExtensions || b !== "extensions-button")) {
       const footBefore = await Promise.all((await footIds()).map(async (id) => [id, await rect(id)] as const));
       await app.click(button);
