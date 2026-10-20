@@ -107,7 +107,7 @@ Each lane is a branch in the nd repo, merged by the orchestrator. In order of wh
    to Chrome" works and the app sees the result); uninstall. Done when: Dark Reader and 1Password
    install from the Web Store on macOS and on Hyprland, their action popups open from the
    sidebar foot, and 1Password fills a login on both (on macOS with the Developer ID signed
-   build, since 1Password trusts a browser by its signature).
+   build, since 1Password trusts a browser by its signature). Also done only when 1Password works when used right after launch: the old app (and Electron browsers) broke when the extension was used too soon after startup, real Chrome never does. Test: launch, open the 1Password popup and fill within the first seconds, repeated across 20 cold starts on each OS.
 3. **`cef-request-filter`**: a per-request hook on Chromium's IO thread that answers allow,
    block or redirect synchronously, given the URL, the first-party URL and the resource type,
    plus response header access for CSP-injected scriptlets. Done when: an adblock-rust engine

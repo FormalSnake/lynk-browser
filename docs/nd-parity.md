@@ -191,6 +191,7 @@ macOS. Nothing below is ticked yet. The 0.5.11 build stays the default until eve
 - [ ] Uninstalling closes its pages; a window left without tabs gets an empty tab
 - [ ] [mac] 1Password: installs from the store, its icon opens its popup, it fills a login; the build is signed with the Developer ID (`Developer ID Application: CanaryCoders SL (8E7JB82GJK)`) so 1Password trusts it
 - [ ] [linux] 1Password on Hyprland: native messaging works with the root-owned binary from the Nix store and `/etc/1password/custom_allowed_browsers` listing `lynk-browser`; its icon opens its popup and it fills a login
+- [ ] 1Password used right after launch (popup and fill in the first seconds) works on every cold start, as in Chrome; the old app and Electron browsers broke here (user report 2026-10-20)
 - [ ] Dark Reader installs from the store and darkens a page; its popup toggles it; the setting survives a restart
 
 ## Ad blocking
