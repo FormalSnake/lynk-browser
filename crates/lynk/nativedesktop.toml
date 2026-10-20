@@ -1,0 +1,10 @@
+#:schema ../../../nativedesktop-wt-browser/target/nd/nativedesktop.schema.json
+[app]
+id = "dev.formalsnake.Lynk"
+display_name = "Lynk Browser"
+
+[macos]
+minimum_system_version = "14.0"
+
+[webview]
+engine = "cef"

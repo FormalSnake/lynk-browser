@@ -9,3 +9,4 @@ progress/
 assets/icon/candidates/
 !assets/icon/*.png
 !assets/brand/**/*.png
+target/
