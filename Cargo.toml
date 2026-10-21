@@ -10,18 +10,17 @@ license = "MIT"
 opt-level = 2
 debug = "line-tables-only"
 
-# NativeDesktop is a path dependency until it is published: the checkout of its `browser`
-# branch beside this repo (nd main plus the gaps this port finds). nd carries its own patched
-# GPUI, which only reaches this workspace through the patch table below.
+# nd carries its own patched GPUI, which only reaches this workspace through the patch table
+# below. Cargo.lock pins the nd commit; `cargo update -p nd` moves it.
 [patch.crates-io]
-gpui-pre = { path = "../nativedesktop-wt-browser/crates/nd-gpui/vendor/gpui-pre" }
-gpui-fast = { path = "../nativedesktop-wt-browser/crates/nd-gpui/vendor/gpui-fast" }
-gpui-pre-linux = { path = "../nativedesktop-wt-browser/crates/nd-gpui/vendor/gpui-pre-linux" }
-gpui-fast-linux = { path = "../nativedesktop-wt-browser/crates/nd-gpui/vendor/gpui-fast-linux" }
-gpui-pre-wgpu = { path = "../nativedesktop-wt-browser/crates/nd-gpui/vendor/gpui-pre-wgpu" }
-gpui-fast-wgpu = { path = "../nativedesktop-wt-browser/crates/nd-gpui/vendor/gpui-fast-wgpu" }
-gpui-pre-windows = { path = "../nativedesktop-wt-browser/crates/nd-gpui/vendor/gpui-pre-windows" }
-gpui-fast-windows = { path = "../nativedesktop-wt-browser/crates/nd-gpui/vendor/gpui-fast-windows" }
-gpui-pre-apple = { path = "../nativedesktop-wt-browser/crates/nd-gpui/vendor/gpui-pre-apple" }
-gpui-fast-apple = { path = "../nativedesktop-wt-browser/crates/nd-gpui/vendor/gpui-fast-apple" }
+gpui-pre = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-fast = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-pre-linux = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-fast-linux = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-pre-wgpu = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-fast-wgpu = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-pre-windows = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-fast-windows = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-pre-apple = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-fast-apple = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
 

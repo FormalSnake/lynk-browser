@@ -2371,6 +2371,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre"
 version = "0.3.9"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2433,6 +2434,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-apple"
 version = "0.3.9"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "anyhow",
  "async-task",
@@ -2514,6 +2516,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-linux"
 version = "0.3.9"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -2713,6 +2716,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-wgpu"
 version = "0.3.9"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2738,6 +2742,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-windows"
 version = "0.3.9"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -3853,6 +3858,7 @@ dependencies = [
 [[package]]
 name = "nd"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "futures-channel",
  "nd-automation",
@@ -3882,6 +3888,7 @@ dependencies = [
 [[package]]
 name = "nd-automation"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "interprocess",
  "nd-core",
@@ -3893,6 +3900,7 @@ dependencies = [
 [[package]]
 name = "nd-backend-appkit"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
@@ -3920,6 +3928,7 @@ dependencies = [
 [[package]]
 name = "nd-backend-gpui"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "emojis",
  "futures",
@@ -3942,13 +3951,16 @@ dependencies = [
 [[package]]
 name = "nd-cef"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
+ "base64 0.22.1",
  "block2 0.6.2",
  "cef",
  "cef-dll-sys",
  "dispatch2",
  "futures",
  "image",
+ "libc",
  "nd-backend-appkit",
  "nd-backend-gpui",
  "nd-components",
@@ -3964,13 +3976,21 @@ dependencies = [
  "objc2-io-surface",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
+ "raw-window-handle",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tracing",
+ "ureq",
+ "x11rb",
+ "zbus",
+ "zip",
 ]
 
 [[package]]
 name = "nd-components"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "base64 0.22.1",
  "image",
@@ -3992,6 +4012,7 @@ dependencies = [
 [[package]]
 name = "nd-core"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "serde",
  "web-time",
@@ -4000,6 +4021,7 @@ dependencies = [
 [[package]]
 name = "nd-diag"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "chrono",
  "console_error_panic_hook",
@@ -4017,6 +4039,7 @@ dependencies = [
 [[package]]
 name = "nd-gesture"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "nd-core",
 ]
@@ -4024,6 +4047,7 @@ dependencies = [
 [[package]]
 name = "nd-gpui"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
@@ -4033,25 +4057,31 @@ dependencies = [
 [[package]]
 name = "nd-icons"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 
 [[package]]
 name = "nd-macros"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 
 [[package]]
 name = "nd-os-linux"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "nd-backend-gpui",
  "nd-cef",
  "nd-core",
  "nd-gpui",
+ "nd-icons",
+ "nd-theme",
  "nd-ui",
 ]
 
 [[package]]
 name = "nd-os-web"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "js-sys",
  "nd-backend-gpui",
@@ -4067,6 +4097,7 @@ dependencies = [
 [[package]]
 name = "nd-os-windows"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "nd-backend-gpui",
  "nd-core",
@@ -4080,6 +4111,7 @@ dependencies = [
 [[package]]
 name = "nd-settings"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "js-sys",
  "nd-settings-derive",
@@ -4096,6 +4128,7 @@ dependencies = [
 [[package]]
 name = "nd-settings-derive"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -4106,6 +4139,7 @@ dependencies = [
 [[package]]
 name = "nd-system"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "arboard",
  "block2 0.6.2",
@@ -4144,6 +4178,7 @@ dependencies = [
 [[package]]
 name = "nd-theme"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "nd-core",
  "nd-gpui",
@@ -4162,6 +4197,7 @@ dependencies = [
 [[package]]
 name = "nd-ui"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "nd-core",
  "nd-gesture",
@@ -4171,6 +4207,7 @@ dependencies = [
 [[package]]
 name = "nd-update"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -4186,6 +4223,7 @@ dependencies = [
 [[package]]
 name = "nd-virtual"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "nd-core",
  "nd-gesture",
@@ -4195,6 +4233,7 @@ dependencies = [
 [[package]]
 name = "nd-webview"
 version = "0.6.1"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
@@ -8877,19 +8916,24 @@ dependencies = [
 [[patch.unused]]
 name = "gpui-fast"
 version = "0.1.7"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 
 [[patch.unused]]
 name = "gpui-fast-apple"
 version = "0.1.7"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 
 [[patch.unused]]
 name = "gpui-fast-linux"
 version = "0.1.7"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 
 [[patch.unused]]
 name = "gpui-fast-wgpu"
 version = "0.1.7"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"
 
 [[patch.unused]]
 name = "gpui-fast-windows"
 version = "0.1.7"
+source = "git+https://github.com/FormalStudio/NativeDesktop?branch=main#94289c2836b40b15071e88fcb17a52abee6adc2f"

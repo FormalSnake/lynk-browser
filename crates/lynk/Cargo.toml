@@ -6,7 +6,7 @@ license.workspace = true
 rust-version = "1.95"
 
 [dependencies]
-nd = { path = "../../../nativedesktop-wt-browser/crates/nd", features = ["cef"] }
+nd = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", features = ["cef"] }
 
 [build-dependencies]
-nd = { path = "../../../nativedesktop-wt-browser/crates/nd", default-features = false, features = ["build"] }
+nd = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", default-features = false, features = ["build"] }
