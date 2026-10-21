@@ -1,0 +1,167 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "@fontsource-variable/bricolage-grotesque/opsz.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-heading: "Bricolage Grotesque Variable", var(--font-sans);
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
+
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --color-cobalt: var(--cobalt);
+  --color-wake: var(--wake);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+/* Taken from the app icon: navy ground, the cobalt brush, the silver chevron, the cyan wake lines. */
+:root {
+  --night: oklch(0.145 0.026 266);
+  --hull: oklch(0.19 0.03 266);
+  --cobalt: oklch(0.53 0.19 265);
+  --silver: oklch(0.79 0.016 266);
+  --frost: oklch(0.965 0.006 266);
+  --wake: oklch(0.83 0.1 222);
+
+  --background: var(--night);
+  --foreground: var(--frost);
+  --card: var(--hull);
+  --card-foreground: var(--frost);
+  --popover: var(--hull);
+  --popover-foreground: var(--frost);
+  --primary: var(--frost);
+  --primary-foreground: var(--night);
+  --secondary: oklch(0.24 0.032 266);
+  --secondary-foreground: var(--frost);
+  --muted: oklch(0.24 0.032 266);
+  --muted-foreground: var(--silver);
+  --accent: oklch(0.27 0.04 266);
+  --accent-foreground: var(--frost);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 9%);
+  --input: oklch(1 0 0 / 14%);
+  --ring: var(--wake);
+  --radius: 0.625rem;
+
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans antialiased;
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  ::selection {
+    background: oklch(0.53 0.19 265 / 0.55);
+    color: var(--frost);
+  }
+  :focus-visible {
+    outline: 2px solid var(--wake);
+    outline-offset: 3px;
+  }
+  [id] {
+    scroll-margin-top: 5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+/* Page-load entrance for the hero, once per visit. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes brush {
+  from {
+    opacity: 0;
+    transform: var(--brush-transform) scaleX(0.82);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .enter {
+    animation: rise 700ms var(--ease-out) both;
+    animation-delay: calc(var(--i, 0) * 80ms);
+  }
+  .enter-brush {
+    animation: brush 1400ms var(--ease-out) 240ms both;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .enter,
+  .enter-brush {
+    animation: fade 400ms ease both;
+  }
+}
+
+/* Scroll reveal, toggled by the observer in Layout.astro. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-reveal] {
+    opacity: 0;
+    transform: translateY(16px);
+    transition:
+      opacity 700ms var(--ease-out),
+      transform 700ms var(--ease-out);
+    transition-delay: calc(var(--i, 0) * 70ms);
+  }
+  [data-reveal][data-shown] {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Chords and captures follow the platform picked in the showcase. */
+html:not([data-platform="mac"]) .mod-mac,
+html[data-platform="mac"] .mod-pc,
+html[data-platform="mac"] [data-show]:not([data-show~="mac"]),
+html[data-platform="linux"] [data-show]:not([data-show~="linux"]),
+html[data-platform="windows"] [data-show]:not([data-show~="windows"]) {
+  display: none;
+}

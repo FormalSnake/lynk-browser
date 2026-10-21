@@ -1,0 +1,28 @@
+---
+interface Props {
+  label: string;
+  id?: string;
+}
+
+const { label, id } = Astro.props;
+---
+
+<section id={id} class="mx-auto grid max-w-[1400px] gap-x-12 gap-y-6 px-6 pt-28 pb-14 sm:pt-40 sm:pb-16 lg:grid-cols-[12rem_1fr]">
+  <p class="pt-3 font-mono text-xs tracking-[0.12em] text-muted-foreground uppercase" data-reveal>{label}</p>
+  <div class="max-w-[60rem]">
+    <h2
+      class="font-heading text-[clamp(2.5rem,6.2vw,5.5rem)] leading-[1] font-[680] tracking-[-0.03em] text-balance"
+      data-reveal
+      style="--i:1"
+    >
+      <slot name="title" />
+    </h2>
+    <div
+      class="mt-8 max-w-[44rem] text-[clamp(1.25rem,2.1vw,1.75rem)] leading-[1.4] text-pretty text-muted-foreground"
+      data-reveal
+      style="--i:2"
+    >
+      <slot />
+    </div>
+  </div>
+</section>

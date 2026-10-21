@@ -1,0 +1,41 @@
+---
+const features = [
+  {
+    title: "Ad blocking",
+    body: "uBlock Origin's lists, built in.",
+  },
+  {
+    title: "Extensions",
+    body: "Install them straight from the Chrome Web Store.",
+  },
+  {
+    title: "Floating video",
+    body: "Picture in picture with one shortcut.",
+  },
+  {
+    title: "Native panels",
+    body: "History, bookmarks and downloads as native sheets.",
+  },
+  {
+    title: "Private windows",
+    body: "Nothing is kept once you close the window.",
+  },
+  {
+    title: "Session restore",
+    body: "Your tabs come back where you left them.",
+  },
+];
+---
+
+<div class="mx-auto max-w-[1400px] px-6 lg:grid lg:grid-cols-[12rem_1fr] lg:gap-x-12">
+  <ul class="grid max-w-[60rem] gap-x-10 gap-y-12 sm:grid-cols-2 lg:col-start-2 lg:grid-cols-3">
+    {
+      features.map((f, i) => (
+        <li data-reveal style={`--i:${i % 3}`}>
+          <h3 class="font-heading text-xl font-semibold tracking-[-0.02em]">{f.title}</h3>
+          <p class="mt-2.5 leading-relaxed text-pretty text-muted-foreground">{f.body}</p>
+        </li>
+      ))
+    }
+  </ul>
+</div>

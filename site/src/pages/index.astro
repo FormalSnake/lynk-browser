@@ -1,0 +1,55 @@
+---
+import Layout from "@/layouts/Layout.astro";
+import Nav from "@/components/Nav.astro";
+import Hero from "@/components/Hero.astro";
+import Statement from "@/components/Statement.astro";
+import Tour from "@/components/Tour.astro";
+import Shortcuts from "@/components/Shortcuts.astro";
+import Features from "@/components/Features.astro";
+import Install from "@/components/Install.astro";
+---
+
+<Layout
+  title="Lynk, a truly native browser"
+  description="A truly native, keyboard-first browser for macOS, Linux and Windows."
+>
+  <Nav />
+  <main id="main">
+    <Hero />
+
+    <Statement label="Why native">
+      <Fragment slot="title">Feels like it belongs.</Fragment>
+      Lynk looks and works like the other apps on your computer.
+    </Statement>
+
+    <Tour />
+
+    <Statement label="Shortcuts" id="shortcuts">
+      <Fragment slot="title">Your hands stay on the keys.</Fragment>
+      Every command has a shortcut.
+    </Statement>
+    <Shortcuts />
+
+    <Statement label="Also inside">
+      <Fragment slot="title">The rest is already there.</Fragment>
+    </Statement>
+    <Features />
+
+    <Statement label="Install" id="install">
+      <Fragment slot="title">Build it from source.</Fragment>
+      No installer yet. You need Bun.
+    </Statement>
+    <Install />
+  </main>
+
+  <footer class="mx-auto mt-36 max-w-[1400px] px-6 text-sm text-muted-foreground">
+    <div class="flex flex-wrap items-center justify-between gap-4 border-t border-white/[0.07] py-10">
+    <p>
+      Lynk is MIT licensed and made by <a href="https://www.formalsnake.dev" class="text-foreground underline decoration-white/25 underline-offset-4 transition-colors duration-150 hover:decoration-white/70">FormalSnake</a>.
+    </p>
+    <p>
+      Built on <a href="https://github.com/FormalSnake/NativeDesktop" class="text-foreground underline decoration-white/25 underline-offset-4 transition-colors duration-150 hover:decoration-white/70">NativeDesktop</a>.
+    </p>
+    </div>
+  </footer>
+</Layout>

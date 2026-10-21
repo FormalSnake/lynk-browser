@@ -1,0 +1,42 @@
+---
+import Chord from "@/components/Chord.astro";
+
+// From src/lib/keys.ts in the app; only chords whose Linux form is Ctrl in place of Cmd.
+const chords = [
+  { keys: "mod+T", does: "New tab" },
+  { keys: "mod+L", does: "Edit the address" },
+  { keys: "mod+K", does: "Switch tab or run a command" },
+  { keys: "mod+W", does: "Close tab" },
+  { keys: "shift+mod+T", does: "Reopen closed tab" },
+  { keys: "mod+1", does: "Jump to a tab by place" },
+  { keys: "mod+S", does: "Show or hide the sidebar" },
+  { keys: "alt+mod+S", does: "Switch layout" },
+  { keys: "mod+F", does: "Find in page" },
+  { keys: "shift+mod+R", does: "Reading mode" },
+  { keys: "alt+mod+P", does: "Float the video" },
+  { keys: "shift+mod+H", does: "Hide an element on this site" },
+  { keys: "shift+mod+N", does: "Private window" },
+  { keys: "mod+,", does: "Settings" },
+];
+---
+
+<div class="mx-auto max-w-[1400px] px-6 lg:grid lg:grid-cols-[12rem_1fr] lg:gap-x-12">
+  <div class="lg:col-start-2">
+    <dl class="grid max-w-[60rem] gap-x-10 sm:grid-cols-2">
+      {
+        chords.map((c, i) => (
+          <div
+            class="flex items-center justify-between gap-6 border-b border-white/[0.07] py-3.5"
+            data-reveal
+            style={`--i:${i % 2}`}
+          >
+            <dt class="text-[0.9375rem] text-foreground/90">{c.does}</dt>
+            <dd class="shrink-0">
+              <Chord keys={c.keys} />
+            </dd>
+          </div>
+        ))
+      }
+    </dl>
+  </div>
+</div>
