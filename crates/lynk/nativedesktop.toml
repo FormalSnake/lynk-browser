@@ -8,3 +8,6 @@ minimum_system_version = "14.0"
 
 [webview]
 engine = "cef"
+
+[webview.cef]
+style = "chrome"
