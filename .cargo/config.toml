@@ -1,8 +1,3 @@
-[build]
-# Intermediate artifacts live on the external drive (the internal disk is nearly full); final
-# binaries stay in `target/`.
-build-dir = "/Volumes/Kyan Drive/dev-cache.noindex/cargo-target/nativebrowser/{workspace-path-hash}"
-
 # The Swift runtime nd links on macOS has to go through Apple's linker, which honours the
 # autolink entries in Swift objects; a Nix clang wrapper on PATH does not.
 [target.aarch64-apple-darwin]
