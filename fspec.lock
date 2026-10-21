@@ -1,0 +1,125 @@
+[[pkg]]
+name = "bun"
+source = "aqua:bun"
+version = "1.4.3"
+
+[pkg.aarch64-darwin]
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/bun-darwin-aarch64.zip"
+hash = "sha256-gK/UwGm0am+o8+xSC+vHUKeEPkqNW5WD0prUNsAKNAM="
+bins = ["bun-darwin-aarch64/bun", "bunx=bun-darwin-aarch64/bun"]
+
+[pkg.aarch64-linux]
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/bun-linux-aarch64.zip"
+hash = "sha256-76mBPaXtckI7+Ef5FujSxHwNd2rdlyNUAmp14Q2pqiE="
+bins = ["bun-linux-aarch64/bun", "bunx=bun-linux-aarch64/bun"]
+
+[pkg.x86_64-darwin]
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/bun-darwin-x64.zip"
+hash = "sha256-YmYOZDjrhyJ4h3rMp34RUtXQMTJN82jUqBtCghFInS0="
+bins = ["bun-darwin-x64/bun", "bunx=bun-darwin-x64/bun"]
+
+[pkg.x86_64-linux]
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/bun-linux-x64.zip"
+hash = "sha256-PnMFKNiXdfA/h/BcBnh8TfQJnQo38/JS57gpyyOBbhg="
+bins = ["bun-linux-x64/bun", "bunx=bun-linux-x64/bun"]
+
+[[pkg]]
+name = "cmake"
+source = "aqua:cmake"
+version = "4.4.4"
+
+[pkg.aarch64-darwin]
+url = "https://github.com/Kitware/CMake/releases/download/v4.4.4/cmake-4.4.4-macos-universal.tar.gz"
+hash = "sha256-S3tzcEsdubN05cmrjhesYUi4F7Y5budc2UqFLLrJ0wU="
+bins = ["cmake-4.4.4-macos-universal/CMake.app/Contents/bin/cmake", "cmake-4.4.4-macos-universal/CMake.app/Contents/bin/ccmake", "cmake-4.4.4-macos-universal/CMake.app/Contents/bin/cmake-gui", "cmake-4.4.4-macos-universal/CMake.app/Contents/bin/cpack", "cmake-4.4.4-macos-universal/CMake.app/Contents/bin/ctest"]
+
+[pkg.aarch64-linux]
+url = "https://github.com/Kitware/CMake/releases/download/v4.4.4/cmake-4.4.4-linux-aarch64.tar.gz"
+hash = "sha256-obbMY2NqDlXGMlfPMxWopfEp5C+t4l2xr+pP+KsG8l4="
+bins = ["cmake-4.4.4-linux-aarch64/bin/cmake", "cmake-4.4.4-linux-aarch64/bin/ccmake", "cmake-4.4.4-linux-aarch64/bin/cmake-gui", "cmake-4.4.4-linux-aarch64/bin/cpack", "cmake-4.4.4-linux-aarch64/bin/ctest"]
+
+[pkg.x86_64-darwin]
+url = "https://github.com/Kitware/CMake/releases/download/v4.4.4/cmake-4.4.4-macos-universal.tar.gz"
+hash = "sha256-S3tzcEsdubN05cmrjhesYUi4F7Y5budc2UqFLLrJ0wU="
+bins = ["cmake-4.4.4-macos-universal/CMake.app/Contents/bin/cmake", "cmake-4.4.4-macos-universal/CMake.app/Contents/bin/ccmake", "cmake-4.4.4-macos-universal/CMake.app/Contents/bin/cmake-gui", "cmake-4.4.4-macos-universal/CMake.app/Contents/bin/cpack", "cmake-4.4.4-macos-universal/CMake.app/Contents/bin/ctest"]
+
+[pkg.x86_64-linux]
+url = "https://github.com/Kitware/CMake/releases/download/v4.4.4/cmake-4.4.4-linux-x86_64.tar.gz"
+hash = "sha256-5buAf3coy2DNiyfryXou20abaGVfIehEpgDDV1t29bs="
+bins = ["cmake-4.4.4-linux-x86_64/bin/cmake", "cmake-4.4.4-linux-x86_64/bin/ccmake", "cmake-4.4.4-linux-x86_64/bin/cmake-gui", "cmake-4.4.4-linux-x86_64/bin/cpack", "cmake-4.4.4-linux-x86_64/bin/ctest"]
+
+[[pkg]]
+name = "ninja"
+source = "aqua:ninja"
+version = "1.13.2"
+
+[pkg.aarch64-darwin]
+url = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-mac.zip"
+hash = "sha256-yZBIZzqnZZYKmc8Qxt258frVBgmf8KDhN62JYKiPMhs="
+
+[pkg.aarch64-linux]
+url = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-linux-aarch64.zip"
+hash = "sha256-/SysyAUKfxKhai5I+eBvylwU/Ewr7iurtntYvhemB/w="
+
+[pkg.x86_64-darwin]
+url = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-mac.zip"
+hash = "sha256-yZBIZzqnZZYKmc8Qxt258frVBgmf8KDhN62JYKiPMhs="
+
+[pkg.x86_64-linux]
+url = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-linux.zip"
+hash = "sha256-V0nLxOZoJzUUFQqA44epV/kzxu0/XxHgP7MJVeK76tY="
+
+[[pkg]]
+name = "rustup"
+source = "aqua:rustup"
+version = "1.29.2"
+
+[pkg.aarch64-darwin]
+url = "https://static.rust-lang.org/rustup/archive/1.29.2/aarch64-apple-darwin/rustup-init"
+hash = "sha256-98fhHrLgfwBuUyqKqsd7MvRSfTBaw4bAxjPKYTPTXKk="
+bins = ["rustup", "rustup-init=rustup"]
+
+[pkg.aarch64-linux]
+url = "https://static.rust-lang.org/rustup/archive/1.29.2/aarch64-unknown-linux-gnu/rustup-init"
+hash = "sha256-qcFo2+qBqEZxxrelwXlcsOtpkCARDRB938pCe9eX5pc="
+bins = ["rustup", "rustup-init=rustup"]
+
+[pkg.x86_64-darwin]
+url = "https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-apple-darwin/rustup-init"
+hash = "sha256-uWEHMN3u9SdlcjhHhm/R41QLK/fVqwwySqFDpe3yW6A="
+bins = ["rustup", "rustup-init=rustup"]
+
+[pkg.x86_64-linux]
+url = "https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-unknown-linux-gnu/rustup-init"
+hash = "sha256-W+GR6McKUAcHQlTLdNeNv90lzVphwn3nuOVBASLsJPQ="
+bins = ["rustup", "rustup-init=rustup"]
+
+[[native]]
+kind = "lib"
+name = "gtk4"
+apt = "libgtk-4-dev"
+dnf = "pkgconfig(gtk4)"
+moss = "pkgconfig(gtk4)"
+pacman = "gtk4"
+xbps = "gtk4-devel"
+zypper = "pkgconfig(gtk4)"
+
+[[native]]
+kind = "bin"
+name = "gcc"
+apt = "gcc"
+dnf = "/usr/bin/gcc"
+moss = "binary(gcc)"
+pacman = "gcc"
+xbps = "gcc"
+zypper = "gcc"
+
+[[native]]
+kind = "bin"
+name = "pkg-config"
+apt = "pkgconf"
+dnf = "/usr/bin/pkg-config"
+moss = "binary(pkg-config)"
+pacman = "pkgconf"
+xbps = "pkg-config"
+zypper = "pkgconf-pkg-config"
