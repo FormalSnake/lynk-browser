@@ -12,7 +12,7 @@
 <h1 align="center">Lynk Browser</h1>
 
 <p align="center">
-  <a href="https://github.com/FormalSnake/NativeDesktop"><img src="https://img.shields.io/badge/nativedesktop-0.4.56-345ec3?style=for-the-badge&labelColor=161616" alt="NativeDesktop 0.4.56"></a>
+  <a href="https://github.com/FormalStudio/NativeDesktop"><img src="https://img.shields.io/badge/nativedesktop-0.4.56-345ec3?style=for-the-badge&labelColor=161616" alt="NativeDesktop 0.4.56"></a>
   <a href="nativedesktop.config.ts"><img src="https://img.shields.io/badge/chromium-CEF_151-345ec3?style=for-the-badge&labelColor=161616&logo=googlechrome&logoColor=white" alt="Chromium through CEF 151"></a>
   <a href="#install"><img src="https://img.shields.io/badge/macOS-AppKit-345ec3?style=for-the-badge&labelColor=161616&logo=apple&logoColor=white" alt="macOS, AppKit"></a>
   <a href="#install"><img src="https://img.shields.io/badge/linux-GTK4-345ec3?style=for-the-badge&labelColor=161616&logo=gtk&logoColor=white" alt="Linux, GTK4"></a>
@@ -24,7 +24,7 @@ A keyboard-first browser in the style of Arc. Tabs sit in a quiet sidebar,
 and one command bar takes addresses, open tabs and every action the window has,
 so you never reach for a button. Pages render in Chromium through CEF on both platforms. The window
 around them is native: every row, field, popover and dialog is a real AppKit or
-GTK4 widget drawn by [NativeDesktop](https://github.com/FormalSnake/NativeDesktop),
+GTK4 widget drawn by [NativeDesktop](https://github.com/FormalStudio/NativeDesktop),
 written in React with no HTML in the interface.
 
 ![Lynk Browser on macOS: pinned tiles and sidebar tabs beside a Wikipedia article](docs/images/mac-hero.png)
@@ -173,7 +173,7 @@ them as glass, dark or tinted.
 
 ## Credits
 
-Built on [NativeDesktop](https://github.com/FormalSnake/NativeDesktop) and the
+Built on [NativeDesktop](https://github.com/FormalStudio/NativeDesktop) and the
 [Chromium Embedded Framework](https://bitbucket.org/chromiumembedded/cef). Ad
 blocking runs [brave/adblock-rust](https://github.com/brave/adblock-rust) over
 [uBlock Origin](https://github.com/gorhill/uBlock)'s lists, and reading mode is

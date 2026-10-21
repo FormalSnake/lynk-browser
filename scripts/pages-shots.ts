@@ -64,7 +64,7 @@ writeFileSync(
   const visits: [string, string, number][] = [
     ["https://example.com/articles/2026/09/a-rather-long-path/that-keeps-going?with=query&and=more", "An article with a long title about native browser chrome and how it should look", now - 60_000],
     ["https://news.ycombinator.com/", "Hacker News", now - 3_600_000],
-    ["https://github.com/FormalSnake/NativeDesktop", "FormalSnake/NativeDesktop", now - 86_400_000 - 1000],
+    ["https://github.com/FormalStudio/NativeDesktop", "FormalStudio/NativeDesktop", now - 86_400_000 - 1000],
     ["https://duckduckgo.com/?q=libadwaita+boxed+list", "", now - 3 * 86_400_000],
   ];
   for (const [url, title, ts] of visits) db.run("INSERT INTO visits (url, title, ts) VALUES (?, ?, ?)", [url, title, ts]);
