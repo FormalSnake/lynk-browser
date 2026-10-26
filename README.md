@@ -27,11 +27,11 @@ around them is native: every row, field, popover and dialog is a real AppKit or
 GTK4 widget drawn by [NativeDesktop](https://github.com/FormalStudio/NativeDesktop),
 written in React with no HTML in the interface.
 
-![Lynk Browser on macOS: pinned tiles and sidebar tabs beside a Wikipedia article](docs/images/mac-hero.png)
+![Lynk Browser on macOS in dark mode: pinned tiles and sidebar tabs beside formalsnake.dev](docs/shots/macos.png)
 
 | | |
 |---|---|
-| ![The command bar searching what was typed, with the matching open tab below](docs/images/mac-command-bar.png) | ![The history panel](docs/images/mac-history.png) |
+| ![The command bar searching "formal", with the matching open tabs below](docs/shots/macos-command-bar.png) | ![The history panel](docs/images/mac-history.png) |
 | The command bar searches what you typed, and offers the open tab below it | History, searchable, one chord away |
 
 ## What's in it
@@ -48,7 +48,15 @@ written in React with no HTML in the interface.
 | Extensions | Chromium's own extension runtime. The Chrome Web Store installs straight into the browser. |
 | The rest | Session restore with lazily loaded tabs, per-host zoom, find in page with a match count, site permissions held until you look at the tab, a TLS padlock with site settings, a private window on an in-memory profile, DuckDuckGo, Google or Bing. |
 
-![Reading mode on a Paul Graham essay](docs/images/mac-reader.png)
+![Reading mode on a formalsnake.dev blog post](docs/shots/macos-reader.png)
+
+On Linux, in the sidebar and compact layouts:
+
+| | |
+|---|---|
+| ![Lynk Browser on Linux: pinned tiles and sidebar tabs](docs/shots/linux.png) | ![Lynk Browser on Linux in the compact layout, tabs in one row](docs/shots/linux-compact.png) |
+
+`scripts/shots macos|linux|all` regenerates these.
 
 ## Install
 

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Regenerates the README screenshots, dark, at the drive scripts' window size: docs/shots/<os>.png
+# (pinned tiles and sidebar tabs) plus <os>-command-bar, <os>-compact and <os>-reader. Runs from
+# the macbook. There is no Windows build.
+#
+#   scripts/shots macos|linux|all
+#
+# Both legs are the landing page captures (scripts/site-shots-*.ts), which also refresh
+# site/src/assets/shots: macos packages this checkout first and needs the mac in Dark; linux
+# drives the lynk-browser package installed on g815 in its live session.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+assets="$root/site/src/assets/shots"
+shots="$root/docs/shots"
+mkdir -p "$shots"
+
+# site-shots names them <prefix>-hero, <prefix>-command-bar, ..
+collect() {
+  local prefix=$1 os=$2
+  cp "$assets/$prefix-hero.png" "$shots/$os.png"
+  for view in command-bar compact reader; do
+    cp "$assets/$prefix-$view.png" "$shots/$os-$view.png"
+  done
+}
+
+macos() {
+  [[ $(defaults read -g AppleInterfaceStyle 2>/dev/null) == Dark ]] || { echo "shots: switch the mac to Dark first" >&2; exit 1; }
+  # Without node_modules, bunx resolves `nd` to an unrelated npm package.
+  (cd "$root" && bun install --frozen-lockfile)
+  (cd "$root" && CARGO_BUILD_JOBS=2 taskpolicy -c utility bunx nd package mac --no-sign --no-notarize)
+  # drive-lib looks for ndshot in ../NativeDesktop, which the ecosystem checkout does not ship.
+  (cd "$root" && ND_NDSHOT=${ND_NDSHOT:-"$HOME/Developer/NativeDesktop/tools/ndshot/bin/ndshot"} bun scripts/site-shots-mac.ts)
+  collect mac macos
+}
+
+linux() {
+  (cd "$root" && bun scripts/site-shots-linux.ts)
+  collect linux linux
+}
+
+case "${1:-}" in
+  macos | linux) "$1" ;;
+  all) macos && linux ;;
+  *)
+    sed -n '2,10p' "$0"
+    exit 2
+    ;;
+esac
